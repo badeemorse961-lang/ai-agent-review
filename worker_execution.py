@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
+from process_sandbox import ProcessSandbox
+
 
 SCHEMA_VERSION = 1
 DEFAULT_TIMEOUT_SECONDS = 120.0
@@ -81,6 +83,9 @@ class WorkerExecutionBoundary:
     wrappers or inline interpreter launchers. A process cwd alone is not treated
     as a complete isolation guarantee: the checkpoint hook must explicitly attest
     that execution is isolated before the executor is allowed to launch.
+
+    An optional ``ProcessSandbox`` adds explicit tool-path validation, process
+    group isolation, environment minimization, and bounded child-process launch.
     """
 
     _PATH_LIKE_SUFFIXES = {
@@ -102,6 +107,7 @@ class WorkerExecutionBoundary:
         allowed_commands: Sequence[str] = DEFAULT_ALLOWED_COMMANDS,
         checkpoint: Optional[CheckpointHook] = None,
         executor: Optional[ExecutorHook] = None,
+        process_sandbox: Optional[ProcessSandbox] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     ) -> None:
@@ -127,8 +133,14 @@ class WorkerExecutionBoundary:
         self.allowed_commands = normalized
         self.checkpoint = checkpoint
         self.executor = executor or self._subprocess_executor
+        self.process_sandbox = process_sandbox
         self.timeout_seconds = float(timeout_seconds)
         self.max_output_chars = max_output_chars
+
+        if self.process_sandbox is not None and self.process_sandbox.policy.workspace_root != self.workspace_root:
+            raise WorkerExecutionSafetyStop(
+                "Process sandbox workspace must match worker workspace"
+            )
 
     def execute(
         self,
@@ -330,6 +342,13 @@ class WorkerExecutionBoundary:
         self,
         request: ExecutionRequest,
     ) -> tuple[int, str, str, bool]:
+        if self.process_sandbox is not None:
+            result = self.process_sandbox.run(
+                request.command,
+                target_paths=request.targets,
+            )
+            return result.returncode, result.stdout, result.stderr, result.timed_out
+
         try:
             completed = subprocess.run(
                 list(request.command),
@@ -377,6 +396,7 @@ def execute_worker_task(
     allowed_commands: Sequence[str] = DEFAULT_ALLOWED_COMMANDS,
     checkpoint: Optional[CheckpointHook] = None,
     executor: Optional[ExecutorHook] = None,
+    process_sandbox: Optional[ProcessSandbox] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
 ) -> ExecutionResult:
@@ -385,6 +405,7 @@ def execute_worker_task(
         allowed_commands=allowed_commands,
         checkpoint=checkpoint,
         executor=executor,
+        process_sandbox=process_sandbox,
         timeout_seconds=timeout_seconds,
         max_output_chars=max_output_chars,
     )
