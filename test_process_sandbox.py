@@ -17,9 +17,17 @@ def make_sandbox(tmp_path: Path) -> ProcessSandbox:
     return ProcessSandbox(policy, timeout_seconds=2, max_output_chars=256)
 
 
+def write_script(sandbox: ProcessSandbox, name: str, content: str) -> Path:
+    target = sandbox.policy.workspace_root / name
+    target.write_text(content, encoding="utf-8")
+    sandbox.policy.validate_workspace_path(target)
+    return target
+
+
 def test_runs_explicit_tool_without_shell(tmp_path: Path) -> None:
     sandbox = make_sandbox(tmp_path)
-    result = sandbox.run([str(Path(sys.executable).resolve()), "-c", "print('x')"])
+    script = write_script(sandbox, "hello.py", "print('x')\n")
+    result = sandbox.run([str(Path(sys.executable).resolve()), str(script.name)])
     assert result.returncode == 0
     assert result.stdout.strip() == "x"
     assert result.isolated_process_group is True
@@ -39,19 +47,22 @@ def test_unapproved_tool_is_rejected(tmp_path: Path) -> None:
 
 def test_environment_is_secret_minimized(tmp_path: Path) -> None:
     sandbox = make_sandbox(tmp_path)
-    result = sandbox.run(
-        [str(Path(sys.executable).resolve()), "-c", "import os; print(os.getenv('API_KEY')); print(os.getenv('AGENT_TEST'))"],
-        env={"AGENT_TEST": "ok"},
+    script = write_script(
+        sandbox,
+        "env.py",
+        "import os\nprint(os.getenv('API_KEY'))\nprint(os.getenv('AGENT_TEST'))\n",
     )
+    result = sandbox.run([str(Path(sys.executable).resolve()), script.name], env={"AGENT_TEST": "ok"})
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["None", "ok"]
 
 
 def test_external_access_must_be_declared(tmp_path: Path) -> None:
     sandbox = make_sandbox(tmp_path)
+    script = write_script(sandbox, "hello.py", "print('x')\n")
     with pytest.raises(ProcessSandboxSafetyStop):
         sandbox.run(
-            [str(Path(sys.executable).resolve()), "-c", "print('x')"],
+            [str(Path(sys.executable).resolve()), script.name],
             external_reads=[tmp_path / "unmanaged" / "data.txt"],
         )
 
