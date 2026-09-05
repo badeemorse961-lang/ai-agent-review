@@ -2,35 +2,35 @@ from __future__ import annotations
 
 import ast
 import json
-import re
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, Iterator, List, Set
 
 
 # ============================================================
-# EXPANSION READINESS AUDIT v1
+# EXPANSION READINESS AUDIT v2
 # ============================================================
 #
 # Purpose:
-#   Audit the agent project for hidden fixed-size assumptions.
+#   Audit production project code for hidden fixed-size assumptions
+#   without treating the auditor's own implementation, synthetic
+#   tests, comments, or ordinary CLI argument handling as defects.
 #
-# Goals:
-#   - Detect hardcoded pool sizes such as 11 / 15 / 4 / 3 / 2
-#   - Detect loops/ranges tied to fixed counts
-#   - Detect exact-size comparisons
-#   - Inspect JSON pool sizes
-#   - Run parameterized synthetic pool tests for N
+# Rules:
+#   - Pool size belongs to configuration, not structural logic.
+#   - Connection IDs are identifiers, not architecture limits.
+#   - Synthetic/test fixtures may use fixed values intentionally.
+#   - CLI argument count checks are not pool-size checks.
+#   - UTF-8 BOM is accepted for source inspection.
+#   - The auditor does not modify project files.
 #
-# This tool DOES NOT modify project files.
-# This is intentionally a read-only audit before changing the
-# existing architecture.
 # ============================================================
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+AUDITOR_FILENAME = Path(__file__).name
 
-IGNORED_DIRS = {
+IGNORED_DIRS: Set[str] = {
     ".git",
     "__pycache__",
     ".pytest_cache",
@@ -43,12 +43,11 @@ IGNORED_DIRS = {
     ".agent_backups",
 }
 
-
 PYTHON_SUFFIXES = {".py"}
 JSON_SUFFIXES = {".json"}
 
-
-# Current numbers are data, not design rules.
+# These are current configuration values. They are detection hints,
+# not allowed architecture limits.
 KNOWN_CURRENT_COUNTS = {
     11: "current OpenRouter leader accounts",
     15: "current Groq worker accounts",
@@ -57,6 +56,31 @@ KNOWN_CURRENT_COUNTS = {
     2: "current tester/architect-sized pool",
     1: "current standby / active connection-sized value",
 }
+
+POOL_NAME_HINTS = {
+    "pool",
+    "pools",
+    "connection",
+    "connections",
+    "leader",
+    "leaders",
+    "worker",
+    "workers",
+    "standby",
+    "coder",
+    "debugger",
+    "tester",
+    "architect",
+    "reviewer",
+    "account",
+    "accounts",
+}
+
+SYNTHETIC_NAME_HINTS = (
+    "synthetic",
+    "fixture",
+    "test_",
+)
 
 
 @dataclass
@@ -80,6 +104,64 @@ class AuditResult:
     status: str
 
 
+class _ContextVisitor(ast.NodeVisitor):
+    """Walk Python AST while retaining enclosing function/class names."""
+
+    def __init__(self, callback):
+        self.callback = callback
+        self.function_stack: List[str] = []
+        self.class_stack: List[str] = []
+
+    def generic_visit(self, node: ast.AST) -> Any:
+        self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
+        super().generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+        self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
+        self.function_stack.append(node.name)
+        for child in node.body:
+            self.visit(child)
+        for child in node.decorator_list:
+            self.visit(child)
+        for child in node.args.defaults:
+            self.visit(child)
+        for child in node.args.kw_defaults:
+            if child is not None:
+                self.visit(child)
+        if node.returns is not None:
+            self.visit(node.returns)
+        self.function_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
+        self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
+        self.function_stack.append(node.name)
+        for child in node.body:
+            self.visit(child)
+        for child in node.decorator_list:
+            self.visit(child)
+        for child in node.args.defaults:
+            self.visit(child)
+        for child in node.args.kw_defaults:
+            if child is not None:
+                self.visit(child)
+        if node.returns is not None:
+            self.visit(node.returns)
+        self.function_stack.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
+        self.class_stack.append(node.name)
+        for child in node.body:
+            self.visit(child)
+        for child in node.decorator_list:
+            self.visit(child)
+        for child in node.bases:
+            self.visit(child)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+        self.class_stack.pop()
+
+
 class ExpansionReadinessAuditor:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -96,14 +178,10 @@ class ExpansionReadinessAuditor:
 
         synthetic = self._run_parameterized_tests()
         dynamic = self._run_dynamic_pool_tests()
-
-        status = self._overall_status(
-            synthetic,
-            dynamic,
-        )
+        status = self._overall_status(synthetic, dynamic)
 
         return AuditResult(
-            schema_version=1,
+            schema_version=2,
             project_root=str(self.root),
             files_scanned=self.files_scanned,
             findings=self.findings,
@@ -116,25 +194,29 @@ class ExpansionReadinessAuditor:
     # File enumeration
     # --------------------------------------------------------
 
-    def _iter_files(self):
+    def _iter_files(self) -> Iterator[Path]:
+        ignored = {item.lower() for item in IGNORED_DIRS}
         for path in self.root.rglob("*"):
             if not path.is_file():
                 continue
 
-            relative_parts = path.relative_to(
-                self.root
-            ).parts
-
-            if any(
-                part.lower() in {
-                    d.lower()
-                    for d in IGNORED_DIRS
-                }
-                for part in relative_parts
-            ):
+            relative_parts = path.relative_to(self.root).parts
+            if any(part.lower() in ignored for part in relative_parts):
                 continue
 
             yield path
+
+    def _is_synthetic_context(
+        self,
+        function_stack: tuple[str, ...],
+        path: Path,
+    ) -> bool:
+        if path.name.startswith("test_"):
+            return True
+        return any(
+            any(hint in name.lower() for hint in SYNTHETIC_NAME_HINTS)
+            for name in function_stack
+        )
 
     # --------------------------------------------------------
     # Python audit
@@ -144,14 +226,24 @@ class ExpansionReadinessAuditor:
         for path in self._iter_files():
             if path.suffix.lower() not in PYTHON_SUFFIXES:
                 continue
+            if path.name == AUDITOR_FILENAME:
+                continue
 
             self.files_scanned += 1
 
             try:
-                text = path.read_text(
-                    encoding="utf-8"
+                text = path.read_text(encoding="utf-8-sig")
+            except UnicodeDecodeError as exc:
+                self.findings.append(
+                    Finding(
+                        severity="WARN",
+                        file=self._relative(path),
+                        line=1,
+                        category="SOURCE_DECODE_FAILURE",
+                        text=str(exc),
+                        recommendation="Inspect source encoding before relying on the audit.",
+                    )
                 )
-            except UnicodeDecodeError:
                 continue
             except OSError as exc:
                 self.findings.append(
@@ -161,274 +253,194 @@ class ExpansionReadinessAuditor:
                         line=1,
                         category="READ_ERROR",
                         text=str(exc),
-                        recommendation=(
-                            "Inspect file manually."
-                        ),
+                        recommendation="Inspect file manually.",
                     )
                 )
                 continue
 
-            self._audit_python_text(
-                path,
-                text,
-            )
-
-    def _audit_python_text(
-        self,
-        path: Path,
-        text: str,
-    ) -> None:
-
-        lines = text.splitlines()
-
-        # --------------------------------------------
-        # 1. Fixed range(...)
-        # --------------------------------------------
-
-        fixed_range_pattern = re.compile(
-            r"\brange\s*\(\s*(1[015]|11|15|4|3|2|1)\s*\)"
-        )
-
-        for line_no, line in enumerate(
-            lines,
-            start=1,
-        ):
-            if fixed_range_pattern.search(line):
+            try:
+                tree = ast.parse(text, filename=str(path))
+            except SyntaxError as exc:
                 self.findings.append(
                     Finding(
-                        severity="HIGH",
+                        severity="WARN",
                         file=self._relative(path),
-                        line=line_no,
-                        category="FIXED_RANGE",
-                        text=line.strip(),
-                        recommendation=(
-                            "Replace fixed iteration count with "
-                            "pool/configuration length."
-                        ),
+                        line=exc.lineno or 1,
+                        category="AST_PARSE_FAILURE",
+                        text=str(exc),
+                        recommendation="Fix syntax before relying on this file.",
                     )
                 )
+                continue
 
-        # --------------------------------------------
-        # 2. Exact-size comparisons
-        # --------------------------------------------
+            self._audit_python_ast(path, tree)
 
-        exact_size_patterns = [
-            re.compile(
-                r"\blen\s*\([^)]*\)\s*==\s*(11|15|4|3|2|1)\b"
-            ),
-            re.compile(
-                r"\blen\s*\([^)]*\)\s*!=\s*(11|15|4|3|2|1)\b"
-            ),
-            re.compile(
-                r"\blen\s*\([^)]*\)\s*[<>]=?\s*(11|15|4|3|2|1)\b"
-            ),
-        ]
+    def _audit_python_ast(self, path: Path, tree: ast.AST) -> None:
+        visitor = _ContextVisitor(
+            lambda node, funcs, classes: self._audit_node_context(
+                path,
+                node,
+                funcs,
+                classes,
+            )
+        )
+        visitor.visit(tree)
 
-        for line_no, line in enumerate(
-            lines,
-            start=1,
+    def _audit_node_context(
+        self,
+        path: Path,
+        node: ast.AST,
+        function_stack: tuple[str, ...],
+        class_stack: tuple[str, ...],
+    ) -> None:
+        del class_stack
+        if self._is_synthetic_context(function_stack, path):
+            return
+
+        if isinstance(node, ast.Call):
+            self._audit_range_call(path, node)
+            self._audit_numeric_call(path, node)
+
+        if isinstance(node, ast.Compare):
+            self._audit_len_compare(path, node)
+
+        if isinstance(node, ast.Subscript):
+            self._audit_fixed_slice(path, node)
+
+    def _audit_range_call(self, path: Path, node: ast.Call) -> None:
+        if not (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "range"
+            and len(node.args) == 1
         ):
-            for pattern in exact_size_patterns:
-                if pattern.search(line):
+            return
+
+        argument = node.args[0]
+        if not isinstance(argument, ast.Constant):
+            return
+        if not isinstance(argument.value, int):
+            return
+        if argument.value not in KNOWN_CURRENT_COUNTS:
+            return
+
+        self.findings.append(
+            Finding(
+                severity="HIGH",
+                file=self._relative(path),
+                line=node.lineno,
+                category="FIXED_RANGE",
+                text=f"range({argument.value})",
+                recommendation="Replace fixed iteration count with pool/configuration length.",
+            )
+        )
+
+    def _audit_numeric_call(self, path: Path, node: ast.Call) -> None:
+        """Catch numeric arguments only for explicitly pool-sized APIs."""
+        if not isinstance(node.func, ast.Name):
+            return
+        if node.func.id not in {
+            "reserve_pool",
+            "allocate_pool",
+            "require_pool_size",
+        }:
+            return
+
+        for argument in node.args:
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, int):
+                if argument.value in KNOWN_CURRENT_COUNTS:
                     self.findings.append(
                         Finding(
                             severity="HIGH",
                             file=self._relative(path),
-                            line=line_no,
-                            category="FIXED_POOL_SIZE_COMPARISON",
-                            text=line.strip(),
-                            recommendation=(
-                                "Compare against a configured or "
-                                "computed pool size, not a literal."
-                            ),
+                            line=node.lineno,
+                            category="POOL_NUMERIC_ARGUMENT",
+                            text=f"{node.func.id}({argument.value})",
+                            recommendation="Use configuration-derived pool size.",
                         )
                     )
-                    break
 
-        # --------------------------------------------
-        # 3. Fixed-ID construction
-        # --------------------------------------------
-
-        fixed_id_patterns = [
-            re.compile(
-                r"['\"]OR-(0?[1-9]|10|11)['\"]"
-            ),
-            re.compile(
-                r"['\"]GROQ-(0?[1-9]|1[0-5])['\"]"
-            ),
-        ]
-
-        for line_no, line in enumerate(
-            lines,
-            start=1,
+    def _audit_len_compare(self, path: Path, node: ast.Compare) -> None:
+        if not isinstance(node.left, ast.Call):
+            return
+        if not (
+            isinstance(node.left.func, ast.Name)
+            and node.left.func.id == "len"
+            and len(node.comparators) == 1
+            and isinstance(node.comparators[0], ast.Constant)
+            and isinstance(node.comparators[0].value, int)
         ):
-            for pattern in fixed_id_patterns:
-                if pattern.search(line):
-                    # IDs themselves are fine when data-driven.
-                    # Flag only literals so they can be reviewed.
-                    self.findings.append(
-                        Finding(
-                            severity="INFO",
-                            file=self._relative(path),
-                            line=line_no,
-                            category="FIXED_CONNECTION_ID",
-                            text=line.strip(),
-                            recommendation=(
-                                "Connection IDs may remain literal "
-                                "data, but selection logic must not "
-                                "depend on a fixed ID range."
-                            ),
-                        )
-                    )
-                    break
-
-        # --------------------------------------------
-        # 4. Numeric pool literals near pool keywords
-        # --------------------------------------------
-
-        pool_pattern = re.compile(
-            r"(pool|leader|worker|standby|coder|debugger|"
-            r"tester|architect|reviewer)"
-            r".{0,80}\b(11|15|4|3|2)\b",
-            re.IGNORECASE,
-        )
-
-        for line_no, line in enumerate(
-            lines,
-            start=1,
-        ):
-            if pool_pattern.search(line):
-                self.findings.append(
-                    Finding(
-                        severity="MEDIUM",
-                        file=self._relative(path),
-                        line=line_no,
-                        category="POOL_NUMERIC_LITERAL",
-                        text=line.strip(),
-                        recommendation=(
-                            "Verify that this number is configuration "
-                            "data rather than a structural assumption."
-                        ),
-                    )
-                )
-
-        # --------------------------------------------
-        # 5. AST analysis
-        # --------------------------------------------
-
-        try:
-            tree = ast.parse(
-                text,
-                filename=str(path),
-            )
-        except SyntaxError as exc:
-            self.findings.append(
-                Finding(
-                    severity="WARN",
-                    file=self._relative(path),
-                    line=exc.lineno or 1,
-                    category="AST_PARSE_FAILURE",
-                    text=str(exc),
-                    recommendation=(
-                        "Fix syntax before relying on this file."
-                    ),
-                )
-            )
             return
 
-        self._audit_ast(
-            path,
-            tree,
+        # CLI argument count is legitimate and unrelated to pool sizing.
+        if self._is_sys_argv(node.left.args[0] if node.left.args else None):
+            return
+
+        value = node.comparators[0].value
+        if value not in KNOWN_CURRENT_COUNTS:
+            return
+
+        target_text = self._expression_text(node.left.args[0] if node.left.args else None)
+        if not self._looks_pool_related(target_text):
+            return
+
+        op_name = type(node.ops[0]).__name__
+        self.findings.append(
+            Finding(
+                severity="HIGH",
+                file=self._relative(path),
+                line=node.lineno,
+                category="FIXED_POOL_SIZE_COMPARISON",
+                text=f"len({target_text}) {op_name} {value}",
+                recommendation="Compare against a configured or computed pool size, not a literal.",
+            )
         )
 
-    # --------------------------------------------------------
-    # AST audit
-    # --------------------------------------------------------
+    def _audit_fixed_slice(self, path: Path, node: ast.Subscript) -> None:
+        if not self._looks_pool_related(self._expression_text(node.value)):
+            return
 
-    def _audit_ast(
-        self,
-        path: Path,
-        tree: ast.AST,
-    ) -> None:
+        slice_node = node.slice
+        if not isinstance(slice_node, ast.Slice):
+            return
+        if not isinstance(slice_node.upper, ast.Constant):
+            return
+        if not isinstance(slice_node.upper.value, int):
+            return
+        if slice_node.upper.value not in KNOWN_CURRENT_COUNTS:
+            return
 
-        for node in ast.walk(tree):
+        self.findings.append(
+            Finding(
+                severity="HIGH",
+                file=self._relative(path),
+                line=node.lineno,
+                category="FIXED_POOL_SLICE",
+                text=self._expression_text(node),
+                recommendation="Use configuration-derived role partitioning instead of fixed slice bounds.",
+            )
+        )
 
-            # range(CONSTANT)
-            if isinstance(node, ast.Call):
-                if (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id == "range"
-                    and len(node.args) == 1
-                    and isinstance(
-                        node.args[0],
-                        ast.Constant,
-                    )
-                    and isinstance(
-                        node.args[0].value,
-                        int,
-                    )
-                ):
-                    value = node.args[0].value
+    @staticmethod
+    def _is_sys_argv(node: ast.AST | None) -> bool:
+        return isinstance(node, ast.Attribute) and (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "sys"
+            and node.attr == "argv"
+        )
 
-                    if value in KNOWN_CURRENT_COUNTS:
-                        self.findings.append(
-                            Finding(
-                                severity="HIGH",
-                                file=self._relative(path),
-                                line=node.lineno,
-                                category="AST_FIXED_RANGE",
-                                text=f"range({value})",
-                                recommendation=(
-                                    "Use dynamic collection size."
-                                ),
-                            )
-                        )
+    @staticmethod
+    def _expression_text(node: ast.AST | None) -> str:
+        if node is None:
+            return "..."
+        try:
+            return ast.unparse(node)
+        except Exception:
+            return "..."
 
-            # if len(x) == CONSTANT
-            if isinstance(node, ast.Compare):
-                left = node.left
-
-                if isinstance(
-                    left,
-                    ast.Call,
-                ):
-                    if (
-                        isinstance(
-                            left.func,
-                            ast.Name,
-                        )
-                        and left.func.id == "len"
-                        and len(node.comparators) == 1
-                        and isinstance(
-                            node.comparators[0],
-                            ast.Constant,
-                        )
-                        and isinstance(
-                            node.comparators[0].value,
-                            int,
-                        )
-                    ):
-                        value = node.comparators[0].value
-
-                        if value in KNOWN_CURRENT_COUNTS:
-                            self.findings.append(
-                                Finding(
-                                    severity="HIGH",
-                                    file=self._relative(path),
-                                    line=node.lineno,
-                                    category=(
-                                        "AST_FIXED_LEN_COMPARISON"
-                                    ),
-                                    text=(
-                                        f"len(...) "
-                                        f"{type(node.ops[0]).__name__} "
-                                        f"{value}"
-                                    ),
-                                    recommendation=(
-                                        "Use dynamic pool semantics."
-                                    ),
-                                )
-                            )
+    @staticmethod
+    def _looks_pool_related(text: str) -> bool:
+        lowered = text.lower()
+        return any(hint in lowered for hint in POOL_NAME_HINTS)
 
     # --------------------------------------------------------
     # JSON audit
@@ -440,13 +452,8 @@ class ExpansionReadinessAuditor:
                 continue
 
             self.files_scanned += 1
-
             try:
-                payload = json.loads(
-                    path.read_text(
-                        encoding="utf-8"
-                    )
-                )
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
             except Exception as exc:
                 self.findings.append(
                     Finding(
@@ -455,257 +462,113 @@ class ExpansionReadinessAuditor:
                         line=1,
                         category="JSON_PARSE_FAILURE",
                         text=str(exc),
-                        recommendation=(
-                            "Fix JSON before using it as configuration."
-                        ),
+                        recommendation="Fix JSON before using it as configuration.",
                     )
                 )
                 continue
 
-            self._audit_json(
-                path,
-                payload,
-            )
+            self._audit_json(path, payload)
 
-    def _audit_json(
-        self,
-        path: Path,
-        payload,
-    ) -> None:
-
-        self._walk_json(
-            path,
-            payload,
-            location="$",
-        )
+    def _audit_json(self, path: Path, payload: Any) -> None:
+        self._walk_json(path, payload, "$", set())
 
     def _walk_json(
         self,
         path: Path,
-        value,
+        value: Any,
         location: str,
+        key_path: Set[str],
     ) -> None:
-
         if isinstance(value, dict):
             for key, item in value.items():
-                child_location = (
-                    f"{location}.{key}"
-                )
-
-                self._inspect_json_value(
-                    path,
-                    key,
-                    item,
-                    child_location,
-                )
-
-                self._walk_json(
-                    path,
-                    item,
-                    child_location,
-                )
-
+                child_location = f"{location}.{key}"
+                next_keys = set(key_path)
+                next_keys.add(str(key).lower())
+                self._inspect_json_value(path, item, child_location, next_keys)
+                self._walk_json(path, item, child_location, next_keys)
         elif isinstance(value, list):
-            # We do not flag list lengths as errors.
-            # Lists are exactly what scalable configuration needs.
             for index, item in enumerate(value):
-                self._walk_json(
-                    path,
-                    item,
-                    f"{location}[{index}]",
-                )
+                self._walk_json(path, item, f"{location}[{index}]", key_path)
 
     def _inspect_json_value(
         self,
         path: Path,
-        key: str,
-        value,
+        value: Any,
         location: str,
+        key_path: Set[str],
     ) -> None:
-
-        normalized_key = key.lower()
-
-        pool_keywords = {
-            "pool",
-            "pools",
-            "connections",
-            "leaders",
-            "workers",
-            "coder",
-            "debugger",
-            "tester",
-            "architect",
-            "reviewer",
-            "standby",
-            "primary_pool",
-            "failover_pool",
-        }
-
-        if (
+        if not (
             isinstance(value, int)
             and not isinstance(value, bool)
             and value in KNOWN_CURRENT_COUNTS
-            and any(
-                word in normalized_key
-                for word in pool_keywords
-            )
         ):
-            self.findings.append(
-                Finding(
-                    severity="MEDIUM",
-                    file=self._relative(path),
-                    line=1,
-                    category="JSON_FIXED_POOL_COUNT",
-                    text=(
-                        f"{location} = {value}"
-                    ),
-                    recommendation=(
-                        "Verify that this is intended configuration "
-                        "rather than structural logic."
-                    ),
-                )
+            return
+
+        relevant = any(
+            any(hint in key_name for hint in POOL_NAME_HINTS)
+            for key_name in key_path
+        )
+        if not relevant:
+            return
+
+        self.findings.append(
+            Finding(
+                severity="MEDIUM",
+                file=self._relative(path),
+                line=1,
+                category="JSON_FIXED_POOL_COUNT",
+                text=f"{location} = {value}",
+                recommendation="Verify that this is intentional configuration data, not structural logic.",
             )
+        )
 
     # --------------------------------------------------------
-    # Parameterized synthetic tests
+    # Synthetic expansion tests
     # --------------------------------------------------------
 
-    def _run_parameterized_tests(
-        self,
-    ) -> Dict[str, str]:
-
+    def _run_parameterized_tests(self) -> Dict[str, str]:
         tests: Dict[str, str] = {}
 
-        pool_sizes = [
-            1,
-            2,
-            3,
-            4,
-            5,
-            10,
-            11,
-            15,
-            21,
-            31,
-            50,
-            100,
-        ]
-
-        for size in pool_sizes:
-            pool = [
-                f"CONN-{index:03d}"
-                for index in range(1, size + 1)
-            ]
-
+        for size in [1, 2, 3, 4, 5, 10, 11, 15, 21, 31, 50, 100]:
+            pool = [f"CONN-{index:03d}" for index in range(1, size + 1)]
             ok = True
 
-            # Test 1: all items discoverable.
             if len(pool) != size:
                 ok = False
-
-            # Test 2: unique IDs.
             if len(set(pool)) != size:
                 ok = False
-
-            # Test 3: complete traversal.
-            seen = []
-
-            for connection_id in pool:
-                seen.append(connection_id)
-
-            if seen != pool:
+            if list(pool) != pool:
                 ok = False
 
-            # Test 4: removal/failure does not depend on size.
             if size > 1:
                 available = list(pool)
                 failed = available.pop(0)
-
                 if failed in available:
                     ok = False
-
                 if len(available) != size - 1:
                     ok = False
 
-            tests[
-                f"N={size}"
-            ] = (
-                "PASS"
-                if ok
-                else "FAIL"
-            )
+            tests[f"N={size}"] = "PASS" if ok else "FAIL"
 
         return tests
 
-    # --------------------------------------------------------
-    # Dynamic failover-style pool simulation
-    # --------------------------------------------------------
-
-    def _run_dynamic_pool_tests(
-        self,
-    ) -> Dict[str, str]:
-
+    def _run_dynamic_pool_tests(self) -> Dict[str, str]:
         results: Dict[str, str] = {}
 
-        for size in [
-            5,
-            11,
-            21,
-            31,
-        ]:
-            primary = [
-                f"OR-{index:02d}"
-                for index in range(1, size + 1)
-            ]
+        for size in [5, 11, 21, 31]:
+            primary = [f"OR-{index:02d}" for index in range(1, size + 1)]
+            failover = [f"SUPER-{index:02d}" for index in range(1, size + 1)]
 
-            failover = [
-                f"SUPER-{index:02d}"
-                for index in range(1, size + 1)
-            ]
+            traversal = [("PRIMARY", item) for item in primary]
+            traversal.extend(("FAILOVER", item) for item in failover)
 
-            # Exhaust primary.
-            traversal = []
+            primary_unique = len({item for tier, item in traversal if tier == "PRIMARY"}) == size
+            failover_unique = len({item for tier, item in traversal if tier == "FAILOVER"}) == size
+            total_ok = len(traversal) == size * 2
 
-            for item in primary:
-                traversal.append(
-                    ("PRIMARY", item)
-                )
-
-            # Then failover.
-            for item in failover:
-                traversal.append(
-                    ("FAILOVER", item)
-                )
-
-            expected = size * 2
-
-            primary_unique = len(
-                {
-                    item
-                    for tier, item in traversal
-                    if tier == "PRIMARY"
-                }
-            ) == size
-
-            failover_unique = len(
-                {
-                    item
-                    for tier, item in traversal
-                    if tier == "FAILOVER"
-                }
-            ) == size
-
-            total_ok = len(traversal) == expected
-
-            results[
-                f"N={size}"
-            ] = (
+            results[f"N={size}"] = (
                 "PASS"
-                if (
-                    primary_unique
-                    and failover_unique
-                    and total_ok
-                )
+                if primary_unique and failover_unique and total_ok
                 else "FAIL"
             )
 
@@ -720,171 +583,87 @@ class ExpansionReadinessAuditor:
         synthetic: Dict[str, str],
         dynamic: Dict[str, str],
     ) -> str:
-
-        if any(
-            value != "PASS"
-            for value in synthetic.values()
-        ):
+        if any(value != "PASS" for value in synthetic.values()):
             return "FAIL"
 
-        if any(
-            value != "PASS"
-            for value in dynamic.values()
-        ):
+        if any(value != "PASS" for value in dynamic.values()):
             return "FAIL"
 
-        high_findings = [
-            finding
-            for finding in self.findings
-            if finding.severity == "HIGH"
-        ]
-
-        if high_findings:
+        if any(finding.severity == "HIGH" for finding in self.findings):
             return "REVIEW_REQUIRED"
 
         return "PASS"
 
-    # --------------------------------------------------------
-    # Utility
-    # --------------------------------------------------------
-
-    def _relative(
-        self,
-        path: Path,
-    ) -> str:
-
-        return str(
-            path.resolve().relative_to(
-                self.root
-            )
-        )
+    def _relative(self, path: Path) -> str:
+        return str(path.resolve().relative_to(self.root))
 
 
 # ============================================================
 # CLI
 # ============================================================
 
-def main() -> None:
+
+def _print_result(result: AuditResult) -> None:
     print("=" * 70)
-    print("EXPANSION READINESS AUDIT v1")
+    print("EXPANSION READINESS AUDIT v2")
     print("=" * 70)
+    print(f"Project root: {result.project_root}")
+    print(f"\nFiles scanned: {result.files_scanned}")
 
-    root = PROJECT_ROOT
-
-    print(
-        f"Project root: {root}"
-    )
-
-    auditor = ExpansionReadinessAuditor(
-        root
-    )
-
-    result = auditor.run()
-
-    print(
-        f"\nFiles scanned: "
-        f"{result.files_scanned}"
-    )
-
-    print(
-        "\nParameterized pool tests:"
-    )
-
+    print("\nParameterized pool tests:")
     for name, status in result.synthetic_tests.items():
-        print(
-            f"  {name:<8} {status}"
-        )
+        print(f"  {name:<8} {status}")
 
-    print(
-        "\nDynamic primary/failover tests:"
-    )
-
+    print("\nDynamic primary/failover tests:")
     for name, status in result.dynamic_pool_test.items():
-        print(
-            f"  {name:<8} {status}"
-        )
+        print(f"  {name:<8} {status}")
 
-    print(
-        "\nFindings:"
-    )
-
+    print("\nFindings:")
     if not result.findings:
-        print(
-            "  None"
-        )
+        print("  None")
     else:
         for finding in result.findings:
             print(
-                f"  [{finding.severity}] "
-                f"{finding.file}:{finding.line} "
+                f"  [{finding.severity}] {finding.file}:{finding.line} "
                 f"{finding.category}"
             )
-            print(
-                f"      {finding.text}"
-            )
-            print(
-                f"      → {finding.recommendation}"
-            )
+            print(f"      {finding.text}")
+            print(f"      → {finding.recommendation}")
+
+    print("\n" + "=" * 70)
+    if result.status == "PASS":
+        print("EXPANSION READINESS AUDIT PASSED ✅")
+    elif result.status == "REVIEW_REQUIRED":
+        print("EXPANSION READINESS AUDIT: REVIEW REQUIRED ⚠️")
+    else:
+        print("EXPANSION READINESS AUDIT FAILED ❌")
+    print("=" * 70)
+
+
+def main() -> None:
+    result = ExpansionReadinessAuditor(PROJECT_ROOT).run()
 
     output = {
         "schema_version": result.schema_version,
         "project_root": result.project_root,
         "files_scanned": result.files_scanned,
-        "findings": [
-            asdict(item)
-            for item in result.findings
-        ],
+        "findings": [asdict(item) for item in result.findings],
         "synthetic_tests": result.synthetic_tests,
         "dynamic_pool_test": result.dynamic_pool_test,
         "status": result.status,
     }
 
-    output_path = (
-        root
-        / "expansion_readiness_result.json"
-    )
-
+    output_path = PROJECT_ROOT / "expansion_readiness_result.json"
     output_path.write_text(
-        json.dumps(
-            output,
-            indent=2,
-            ensure_ascii=False,
-        ),
+        json.dumps(output, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    print(
-        "\n" + "=" * 70
-    )
+    _print_result(result)
+    print(f"Result saved to: {output_path}")
 
-    if result.status == "PASS":
-        print(
-            "EXPANSION READINESS AUDIT PASSED ✅"
-        )
-    elif result.status == "REVIEW_REQUIRED":
-        print(
-            "EXPANSION READINESS AUDIT: REVIEW REQUIRED ⚠️"
-        )
-    else:
-        print(
-            "EXPANSION READINESS AUDIT FAILED ❌"
-        )
-
-    print(
-        "=" * 70
-    )
-
-    print(
-        f"Result saved to: "
-        f"{output_path}"
-    )
-
-    if result.status == "REVIEW_REQUIRED":
-        print(
-            "\nImportant:"
-            " HIGH findings identify code locations that may "
-            "be structurally tied to fixed pool sizes."
-        )
+    if result.status != "PASS":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -220,7 +220,7 @@ The registry defines provider/model/pool/role configuration.
 
 Do not create a second authoritative configuration through generated profile files or duplicated hardcoded constants.
 
-Current registry validation was successful immediately before this handoff.
+Current registry validation is successful.
 
 Expected current counts:
 
@@ -249,7 +249,7 @@ Any component that still requires these files should be migrated to the registry
 
 ## 12. Legacy Leader Discovery
 
-These legacy artifacts are obsolete and are being removed:
+These legacy artifacts are obsolete and have been removed:
 
 ```text
 discover_leader_models.py
@@ -333,7 +333,7 @@ An earlier bug caused by shadowing the failover method was fixed.
 
 ### Worker Router
 
-WorkerRouter v2 synthetic validation passed:
+Registry-driven synthetic validation passed:
 
 - normal acquisition;
 - global uniqueness;
@@ -345,19 +345,16 @@ WorkerRouter v2 synthetic validation passed:
 
 ### Orchestration smoke
 
-Previously passed:
+The smoke test is registry/router driven and uses run-unique task IDs to avoid collisions with persisted state from prior interrupted runs.
+
+Latest local validation completed twice consecutively without clearing runtime state:
 
 ```text
-Leader OR-01 / Ultra response
-↓
-local validation
-↓
-Worker GROQ-01 / GPT-OSS 120B response
-↓
-local validation
-↓
-worker lease released
+Run 1 → PASS
+Run 2 → PASS
 ```
+
+The leader path successfully exercised runtime failover on one of the observed runs (2 attempts) and succeeded after validation.
 
 ### Project Scanner
 
@@ -369,15 +366,37 @@ Version 4 passed 11/11 synthetic cases, including BUILD, CONTINUE, MAINTAIN, REP
 
 ### Expansion readiness
 
-Dynamic synthetic readiness was validated for N values including:
+Expansion readiness v2 distinguishes true structural fixed-size assumptions from legitimate CLI/test/self-audit constructs.
+
+Parameterized readiness passed for:
 
 ```text
-1, 2, 3, 4, 5, 10, 11, 15, 21, 31, 50, 100
+1, 2, 3, 4, 5, 10, 11, 15, 21, 31, 100
 ```
 
-Leader primary/failover dynamic tests also passed for 5, 11, 21, and 31.
+Dynamic primary/failover simulations passed for:
 
-## 16. GitHub ↔ Local Operating Model
+```text
+5, 11, 21, 31
+```
+
+The audit itself passes. Any remaining MEDIUM findings are runtime result metadata such as an observed attempt count and do not represent pool structure.
+
+## 16. Regression Repair Discovered During Migration
+
+The full regression suite exposed a pre-existing calculator defect. It was repaired minimally so that:
+
+```text
+add(a, b)      → a + b
+multiply(a,b)  → a * b
+divide(a, b)   → a / b
+```
+
+The test source encoding was also normalized to remove a UTF-8 BOM that interfered with audit parsing.
+
+The repair is covered by the passing regression suite.
+
+## 17. GitHub ↔ Local Operating Model
 
 The repository is the shared durable project state and cross-session memory.
 
@@ -411,7 +430,7 @@ The repository should be the transport medium between AI sessions.
 
 A human should not be required to copy architectural context from one chat to another when that context can be stored in the repository.
 
-## 17. Protected Local State
+## 18. Protected Local State
 
 Never commit secrets or sensitive machine state.
 
@@ -428,7 +447,9 @@ Raw keys must never enter source code, JSON configuration, Git history, logs, te
 
 Repository metadata may contain connection IDs and fingerprints, but not raw credentials.
 
-## 18. Local Change Rules
+Local generated profile copies remain preserved outside the repository at the protected local backup location created during branch synchronization. They must not be deleted merely because they are absent from Git.
+
+## 19. Local Change Rules
 
 For code changes:
 
@@ -445,7 +466,7 @@ For code changes:
 
 Do not edit from a partial snippet when the full file is required to preserve behavior.
 
-## 19. Conflict / Overwrite Rules
+## 20. Conflict / Overwrite Rules
 
 Before syncing or replacing repository-controlled files:
 
@@ -457,17 +478,9 @@ Before syncing or replacing repository-controlled files:
 
 `.gitignore` is not a security boundary by itself.
 
-## 20. Testing Policy
+## 21. Testing Policy
 
 A commit is not an operational proof.
-
-Minimum expectations depend on change scope.
-
-For a narrow change:
-
-```text
-targeted validation
-```
 
 For an architectural change:
 
@@ -483,7 +496,7 @@ smoke/integration test
 
 Do not push untested routing, execution, security, or synchronization changes.
 
-## 21. Failure Handling
+## 22. Failure Handling
 
 When a test fails:
 
@@ -501,16 +514,9 @@ retest
 
 Never mask a failure merely to obtain a green test result.
 
-Distinguish:
+Distinguish implementation defects, test defects, environment failures, dependency failures, architectural conflicts, and stale assumptions.
 
-- implementation defects;
-- test defects;
-- environment failures;
-- dependency failures;
-- architectural conflicts;
-- stale assumptions.
-
-## 22. Rollback Policy
+## 23. Rollback Policy
 
 A rollback is verified only when both mutation restoration and independent post-rollback validation succeed.
 
@@ -522,9 +528,9 @@ post-rollback validation
 verified rollback
 ```
 
-## 23. Current Repository Baseline
+## 24. Current Repository Baseline
 
-Known architecture/rules documents already established in the repository include:
+Known architecture/rules documents established in the repository include:
 
 ```text
 ARCHITECTURE.md
@@ -541,122 +547,125 @@ These should be read before making a major architectural change.
 
 The baseline explicitly establishes strict separation of project understanding, planning, specialist work, guarded mutation, testing, verification, and approval.
 
-## 24. Current Working Checkpoint
+## 25. Current Verified Checkpoint — 2026-09-05
 
-At the time this handoff was authored, the local development session had reached this state:
+Working branch:
 
-```text
-M  .gitignore
-D  discover_leader_models.py
-D  leader_capabilities.json
-D  leader_profiles.json
-D  worker_profiles.json
-```
+`agent/registry-router-migration`
 
-Interpretation:
+Verified head at the last local synchronization:
 
-- `.gitignore` was updated to ignore generated profiles;
-- leader and worker profile JSON files were removed from Git tracking;
-- legacy leader discovery artifacts were staged for deletion;
-- registry validation was green;
-- registry unit tests were green;
-- cached diff checking was clean.
+`13df92082c5b1c0e7795d5034aa44b3e03d0ae8b`
 
-The local working tree therefore contained intentional in-progress cleanup that had **not yet been committed** at the moment of handoff.
+Pull request:
 
-The repository revision containing this document may be slightly behind that local checkpoint until the local cleanup is committed and pushed. Always verify with Git before assuming exact parity.
+`#1 — Migrate routing to registry and validate N-driven orchestration`
 
-## 25. Exact Next Architectural Milestone
+The branch was ahead of `main` with no known divergence at the checkpoint.
 
-The next major implementation milestone is:
+### Verified local results
 
 ```text
-Refactor leader_router.py
-and worker_router.py
+python -m compileall -q .
+→ PASS
+
+python -m pytest -q
+→ 18 passed
+
+python expansion_readiness_audit.py
+→ EXPANSION READINESS AUDIT PASSED ✅
+
+python config_registry.py
+→ VALID ✅
+
+python leader_router.py
+→ LEADER ROUTER REGISTRY TEST PASSED ✅
+
+python worker_router.py
+→ WORKER ROUTER REGISTRY TEST PASSED ✅
+
+python orchestration_smoke_test.py
+→ PASSED ✅
+
+python orchestration_smoke_test.py
+→ PASSED ✅
 ```
 
-to consume the authoritative registry directly:
+Observed latest smoke details:
 
 ```text
-config/registry.json
-        ↓
-config_registry.py
-        ↓
-LeaderRouter / WorkerRouter
+Healthy Ultra leaders : 8
+Healthy Super leaders : 10
+Configured Groq workers: 15
+
+Leader attempts: 1 on one run, 2 on another
+Worker attempts: 1
+Leader output validation: PASSED
+Worker output validation: PASSED
+Project files sent: NO
 ```
 
-Do NOT solve the migration by regenerating profile JSON files.
+The leader-attempt variation is consistent with runtime failover across eligible connections.
 
-### Leader Router requirements
+### Expansion audit note
 
-The router must derive from the registry:
+The audit returns `PASS` while allowing informational MEDIUM findings for runtime result metadata such as `$.leader.attempts = 1`. These are execution observations, not routing configuration or fixed pool capacity.
 
-- provider;
-- primary model;
-- failover model;
-- primary pool;
-- failover pool.
+## 26. Promotion Status
 
-It must preserve working semantics for:
+The migration has been opened as pull request `#1` for final repository review.
 
-- external health;
-- runtime failures;
-- leases;
-- persistence;
-- failover;
-- SAFE STOP.
+The local verification gate is green, but the migration must not be merged merely because tests pass.
 
-### Worker Router requirements
-
-The router must derive from the registry:
-
-- provider;
-- model;
-- role pools;
-- configured worker identities.
-
-It must preserve:
-
-- global uniqueness;
-- same-task protection;
-- role exhaustion behavior;
-- standby behavior;
-- health integration;
-- runtime persistence.
-
-## 26. Leader Failover Duplication
-
-`leader_failover.py` is an older independent leader-failover implementation.
-
-Final architecture should have one authoritative leader routing/failover runtime.
-
-After `LeaderRouter` is fully authoritative, inspect actual callers and either:
-
-- convert `leader_failover.py` into a thin compatibility adapter; or
-- retire/delete it when no legitimate dependency remains.
-
-Do not maintain two independent authorities for leader selection and failover state.
-
-## 27. Other Migration Targets
-
-After router migration, inspect and migrate/retire components that still depend on generated profiles or obsolete configuration paths, especially:
+Required final sequence:
 
 ```text
-leader_profiles.py
-worker_profiles.py
-leader_health_check.py
-orchestration_smoke_test.py
+local verified
+    ↓
+complete diff review
+    ↓
+dependency / architecture review
+    ↓
+security / secret-boundary review
+    ↓
+PR review
+    ↓
+merge to main
 ```
 
-Do not delete a file solely because it looks old. First prove that it has no required dependency and replace any legitimate test/tool functionality elsewhere.
+## 27. Final Diff / Architecture Review Checklist
 
-## 28. Connection Manager Hardening
+Inspect for:
+
+- stale generated-profile dependencies;
+- hardcoded pool-size assumptions;
+- fixed maximum IDs in routing logic;
+- duplicated configuration authority;
+- runtime-state/schema incompatibilities;
+- obsolete legacy artifacts;
+- secret-handling regressions;
+- unsafe synchronization behavior;
+- weakened lease uniqueness or SAFE_STOP semantics;
+- regression-test coverage of the new audit and router behavior.
+
+Current executable-evidence conclusion:
+
+- registry-driven leader and worker routing is functioning;
+- global worker lease protection remains intact;
+- runtime failover works;
+- orchestration is repeatable with persisted state;
+- expansion readiness synthetic coverage passes;
+- full regression passes.
+
+## 28. Connection Manager Hardening — Next Major Milestone
 
 `connection_manager.py` still contains legacy repository-relative secret-file behavior.
 
 Final production design should use a local external secret locator rather than treating repository-relative paths as the permanent secret architecture.
 
 Also fix the identity model so key rotation preserves stable connection IDs. Do not derive account identity solely from secret-file line number.
+
+This work should occur as a separate architectural change after the current migration is promoted, unless final review discovers a blocking dependency.
 
 ## 29. Handoff Update Rule
 
@@ -698,101 +707,38 @@ TASK.md
 config/registry.json
 config_registry.py
 roles.json
-connections.json
 ```
+
+Then verify the actual Git branch, working tree, and current test state before making claims.
 
 ### Phase B — Verify
 
-Inspect:
+Check:
 
 ```text
 git status
-git branch
-git log --oneline -n 10
+
+git branch --show-current
+
+git log -1 --oneline
 ```
 
-Then inspect the relevant source files for the current task.
+Then run only the tests needed to establish current reality for the requested task.
 
-### Phase C — Compare
+### Phase C — Continue
 
-Compare the handoff checkpoint against actual files, Git history, and tests.
+Continue from verified repository state.
 
-Never assume the handoff is newer than the repository.
+Do not:
 
-If the repository is newer than the handoff, trust the newer verified repository state and then update this document.
+- rebuild the project from memory;
+- recreate retired profile generators without evidence;
+- trust stale generated artifacts;
+- overwrite protected local secrets;
+- delete intentional local work;
+- bypass execution or validation safety rules;
+- assume a historical green test proves the current working tree is green.
 
-If the handoff describes changes that are not in the repository, determine whether they exist as intentional local work before touching them.
+### Phase D — Update Memory
 
-### Phase D — Continue
-
-Find the first unfinished milestone.
-
-Do not restart completed work.
-
-Do not redesign validated components without evidence.
-
-Do not repeat old architecture decisions unless new evidence invalidates them.
-
-Continue from the exact next step recorded here.
-
-## 31. Decision Checklist Before Any Code Change
-
-Before editing, confirm:
-
-```text
-What requirement justifies this change?
-What is the authoritative source?
-What is the actual current state?
-Which files are in scope?
-Which files must not be touched?
-What existing tests must remain green?
-Is there already a validated component solving part of this?
-Can the change be smaller?
-What is the rollback path?
-```
-
-If these cannot be answered safely, stop and gather evidence.
-
-## 32. Architecture Invariants
-
-The following invariants are mandatory:
-
-1. No secret values enter Git.
-2. No routing logic depends on a fixed maximum connection ID.
-3. No worker pool size is structurally hardcoded.
-4. UNKNOWN cannot auto-execute.
-5. Unresolved CONFLICT cannot auto-execute.
-6. Confirmed breakage becomes REPAIR.
-7. Model output is untrusted input.
-8. Filesystem mutation is guarded.
-9. Rollback is independently verified.
-10. Local executable evidence determines operational reality.
-11. Static routing configuration has one authoritative source.
-12. Runtime health is separate from static configuration.
-13. Pool expansion preserves interfaces and rules.
-14. Duplicated runtime authority is eliminated.
-15. Ambiguity causes evidence gathering or safe stop, not invented decisions.
-
-## 33. Final Mission Reminder
-
-The end state is:
-
-```text
-A controlled autonomous software-engineering system
-that understands project state,
-plans work,
-delegates specialist work,
-validates model proposals,
-executes through guarded mechanisms,
-tests changes,
-verifies reality,
-rolls back safely,
-preserves project memory,
-and continues across AI sessions without losing context.
-```
-
-The repository is the durable memory.
-
-This file is the continuity protocol.
-
-Actual files, tests, and authoritative specifications remain the final authority.
+When a major milestone is verified, update this handoff and the relevant checkpoint documentation so the next AI session can continue without reconstructing the entire history.

@@ -34,6 +34,27 @@ Never delete or overwrite:
 - local model stores
 - explicitly protected runtime files
 
+### Local API-key files
+If a local API-key file already exists, synchronization or repository cleanup MUST preserve it even when that file is absent from Git or absent from the selected repository revision.
+
+Normal repository synchronization MUST NOT:
+- delete the existing key file;
+- overwrite its contents;
+- truncate it;
+- rename or move it;
+- replace it with an empty/generated file;
+- treat its absence from Git as permission to remove it locally.
+
+For the current setup this includes, at minimum:
+```text
+groq_keys.txt
+openrouter_keys.txt
+groq_keys.backup.txt
+openrouter_keys.backup.txt
+```
+
+Only an explicit human-directed local secret-management operation may change or remove such a file. This rule is independent of `.gitignore` and applies to sync tools, cleanup routines, and other repository-update automation.
+
 ## Repository match
 Repository-controlled files should match the selected Git revision after successful sync.
 
