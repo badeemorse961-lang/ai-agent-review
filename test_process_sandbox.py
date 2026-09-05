@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -52,9 +53,22 @@ def test_environment_is_secret_minimized(tmp_path: Path) -> None:
         "env.py",
         "import os\nprint(os.getenv('API_KEY'))\nprint(os.getenv('AGENT_TEST'))\n",
     )
-    result = sandbox.run([str(Path(sys.executable).resolve()), script.name], env={"AGENT_TEST": "ok"})
+    result = sandbox.run(
+        [str(Path(sys.executable).resolve()), script.name],
+        env={"AGENT_TEST": "ok"},
+    )
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["None", "ok"]
+
+
+def test_environment_cannot_override_pythonpath(tmp_path: Path) -> None:
+    sandbox = make_sandbox(tmp_path)
+    script = write_script(sandbox, "hello.py", "print('x')\n")
+    with pytest.raises(ProcessSandboxSafetyStop):
+        sandbox.run(
+            [str(Path(sys.executable).resolve()), script.name],
+            env={"PYTHONPATH": str(tmp_path)},
+        )
 
 
 def test_external_access_must_be_declared(tmp_path: Path) -> None:
@@ -75,6 +89,38 @@ def test_workspace_target_cannot_escape(tmp_path: Path) -> None:
             [str(Path(sys.executable).resolve()), script.name],
             target_paths=["../outside.py"],
         )
+
+
+def test_command_path_cannot_escape_without_external_read_authorization(tmp_path: Path) -> None:
+    sandbox = make_sandbox(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+    with pytest.raises(ProcessSandboxSafetyStop):
+        sandbox.run([str(Path(sys.executable).resolve()), str(outside)])
+
+
+def test_command_path_can_use_declared_external_read(tmp_path: Path) -> None:
+    external = tmp_path / "assets"
+    external.mkdir()
+    script = external / "asset.py"
+    script.write_text("print('external-ok')\n", encoding="utf-8")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = Path(sys.executable).resolve()
+    policy = WorkspaceResourcePolicy(
+        workspace,
+        allowed_tool_paths=[executable],
+        external_resources=[{"path": str(external), "access": "read", "label": "assets"}],
+    )
+    sandbox = ProcessSandbox(policy, timeout_seconds=2)
+
+    result = sandbox.run(
+        [str(executable), str(script)],
+        external_reads=[str(script)],
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "external-ok"
 
 
 def test_timeout_returns_bounded_failure(tmp_path: Path) -> None:
