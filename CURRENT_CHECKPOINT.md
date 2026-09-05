@@ -6,7 +6,7 @@
 
 Latest merged commit:
 
-`c02ac89885f5cc223ebdb19700c760da03212708`
+`49d23b796ee7b440ddb005a3acbd8ec3d81ad136`
 
 This baseline includes:
 
@@ -20,6 +20,8 @@ This baseline includes:
 - worker execution boundary;
 - independent validation;
 - autonomous internal execution authorization;
+- workspace/tool/external-resource authority separation;
+- process sandbox boundary with explicit tool allowlisting and bounded execution;
 - existing Execution Gate for checkpoint → apply → tests → verification → approve/rollback.
 
 ## Autonomous execution contract
@@ -49,16 +51,6 @@ Execution Gate
 
 Internal authorization is a machine-checked policy boundary. It is not a human approval prompt.
 
-## Current hardening milestone
-
-Feature branch:
-
-`agent/resource-and-process-boundary`
-
-Purpose:
-
-Add the missing distinction between project workspace authority, tool execution authority, and external resource authority, and add a stronger process-launch boundary without falsely claiming complete OS filesystem isolation.
-
 ## Resource authority
 
 `WorkspaceResourcePolicy` establishes three explicit domains:
@@ -83,9 +75,9 @@ An external design/assets directory on another path or drive requires an explici
 - new process group/session;
 - bounded timeout;
 - bounded stdout/stderr;
-- minimized child environment with secret-bearing variables excluded by default.
-
-The sandbox also checks declared workspace targets and declared external reads/writes through `WorkspaceResourcePolicy` before launch.
+- minimized child environment with secret-bearing variables excluded by default;
+- explicit validation of command path arguments against workspace/external-resource authority;
+- descendant termination on timeout where the host platform supports the implemented process-tree mechanism.
 
 ## OS isolation truthfulness
 
@@ -116,21 +108,17 @@ Other protected local state includes `.env`, machine credentials, local runtime 
 
 Never use destructive repository synchronization that can erase protected local state, including blind `git clean -fd` or `git reset --hard`.
 
-## Required test gate for this milestone
+## Validation record
 
-The feature branch must be locally validated only after the complete grouped change set is present.
-
-Required checks:
+The resource/process hardening branch was locally validated after the complete grouped implementation:
 
 ```text
-python -m compileall -q .
-python -m pytest -q test_sandbox_policy.py
-python -m pytest -q test_process_sandbox.py
-python -m pytest -q test_worker_execution_process_sandbox.py
-python -m pytest -q
+python -m compileall -q .       PASS
+6 sandbox-policy tests         PASS
+11 process-sandbox tests        PASS
+3 worker-sandbox tests         PASS
+106 full-suite tests            PASS
 ```
-
-The full suite must remain green before promotion.
 
 ## Promotion sequence
 
@@ -145,5 +133,7 @@ security / secret-boundary review
     ↓
 merge to main
 ```
+
+The hardening branch has been merged to `main` as commit `49d23b796ee7b440ddb005a3acbd8ec3d81ad136`.
 
 No local secret files are part of the GitHub promotion path.
