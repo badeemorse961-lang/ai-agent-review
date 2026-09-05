@@ -127,34 +127,39 @@ class ProcessSandbox:
         else:
             start_new_session = True
 
+        process = None
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 list(normalized_command),
                 cwd=str(cwd),
                 env=child_env,
                 shell=False,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.timeout_seconds,
-                check=False,
                 creationflags=creationflags,
                 start_new_session=start_new_session,
             )
+            stdout, stderr = process.communicate(timeout=self.timeout_seconds)
             return self._result(
-                completed.returncode,
-                completed.stdout,
-                completed.stderr,
+                process.returncode,
+                stdout,
+                stderr,
                 timed_out=False,
                 isolated_process_group=True,
             )
         except subprocess.TimeoutExpired as exc:
-            self._terminate_timeout_process(command=normalized_command)
+            if process is not None:
+                self._terminate_process_tree(process)
+                stdout, stderr = process.communicate()
+            else:
+                stdout, stderr = self._to_text(exc.stdout), self._to_text(exc.stderr)
             return self._result(
                 -1,
-                self._to_text(exc.stdout),
-                self._to_text(exc.stderr) + "\nPROCESS TIMEOUT",
+                stdout,
+                self._to_text(stderr) + "\nPROCESS TIMEOUT",
                 timed_out=True,
                 isolated_process_group=True,
             )
@@ -169,7 +174,11 @@ class ProcessSandbox:
         args = tuple(str(item) for item in command)
         if not args or any(not item.strip() for item in args):
             raise ProcessSandboxSafetyStop("Command and arguments must be non-empty")
-        if any(item.lower() in {"cmd", "/c", "powershell", "pwsh", "bash", "sh", "-c", "-m"} for item in args):
+        if any(
+            item.lower()
+            in {"cmd", "/c", "powershell", "pwsh", "bash", "sh", "-c", "-m"}
+            for item in args
+        ):
             raise ProcessSandboxSafetyStop("Shell wrappers and inline launchers are forbidden")
         return args
 
@@ -198,9 +207,21 @@ class ProcessSandbox:
         }
         for key, value in requested.items():
             upper = str(key).upper()
-            if upper in {"PATH", "PATHEXT", "PYTHONPATH", "VIRTUAL_ENV", "HOME", "USERPROFILE", "TEMP", "TMP", "SYSTEMROOT", "WINDIR", "LANG", "LC_ALL"} or upper.startswith("AGENT_"):
+            if upper in self._DEFAULT_ENV_ALLOWLIST or upper.startswith("AGENT_"):
                 base[str(key)] = str(value)
         return base
+
+    def _terminate_process_tree(self, process: subprocess.Popen[str]) -> None:
+        if os.name == "nt":
+            process.kill()
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except OSError:
+            try:
+                process.kill()
+            except OSError:
+                pass
 
     def _result(
         self,
@@ -222,21 +243,6 @@ class ProcessSandbox:
             isolated_process_group=isolated_process_group,
             containment_mode=self.containment_mode,
         )
-
-    def _terminate_timeout_process(self, *, command: Sequence[str]) -> None:
-        # subprocess.run does not expose the timed-out PID. The bounded launch
-        # still prevents shell indirection; a stronger backend should replace
-        # this hook when strict descendant termination is required.
-        if os.name != "nt":
-            try:
-                os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
-            except OSError:
-                pass
-        else:
-            # CREATE_NEW_PROCESS_GROUP is the portable Windows option available
-            # without third-party bindings; strict process-tree termination is
-            # intentionally left to a future native backend.
-            _ = command
 
     def _bound(self, text: str) -> tuple[str, bool]:
         if len(text) <= self.max_output_chars:
