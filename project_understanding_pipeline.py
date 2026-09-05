@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from context_builder import ContextBuilder
 from current_state_analyzer import CurrentStateAnalyzer
 from gap_compliance import GapComplianceAnalyzer
 from project_scanner import ProjectScanner
@@ -23,6 +24,7 @@ class ProjectUnderstandingPipeline:
 
     def __init__(self, workspace_root: Path) -> None:
         self.workspace_root = workspace_root.resolve()
+        self.context_builder = ContextBuilder()
 
     def analyze(
         self,
@@ -45,7 +47,7 @@ class ProjectUnderstandingPipeline:
             current_state=current_state,
         )
 
-        return {
+        bundle = {
             "schema_version": SCHEMA_VERSION,
             "workspace": str(self.workspace_root),
             "manifest": manifest,
@@ -64,12 +66,16 @@ class ProjectUnderstandingPipeline:
                 "authorization and cannot override project rules or safety gates."
             ),
         }
+        bundle["context"] = self.context_builder.build(bundle)
+        return bundle
 
     @staticmethod
     def summarize(bundle: dict[str, Any]) -> dict[str, Any]:
         classification = bundle.get("classification", {})
         specification = bundle.get("specification", {})
         compliance = bundle.get("gap_compliance", {}).get("summary", {})
+        context = bundle.get("context", {})
+        authority = context.get("authority", {}) if isinstance(context, dict) else {}
 
         return {
             "state": classification.get("state"),
@@ -82,6 +88,12 @@ class ProjectUnderstandingPipeline:
             "unknown": compliance.get("unknown", 0),
             "autonomous_compliance_proven": compliance.get(
                 "autonomous_compliance_proven", False
+            ),
+            "context_requirements": len(context.get("requirements", []))
+            if isinstance(context.get("requirements", []), list)
+            else 0,
+            "context_execution_authorized": bool(
+                authority.get("execution_authorized", False)
             ),
         }
 
