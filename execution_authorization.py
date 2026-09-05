@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from execution_gate import ExecutionGate, FileChange
 from independent_validation import ValidationVerdict
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class ExecutionAuthorizationError(ValueError):
@@ -20,28 +20,32 @@ class ExecutionAuthorizationSafetyStop(ExecutionAuthorizationError):
 
 @dataclass(frozen=True)
 class AuthorizationRecord:
+    """Auditable internal authorization decision; not a human prompt."""
+
     task_id: str
     worker_id: str
-    approved: bool
+    authorized: bool
     changed_targets: tuple[str, ...]
+    basis: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "task_id": self.task_id,
             "worker_id": self.worker_id,
-            "approved": self.approved,
+            "authorized": self.authorized,
             "changed_targets": list(self.changed_targets),
+            "basis": list(self.basis),
         }
 
 
 class ExecutionAuthorizationBoundary:
     """Bridge independent validation into the repository's existing gate.
 
-    The existing ExecutionGate remains the authoritative checkpoint/apply/test/
-    rollback transaction. This boundary adds the missing promotion rule: mutation
-    cannot start until independent validation, isolated checkpoint evidence, and
-    explicit task-scoped approval all agree on the same targets.
+    Authorization is an internal policy decision, not a request for human
+    confirmation on every step. Once the validated safety prerequisites agree,
+    the boundary creates an auditable authorization record and delegates the
+    actual mutation transaction to the existing ExecutionGate.
     """
 
     def __init__(self, workspace_root: Path) -> None:
@@ -53,7 +57,6 @@ class ExecutionAuthorizationBoundary:
         verdict: ValidationVerdict,
         *,
         checkpoint: Mapping[str, Any],
-        approval: Mapping[str, Any],
         changes: Sequence[FileChange],
     ) -> AuthorizationRecord:
         if not isinstance(verdict, ValidationVerdict) or verdict.passed is not True:
@@ -64,14 +67,6 @@ class ExecutionAuthorizationBoundary:
             raise ExecutionAuthorizationSafetyStop(
                 "Mutation requires an isolated checkpoint attestation"
             )
-        if not isinstance(approval, Mapping) or approval.get("approved") is not True:
-            raise ExecutionAuthorizationSafetyStop(
-                "Mutation requires explicit approval"
-            )
-        if approval.get("task_id") != verdict.task_id:
-            raise ExecutionAuthorizationSafetyStop(
-                "Approval task identity does not match validation verdict"
-            )
 
         target_evidence = verdict.evidence.get("changed_targets")
         if not isinstance(target_evidence, list):
@@ -80,17 +75,24 @@ class ExecutionAuthorizationBoundary:
             )
 
         change_paths = tuple(self._normalize_change_path(change) for change in changes)
-        evidence_paths = tuple(self._normalize_evidence_path(path) for path in target_evidence)
+        evidence_paths = tuple(
+            self._normalize_evidence_path(path) for path in target_evidence
+        )
         if set(change_paths) != set(evidence_paths):
             raise ExecutionAuthorizationSafetyStop(
-                "Approved mutation targets do not exactly match independently validated targets"
+                "Authorized mutation targets do not exactly match independently validated targets"
             )
 
         return AuthorizationRecord(
             task_id=verdict.task_id,
             worker_id=verdict.worker_id,
-            approved=True,
+            authorized=True,
             changed_targets=change_paths,
+            basis=(
+                "independent_validation_passed",
+                "isolated_checkpoint_attested",
+                "mutation_targets_exactly_match_validation_targets",
+            ),
         )
 
     def apply(
@@ -98,13 +100,11 @@ class ExecutionAuthorizationBoundary:
         verdict: ValidationVerdict,
         *,
         checkpoint: Mapping[str, Any],
-        approval: Mapping[str, Any],
         changes: Sequence[FileChange],
     ) -> dict[str, Any]:
         record = self.authorize(
             verdict,
             checkpoint=checkpoint,
-            approval=approval,
             changes=changes,
         )
         transaction = self.gate.execute(changes)
@@ -156,12 +156,10 @@ def authorize_and_apply(
     verdict: ValidationVerdict,
     *,
     checkpoint: Mapping[str, Any],
-    approval: Mapping[str, Any],
     changes: Sequence[FileChange],
 ) -> dict[str, Any]:
     return ExecutionAuthorizationBoundary(workspace_root).apply(
         verdict,
         checkpoint=checkpoint,
-        approval=approval,
         changes=changes,
     )
