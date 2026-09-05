@@ -14,3 +14,6 @@
 12. Portable process containment must not be described as complete OS filesystem isolation.
 13. `strict_os_required` must fail closed until a validated native OS sandbox backend exists.
 14. Secrets and credentials must remain outside source control and must never be exposed in logs.
+15. Terminal Git access is inspection-only; repository/history mutations require a separate explicit control plane.
+16. Git repository/configuration scope overrides must be rejected at the terminal boundary.
+17. Git path arguments must remain within the active workspace when path arguments are accepted by the Git safety policy.
