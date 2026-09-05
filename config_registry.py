@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+
+BASE_DIR = Path(__file__).resolve().parent
+REGISTRY_FILE = BASE_DIR / "config" / "registry.json"
+CONNECTIONS_FILE = BASE_DIR / "connections.json"
+
+
+class RegistryError(Exception):
+    """Raised when the authoritative configuration registry is invalid."""
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise RegistryError(f"Missing configuration file: {path}")
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RegistryError(f"Cannot read JSON: {path}") from exc
+
+    if not isinstance(data, dict):
+        raise RegistryError(f"JSON root must be an object: {path}")
+
+    return data
+
+
+def _unique_strings(values: Any, field: str) -> list[str]:
+    if not isinstance(values, list):
+        raise RegistryError(f"{field} must be a list")
+
+    result: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise RegistryError(f"{field} contains an invalid connection id")
+        if value in seen:
+            raise RegistryError(f"Duplicate connection id in {field}: {value}")
+        seen.add(value)
+        result.append(value)
+
+    return result
+
+
+def load_registry() -> dict[str, Any]:
+    return _load_json(REGISTRY_FILE)
+
+
+def load_connections() -> dict[str, Any]:
+    data = _load_json(CONNECTIONS_FILE)
+    connections = data.get("connections")
+    if not isinstance(connections, dict):
+        raise RegistryError("connections.json must contain a 'connections' object")
+    return data
+
+
+def validate_registry() -> dict[str, Any]:
+    registry = load_registry()
+    connections_data = load_connections()
+    connections = connections_data["connections"]
+
+    architecture = registry.get("architecture")
+    if not isinstance(architecture, dict):
+        raise RegistryError("Registry is missing architecture")
+
+    leader = architecture.get("leader")
+    workers = architecture.get("workers")
+    if not isinstance(leader, dict) or not isinstance(workers, dict):
+        raise RegistryError("Registry must define leader and workers")
+
+    leader_provider = leader.get("provider")
+    worker_provider = workers.get("provider")
+    if not isinstance(leader_provider, str) or not isinstance(worker_provider, str):
+        raise RegistryError("Leader and worker providers must be strings")
+
+    primary_pool = _unique_strings(leader.get("primary_pool"), "leader.primary_pool")
+    failover_pool = _unique_strings(leader.get("failover_pool"), "leader.failover_pool")
+
+    if not primary_pool:
+        raise RegistryError("Leader primary pool is empty")
+    if not failover_pool:
+        raise RegistryError("Leader failover pool is empty")
+
+    if set(primary_pool) != set(failover_pool):
+        raise RegistryError("Leader primary and failover pools must cover the same accounts")
+
+    roles = workers.get("roles")
+    if not isinstance(roles, dict) or not roles:
+        raise RegistryError("Worker roles must be a non-empty object")
+
+    assigned: list[str] = []
+    for role_name, ids in roles.items():
+        if not isinstance(role_name, str) or not role_name.strip():
+            raise RegistryError("Worker role names must be non-empty strings")
+        role_ids = _unique_strings(ids, f"workers.roles.{role_name}")
+        if role_name != "standby" and not role_ids:
+            raise RegistryError(f"Required worker role is empty: {role_name}")
+        assigned.extend(role_ids)
+
+    if len(assigned) != len(set(assigned)):
+        raise RegistryError("A worker connection is assigned to more than one role")
+
+    leader_ids = set(primary_pool)
+    worker_ids = set(assigned)
+    if leader_ids & worker_ids:
+        overlap = sorted(leader_ids & worker_ids)
+        raise RegistryError(f"Leader/worker connection overlap detected: {overlap}")
+
+    registry_ids = leader_ids | worker_ids
+    actual_ids = set(connections)
+
+    missing_metadata = sorted(registry_ids - actual_ids)
+    if missing_metadata:
+        raise RegistryError(f"Registry references unknown connections: {missing_metadata}")
+
+    for connection_id in leader_ids:
+        provider = connections[connection_id].get("provider")
+        if provider != leader_provider:
+            raise RegistryError(
+                f"Leader connection {connection_id} has provider {provider!r}, "
+                f"expected {leader_provider!r}"
+            )
+
+    for connection_id in worker_ids:
+        provider = connections[connection_id].get("provider")
+        if provider != worker_provider:
+            raise RegistryError(
+                f"Worker connection {connection_id} has provider {provider!r}, "
+                f"expected {worker_provider!r}"
+            )
+
+    return registry
+
+
+def get_leader_pool(tier: str = "primary") -> list[str]:
+    registry = validate_registry()
+    leader = registry["architecture"]["leader"]
+
+    if tier == "primary":
+        return list(leader["primary_pool"])
+    if tier == "failover":
+        return list(leader["failover_pool"])
+    raise RegistryError(f"Unknown leader tier: {tier}")
+
+
+def get_worker_pools() -> dict[str, list[str]]:
+    registry = validate_registry()
+    roles = registry["architecture"]["workers"]["roles"]
+    return {role: list(ids) for role, ids in roles.items()}
+
+
+def main() -> int:
+    registry = validate_registry()
+    leader = registry["architecture"]["leader"]
+    workers = registry["architecture"]["workers"]
+    role_count = len(workers["roles"])
+    worker_count = sum(len(ids) for ids in workers["roles"].values())
+
+    print("=" * 70)
+    print("CONFIGURATION REGISTRY VALIDATION")
+    print("=" * 70)
+    print(f"Registry         : {REGISTRY_FILE.relative_to(BASE_DIR)}")
+    print(f"Leader provider  : {leader['provider']}")
+    print(f"Primary accounts : {len(leader['primary_pool'])}")
+    print(f"Failover accounts: {len(leader['failover_pool'])}")
+    print(f"Worker provider  : {workers['provider']}")
+    print(f"Worker roles     : {role_count}")
+    print(f"Worker accounts  : {worker_count}")
+    print("Result           : VALID ✅")
+    print("=" * 70)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
