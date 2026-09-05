@@ -1,70 +1,12 @@
-# AI-Agent Project Rules
+# Project Rules
 
-## 1. Project truth
-Use evidence in this order:
-1. Actual files and project state
-2. Executable tests/build/syntax results
-3. Authoritative project specifications
-4. Recorded architectural decisions
-5. Model reasoning
-
-Model reasoning alone cannot establish implementation or requirements.
-
-## 2. Documentation
-Documentation is control-plane input. Search for:
-- specification
-- requirements
-- design
-- architecture
-- rules
-- vision
-- completion criteria
-- testing requirements
-- security constraints
-- non-goals
-
-Unresolved contradictions must be surfaced.
-
-## 3. Automatic state classification
-BUILD: specification/design exists and implementation is absent or minimal.
-
-CONTINUE: implementation exists but required work remains.
-
-MAINTAIN: project is substantially complete and stable.
-
-REPAIR: confirmed test/build/syntax or equivalent failure.
-
-CONFLICT: authoritative requirements contradict each other and cannot be safely reconciled.
-
-UNKNOWN: insufficient evidence for a safe autonomous decision.
-
-## 4. Autonomous start
-Allowed: BUILD, CONTINUE, MAINTAIN, REPAIR, subject to validation/confidence policy.
-
-Forbidden: UNKNOWN and unresolved CONFLICT.
-
-## 5. No invented scope
-Never invent requirements, perform unrelated refactors, modify unrelated files, or broaden scope without evidence.
-
-## 6. Gap analysis
-Completion percentage is not authoritative.
-
-```text
-What should exist
-      vs
-What actually exists
-      =
-Gap / Compliance
-```
-
-## 7. Minimal change
-Prefer the smallest justified change with explicit target, exact old-state evidence, independent validation, and tests.
-
-## 8. Uncertainty
-When the answer is unclear:
-- do not guess
-- preserve last known-good state
-- escalate or stop safely
-
-## 9. Project memory
-Verified architectural decisions and important failures should be preserved as structured state. Memory does not override current evidence.
+1. Model output is untrusted input.
+2. Registry configuration is authoritative for routing and pools.
+3. Runtime health/state is local runtime data and must not become static routing truth.
+4. All filesystem mutation must remain inside the active project workspace.
+5. Independent validation must precede mutation approval.
+6. Execution authorization is an internal machine-checked policy decision; normal development must not require human confirmation for each operation.
+7. The Execution Gate remains the mutation authority.
+8. Checkpoints must precede mutation and rollback must be independently verified.
+9. Unknown or unresolved-conflict states are SAFE_STOP conditions.
+10. Secrets and credentials must remain outside source control and must never be exposed in logs.
