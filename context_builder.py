@@ -1,23 +1,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
 
 SCHEMA_VERSION = 1
 DEFAULT_MAX_CHARS = 12_000
 DEFAULT_MAX_REQUIREMENTS = 100
-
-# Deliberately explicit: these fields are evidence only and must never be
-# interpreted as execution authorization by the Context Builder.
-UNSAFE_AUTHORIZATION_FIELDS = {
-    "execute",
-    "execution_authorized",
-    "approve",
-    "approval",
-    "allow_mutation",
-    "mutate",
-}
 
 
 class ContextBuilder:
@@ -95,8 +84,7 @@ class ContextBuilder:
             "requirements": selected,
         }
 
-        serialized = self._serialize(context)
-        if len(serialized) <= self.max_chars:
+        if len(self._serialize(context)) <= self.max_chars:
             return context
 
         return self._fit_budget(context)
@@ -128,7 +116,13 @@ class ContextBuilder:
             "unknown",
             "autonomous_compliance_proven",
         }
-        return {key: value.get(key, 0 if key != "autonomous_compliance_proven" else False) for key in allowed}
+        return {
+            key: value.get(
+                key,
+                0 if key != "autonomous_compliance_proven" else False,
+            )
+            for key in sorted(allowed)
+        }
 
     def _build_requirement_entries(
         self,
@@ -154,7 +148,7 @@ class ContextBuilder:
             text = str(spec.get("text") or compliance.get("text") or "")
             source = spec.get("source") or compliance.get("source")
             line = spec.get("line") or compliance.get("line")
-            status = compliance.get("status")
+            status = compliance.get("status") or self._derive_status(current)
 
             entry = {
                 "requirement_id": str(requirement_id),
@@ -163,11 +157,16 @@ class ContextBuilder:
                 "line": line,
                 "kind": spec.get("kind") or compliance.get("kind"),
                 "strength": spec.get("strength") or compliance.get("strength"),
-                "status": status or self._derive_status(current),
+                "status": status,
                 "priority": self._priority(status, current, spec),
-                "implementation_paths": self._paths(current, "implementation_evidence"),
+                "implementation_paths": self._paths(
+                    current,
+                    "implementation_evidence",
+                ),
                 "test_paths": self._paths(current, "test_evidence"),
-                "execution_evidence_present": current.get("execution_evidence") is not None,
+                "execution_evidence_present": (
+                    current.get("execution_evidence") is not None
+                ),
             }
             entries.append(entry)
 
@@ -237,12 +236,14 @@ class ContextBuilder:
     @staticmethod
     def _paths(current: dict[str, Any], field: str) -> list[str]:
         value = current.get(field) or []
-        paths = []
         if not isinstance(value, list):
-            return paths
-        for item in value:
-            if isinstance(item, dict) and item.get("path"):
-                paths.append(str(item["path"]))
+            return []
+
+        paths = [
+            str(item["path"])
+            for item in value
+            if isinstance(item, dict) and item.get("path")
+        ]
         return sorted(set(paths), key=str.lower)
 
     @staticmethod
@@ -255,27 +256,24 @@ class ContextBuilder:
         )
 
     def _fit_budget(self, context: dict[str, Any]) -> dict[str, Any]:
-        requirements = context["requirements"]
-        while requirements:
+        original_count = len(context["requirements"])
+
+        for end in range(original_count, -1, -1):
+            requirements = context["requirements"][:end]
+            omitted = original_count - end
             candidate = dict(context)
             candidate["requirements"] = requirements
+            candidate["budget"] = {
+                "truncated": omitted > 0,
+                "included_requirements": end,
+                "omitted_requirements": omitted,
+            }
             if len(self._serialize(candidate)) <= self.max_chars:
-                candidate["budget"] = {
-                    "truncated": True,
-                    "included_requirements": len(requirements),
-                    "omitted_requirements": max(0, len(context["requirements"]) - len(requirements)),
-                }
                 return candidate
-            requirements = requirements[:-1]
 
-        minimal = dict(context)
-        minimal["requirements"] = []
-        minimal["budget"] = {
-            "truncated": True,
-            "included_requirements": 0,
-            "omitted_requirements": len(context["requirements"]),
-        }
-        return minimal
+        raise ValueError(
+            "ContextBuilder fixed metadata exceeds max_chars; increase max_chars."
+        )
 
 
 def build_context(
