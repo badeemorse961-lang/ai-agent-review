@@ -5,6 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from process_sandbox import ProcessSandbox, ProcessSandboxSafetyStop
+from sandbox_policy import WorkspaceResourcePolicy
+from terminal_executor import TerminalExecutor
+from terminal_policy import TerminalCommandPolicy, TerminalPolicy
 from worker_execution import WorkerExecutionBoundary, WorkerExecutionSafetyStop
 
 
@@ -45,6 +49,23 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
         script.write_text(body, encoding="utf-8")
         return script
 
+    def _sandbox(self, root: Path, *, timeout: float = 3.0) -> ProcessSandbox:
+        executable = Path(sys.executable).resolve()
+        policy = WorkspaceResourcePolicy(
+            root,
+            allowed_tool_paths=[executable],
+        )
+        return ProcessSandbox(policy, timeout_seconds=timeout)
+
+    def _boundary(self, root: Path, *, timeout: float = 3.0) -> WorkerExecutionBoundary:
+        return WorkerExecutionBoundary(
+            root,
+            checkpoint=self._checkpoint,
+            allowed_commands=[sys.executable],
+            process_sandbox=self._sandbox(root, timeout=timeout),
+            timeout_seconds=timeout,
+        )
+
     def test_execution_requires_checkpoint(self) -> None:
         root = self._workspace()
         boundary = WorkerExecutionBoundary(root)
@@ -62,6 +83,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             root,
             checkpoint=lambda request: {"checkpoint_id": "CP-1", "isolated": False},
             allowed_commands=[sys.executable],
+            process_sandbox=self._sandbox(root),
         )
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
@@ -83,6 +105,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             root,
             checkpoint=checkpoint,
             allowed_commands=[sys.executable],
+            process_sandbox=self._sandbox(root),
         )
         result = boundary.execute(
             self._assignment(),
@@ -98,13 +121,38 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             {"checkpoint_id": "CP-1", "isolated": True},
         )
 
-    def test_non_allowlisted_command_is_rejected(self) -> None:
+    def test_process_sandbox_is_auto_wrapped_by_terminal_executor(self) -> None:
         root = self._workspace()
+        boundary = self._boundary(root)
+        self.assertIsInstance(boundary.terminal_executor, TerminalExecutor)
+        self.assertIs(boundary.terminal_executor.sandbox, boundary.process_sandbox)
+
+    def test_terminal_policy_is_enforced_before_process_launch(self) -> None:
+        root = self._workspace()
+        script = self._script(root, "worker.py", "print('ok')\n")
+        terminal_policy = TerminalPolicy([TerminalCommandPolicy("pytest")])
+        sandbox = self._sandbox(root)
         boundary = WorkerExecutionBoundary(
             root,
             checkpoint=self._checkpoint,
-            allowed_commands=["python"],
+            allowed_commands=[sys.executable],
+            process_sandbox=sandbox,
+            terminal_executor=TerminalExecutor(
+                sandbox,
+                terminal_policy=terminal_policy,
+            ),
         )
+
+        with self.assertRaises(ProcessSandboxSafetyStop):
+            boundary.execute(
+                self._assignment(),
+                self._task(),
+                command=[sys.executable, script.name],
+            )
+
+    def test_non_allowlisted_command_is_rejected(self) -> None:
+        root = self._workspace()
+        boundary = self._boundary(root)
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
                 self._assignment(),
@@ -114,11 +162,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
 
     def test_shell_and_inline_interpreter_launchers_are_rejected(self) -> None:
         root = self._workspace()
-        boundary = WorkerExecutionBoundary(
-            root,
-            checkpoint=self._checkpoint,
-            allowed_commands=[sys.executable],
-        )
+        boundary = self._boundary(root)
         for command in (
             [sys.executable, "-c", "print('ok')"],
             [sys.executable, "-m", "http.server"],
@@ -132,11 +176,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
 
     def test_path_escape_is_rejected(self) -> None:
         root = self._workspace()
-        boundary = WorkerExecutionBoundary(
-            root,
-            checkpoint=self._checkpoint,
-            allowed_commands=[sys.executable],
-        )
+        boundary = self._boundary(root)
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
                 self._assignment(),
@@ -151,11 +191,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
         outside.write_text("print('outside')\n", encoding="utf-8")
         self.addCleanup(outside.unlink, missing_ok=True)
 
-        boundary = WorkerExecutionBoundary(
-            root,
-            checkpoint=self._checkpoint,
-            allowed_commands=[sys.executable],
-        )
+        boundary = self._boundary(root)
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
                 self._assignment(),
@@ -166,11 +202,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
     def test_standby_assignment_cannot_execute_directly(self) -> None:
         root = self._workspace()
         self._script(root, "worker.py", "print('ok')\n")
-        boundary = WorkerExecutionBoundary(
-            root,
-            checkpoint=self._checkpoint,
-            allowed_commands=[sys.executable],
-        )
+        boundary = self._boundary(root)
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
                 self._assignment(standby=True),
@@ -181,12 +213,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
     def test_timeout_is_safe_stop(self) -> None:
         root = self._workspace()
         self._script(root, "worker.py", "import time; time.sleep(2)\n")
-        boundary = WorkerExecutionBoundary(
-            root,
-            checkpoint=self._checkpoint,
-            allowed_commands=[sys.executable],
-            timeout_seconds=0.05,
-        )
+        boundary = self._boundary(root, timeout=0.05)
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
                 self._assignment(),
@@ -201,6 +228,8 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             root,
             checkpoint=self._checkpoint,
             allowed_commands=[sys.executable],
+            process_sandbox=self._sandbox(root),
+            timeout_seconds=3,
             max_output_chars=256,
         )
         result = boundary.execute(
@@ -214,11 +243,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
     def test_task_and_assignment_identity_must_match(self) -> None:
         root = self._workspace()
         self._script(root, "worker.py", "print('ok')\n")
-        boundary = WorkerExecutionBoundary(
-            root,
-            checkpoint=self._checkpoint,
-            allowed_commands=[sys.executable],
-        )
+        boundary = self._boundary(root)
         task = self._task()
         task["task_id"] = "TASK-2"
         with self.assertRaises(WorkerExecutionSafetyStop):
