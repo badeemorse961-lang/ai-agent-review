@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
 
-from worker_router import ConfigurationError, LeaseError, NoWorkerAvailable, WorkerLease, WorkerRouter
+from worker_router import ConfigurationError, LeaseError, NoWorkerAvailable, WorkerRouter
 
 
 SCHEMA_VERSION = 1
-REQUIRED_ROLES = {"coder", "debugger", "tester", "architect", "reviewer"}
 
 
 class WorkerDispatchError(ValueError):
@@ -88,8 +87,7 @@ class WorkerDispatcher:
             except LeaseError:
                 continue
 
-    @staticmethod
-    def _validate_plan(plan: Mapping[str, Any]) -> None:
+    def _validate_plan(self, plan: Mapping[str, Any]) -> None:
         if not isinstance(plan, Mapping):
             raise WorkerDispatchSafetyStop("Worker dispatch requires a plan mapping")
 
@@ -103,13 +101,33 @@ class WorkerDispatcher:
                 raise WorkerDispatchSafetyStop(
                     "Worker assignment cannot receive mutation authority from the plan"
                 )
+            if authority.get("worker_assignment_authorized", False) is not False:
+                raise WorkerDispatchSafetyStop(
+                    "Worker assignment must remain locally controlled"
+                )
+            if authority.get("model_output_trusted", False) is not False:
+                raise WorkerDispatchSafetyStop(
+                    "Model output cannot be trusted for worker assignment"
+                )
 
-        if plan.get("valid") is False:
-            raise WorkerDispatchSafetyStop("Worker dispatch requires a validated plan")
+        validation = plan.get("validation")
+        if not isinstance(validation, Mapping):
+            raise WorkerDispatchSafetyStop("Worker dispatch requires validation metadata")
+        for key in ("dag_valid", "roles_valid", "dependencies_valid"):
+            if validation.get(key) is not True:
+                raise WorkerDispatchSafetyStop(
+                    f"Validated plan is missing positive {key} proof"
+                )
 
         tasks = plan.get("tasks")
         if not isinstance(tasks, list) or not tasks:
             raise WorkerDispatchSafetyStop("Worker dispatch requires a non-empty task list")
+
+        configured_roles = {
+            str(role)
+            for role, pool in self.router.worker_pools.items()
+            if isinstance(role, str) and isinstance(pool, list) and pool
+        }
 
         seen: set[str] = set()
         for task in tasks:
@@ -123,9 +141,9 @@ class WorkerDispatcher:
             if task_id in seen:
                 raise WorkerDispatchSafetyStop(f"Duplicate task_id: {task_id}")
             seen.add(task_id)
-            if role not in REQUIRED_ROLES:
+            if not isinstance(role, str) or role not in configured_roles:
                 raise WorkerDispatchSafetyStop(
-                    f"Task {task_id!r} has an unsupported worker role: {role!r}"
+                    f"Task {task_id!r} has an unavailable worker role: {role!r}"
                 )
             if not isinstance(acceptance, list) or not acceptance or not all(
                 isinstance(item, str) and item.strip() for item in acceptance
@@ -141,7 +159,7 @@ class WorkerDispatcher:
         outgoing: dict[str, list[str]] = {task_id: [] for task_id in by_id}
 
         for task_id, task in by_id.items():
-            dependencies = task.get("dependencies", [])
+            dependencies = task.get("depends_on", [])
             if not isinstance(dependencies, list):
                 raise WorkerDispatchSafetyStop(
                     f"Task {task_id!r} dependencies must be a list"
