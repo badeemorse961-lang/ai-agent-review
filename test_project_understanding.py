@@ -122,6 +122,9 @@ class ProjectUnderstandingTests(unittest.TestCase):
         self.assertEqual(summary["requirement_count"], 4)
         self.assertIn("gap_compliance", bundle)
         self.assertIn("current_state", bundle)
+        self.assertIn("context", bundle)
+        self.assertEqual(bundle["context"]["authority"]["execution_authorized"], False)
+        self.assertEqual(summary["context_execution_authorized"], False)
         self.assertEqual(bundle["schema_version"], 1)
 
     def test_pipeline_does_not_authorize_execution_from_static_evidence(self) -> None:
@@ -130,6 +133,7 @@ class ProjectUnderstandingTests(unittest.TestCase):
 
         self.assertFalse(bundle["gap_compliance"]["summary"]["autonomous_compliance_proven"])
         self.assertIn("not an execution authorization", bundle["authority_note"])
+        self.assertFalse(bundle["context"]["authority"]["execution_authorized"])
 
 
 if __name__ == "__main__":
