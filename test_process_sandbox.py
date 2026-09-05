@@ -9,12 +9,12 @@ from process_sandbox import ProcessSandbox, ProcessSandboxSafetyStop
 from sandbox_policy import WorkspaceResourcePolicy
 
 
-def make_sandbox(tmp_path: Path) -> ProcessSandbox:
+def make_sandbox(tmp_path: Path, *, timeout: float = 2) -> ProcessSandbox:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     executable = Path(sys.executable).resolve()
     policy = WorkspaceResourcePolicy(workspace, allowed_tool_paths=[executable])
-    return ProcessSandbox(policy, timeout_seconds=2, max_output_chars=256)
+    return ProcessSandbox(policy, timeout_seconds=timeout, max_output_chars=256)
 
 
 def write_script(sandbox: ProcessSandbox, name: str, content: str) -> Path:
@@ -27,7 +27,7 @@ def write_script(sandbox: ProcessSandbox, name: str, content: str) -> Path:
 def test_runs_explicit_tool_without_shell(tmp_path: Path) -> None:
     sandbox = make_sandbox(tmp_path)
     script = write_script(sandbox, "hello.py", "print('x')\n")
-    result = sandbox.run([str(Path(sys.executable).resolve()), str(script.name)])
+    result = sandbox.run([str(Path(sys.executable).resolve()), script.name])
     assert result.returncode == 0
     assert result.stdout.strip() == "x"
     assert result.isolated_process_group is True
@@ -65,6 +65,25 @@ def test_external_access_must_be_declared(tmp_path: Path) -> None:
             [str(Path(sys.executable).resolve()), script.name],
             external_reads=[tmp_path / "unmanaged" / "data.txt"],
         )
+
+
+def test_workspace_target_cannot_escape(tmp_path: Path) -> None:
+    sandbox = make_sandbox(tmp_path)
+    script = write_script(sandbox, "hello.py", "print('x')\n")
+    with pytest.raises(ProcessSandboxSafetyStop):
+        sandbox.run(
+            [str(Path(sys.executable).resolve()), script.name],
+            target_paths=["../outside.py"],
+        )
+
+
+def test_timeout_returns_bounded_failure(tmp_path: Path) -> None:
+    sandbox = make_sandbox(tmp_path, timeout=0.2)
+    script = write_script(sandbox, "sleep.py", "import time\ntime.sleep(5)\n")
+    result = sandbox.run([str(Path(sys.executable).resolve()), script.name])
+    assert result.timed_out is True
+    assert result.returncode == -1
+    assert "PROCESS TIMEOUT" in result.stderr
 
 
 def test_strict_os_mode_fails_closed_until_native_backend_exists(tmp_path: Path) -> None:
