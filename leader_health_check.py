@@ -134,7 +134,7 @@ def check_connection(
         return {
             "connection_id": connection_id, "provider": "openrouter",
             "tier": tier, "model": model, "status": "TIMEOUT",
-            "http_status": None, "latency_ms": None, "healthy": False,
+            "http_status": None, "latency_ms": None, ""healthy"": False,
             "completion_received": False, "error": "REQUEST_TIMEOUT",
             "checked_at": utc_now(),
         }
@@ -281,8 +281,18 @@ def main() -> int:
         "provider": leader["provider"],
         "primary_model": leader["primary_model"],
         "failover_model": leader["failover_model"],
-        "primary": {"healthy": healthy_primary, "failed": failed_primary},
-        "failover": {"healthy": healthy_failover, "failed": failed_failover},
+        "primary": {
+            "healthy": healthy_primary,
+            "failed": failed_primary,
+            "healthy_connections": healthy_primary,
+            "failed_connections": failed_primary,
+        },
+        "failover": {
+            "healthy": healthy_failover,
+            "failed": failed_failover,
+            "healthy_connections": healthy_failover,
+            "failed_connections": failed_failover,
+        },
         "models": {
             leader["primary_model"]: {"healthy": healthy_primary, "failed": failed_primary},
             leader["failover_model"]: {"healthy": healthy_failover, "failed": failed_failover},
