@@ -1,23 +1,94 @@
-﻿groq_keys.txt
+﻿# ============================================================
+# AI Agent - Repository Ignore Rules
+# ============================================================
+
+# ------------------------------------------------------------
+# Secrets / API keys / local credentials
+# ------------------------------------------------------------
+groq_keys.txt
 openrouter_keys.txt
 groq_keys.backup.txt
 openrouter_keys.backup.txt
+
 .env
 .env.*
-!.env.example
+*.env
+
+# ------------------------------------------------------------
+# Agent-local configuration and mutable runtime state
+# ------------------------------------------------------------
 .agent_local/
 .agent_state/
 .agent_runtime/
 agent_local_state/
 machine_state/
+
+# Local model/runtime directories
 .ollama/
+
+# ------------------------------------------------------------
+# Agent-generated backups and execution checkpoints
+# ------------------------------------------------------------
+.agent_backups/
+.agent_gate_checkpoints/
+
+# ------------------------------------------------------------
+# Generated result / runtime state files
+# ------------------------------------------------------------
+*_result.json
+*_state.json
+*_health.json
+
+leader_result_*.json
+groq_worker_health.json
+leader_health.json
+execution_gate_state.json
+worker_router_state.json
+
+# ------------------------------------------------------------
+# Python caches / bytecode
+# ------------------------------------------------------------
 __pycache__/
 *.py[cod]
+*$py.class
+
+# ------------------------------------------------------------
+# Python test / tooling caches
+# ------------------------------------------------------------
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ------------------------------------------------------------
+# Build / packaging output
+# ------------------------------------------------------------
 build/
 dist/
 *.egg-info/
+
+# ------------------------------------------------------------
+# Virtual environments
+# ------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# ------------------------------------------------------------
+# IDE / editor files
+# ------------------------------------------------------------
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+
+# ------------------------------------------------------------
+# Operating system files
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
