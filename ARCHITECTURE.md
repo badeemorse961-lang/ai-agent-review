@@ -31,6 +31,10 @@ Independent Validation
   ↓
 Execution Authorization (internal)
   ↓
+Terminal Policy
+  ↓
+Process / Resource Sandbox
+  ↓
 Execution Gate
   ↓
 Checkpoint
@@ -91,20 +95,25 @@ Runtime access is split into three distinct domains:
 A helper such as `C:\Python312\python.exe` is a tool, not a gateway to the rest of `C:\`. External design/assets folders on another path or drive require explicit resource authorization.
 
 ## Execution authority
-The model proposes. The local agent validates. Independent validation establishes evidence. Internal execution authorization promotes a validated task to the existing execution gate. The gate controls mutation.
+The model proposes. The local agent validates. Independent validation establishes evidence. Internal execution authorization promotes a validated task toward execution.
 
-Required mutation path:
+The execution path is layered:
+
 1. proposal validation
 2. independent validation
 3. internal execution authorization
-4. checkpoint
-5. guarded apply
-6. tests
-7. verification
-8. approve or rollback
+4. terminal command policy validation
+5. process/resource sandbox validation
+6. checkpoint
+7. guarded apply
+8. tests
+9. verification
+10. approve or rollback
+
+The terminal is not a free-form shell. `TerminalPolicy` constrains executable families, command arguments, shell-wrapper/operator tokens, and path-like arguments before process launch. `ProcessSandbox` remains responsible for tool-path authority, workspace/external-resource validation, process containment, environment minimization, timeout, and output bounds.
 
 ## Process containment
-The optional process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
+The process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
 
 These controls are stronger than a raw subprocess launch, but they are not an OS-level filesystem sandbox. A child process can still programmatically open unmanaged paths unless the host provides stronger OS enforcement.
 
@@ -130,3 +139,5 @@ Examples:
 11. No worker receives implicit authority over unrelated filesystem data.
 12. External resources require explicit bounded authorization.
 13. Normal development remains autonomous; human confirmation is exceptional rather than per-operation.
+14. Terminal commands must pass explicit policy before process launch.
+15. Terminal policy does not replace the process sandbox or execution gate.
