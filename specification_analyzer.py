@@ -254,8 +254,8 @@ class SpecificationAnalyzer:
             result.append(requirement)
         return result
 
-    @staticmethod
-    def _detect_exact_conflicts(requirements: List[Requirement]) -> List[dict[str, Any]]:
+    @classmethod
+    def _detect_exact_conflicts(cls, requirements: List[Requirement]) -> List[dict[str, Any]]:
         """Detect only explicit same-subject positive/negative text pairs.
 
         The detector is intentionally conservative. Ambiguous natural-language
@@ -270,11 +270,11 @@ class SpecificationAnalyzer:
             for right, right_text in normalized[index + 1 :]:
                 if left.source != right.source:
                     continue
-                left_base = self._conflict_base(left_text)
-                right_base = self._conflict_base(right_text)
+                left_base = cls._conflict_base(left_text)
+                right_base = cls._conflict_base(right_text)
                 if not left_base or left_base != right_base:
                     continue
-                if self._is_negative(left_text) != self._is_negative(right_text):
+                if cls._is_negative(left_text) != cls._is_negative(right_text):
                     conflicts.append(
                         {
                             "left_requirement_id": left.requirement_id,
