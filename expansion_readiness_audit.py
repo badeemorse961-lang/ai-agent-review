@@ -112,21 +112,53 @@ class _ContextVisitor(ast.NodeVisitor):
         self.function_stack: List[str] = []
         self.class_stack: List[str] = []
 
+    def generic_visit(self, node: ast.AST) -> Any:
+        self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
+        super().generic_visit(node)
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
         self.function_stack.append(node.name)
-        self.generic_visit(node)
+        for child in node.body:
+            self.visit(child)
+        for child in node.decorator_list:
+            self.visit(child)
+        for child in node.args.defaults:
+            self.visit(child)
+        for child in node.args.kw_defaults:
+            if child is not None:
+                self.visit(child)
+        if node.returns is not None:
+            self.visit(node.returns)
         self.function_stack.pop()
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
         self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
         self.function_stack.append(node.name)
-        self.generic_visit(node)
+        for child in node.body:
+            self.visit(child)
+        for child in node.decorator_list:
+            self.visit(child)
+        for child in node.args.defaults:
+            self.visit(child)
+        for child in node.args.kw_defaults:
+            if child is not None:
+                self.visit(child)
+        if node.returns is not None:
+            self.visit(node.returns)
         self.function_stack.pop()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        self.callback(node, tuple(self.function_stack), tuple(self.class_stack))
         self.class_stack.append(node.name)
-        self.generic_visit(node)
+        for child in node.body:
+            self.visit(child)
+        for child in node.decorator_list:
+            self.visit(child)
+        for child in node.bases:
+            self.visit(child)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
         self.class_stack.pop()
 
 
@@ -163,13 +195,13 @@ class ExpansionReadinessAuditor:
     # --------------------------------------------------------
 
     def _iter_files(self) -> Iterator[Path]:
+        ignored = {item.lower() for item in IGNORED_DIRS}
         for path in self.root.rglob("*"):
             if not path.is_file():
                 continue
 
             relative_parts = path.relative_to(self.root).parts
-            lowered = {part.lower() for part in IGNORED_DIRS}
-            if any(part.lower() in lowered for part in relative_parts):
+            if any(part.lower() in ignored for part in relative_parts):
                 continue
 
             yield path
@@ -200,8 +232,6 @@ class ExpansionReadinessAuditor:
             self.files_scanned += 1
 
             try:
-                # utf-8-sig treats a BOM as an encoding marker rather than
-                # reporting it as an invalid character.
                 text = path.read_text(encoding="utf-8-sig")
             except UnicodeDecodeError as exc:
                 self.findings.append(
@@ -264,45 +294,18 @@ class ExpansionReadinessAuditor:
         class_stack: tuple[str, ...],
     ) -> None:
         del class_stack
-
-        synthetic = self._is_synthetic_context(function_stack, path)
-
-        # Only inspect function/class declarations here for context; their
-        # bodies are handled by a regular recursive scan below.
-        if isinstance(
-            node,
-            (ast.FunctionDef, ast.AsyncFunctionDef),
-        ):
-            self._audit_body(
-                path,
-                node,
-                function_stack,
-                synthetic,
-            )
-
-    def _audit_body(
-        self,
-        path: Path,
-        function_node: ast.AST,
-        function_stack: tuple[str, ...],
-        synthetic: bool,
-    ) -> None:
-        if synthetic:
+        if self._is_synthetic_context(function_stack, path):
             return
 
-        for node in ast.walk(function_node):
-            if node is function_node:
-                continue
+        if isinstance(node, ast.Call):
+            self._audit_range_call(path, node)
+            self._audit_numeric_call(path, node)
 
-            if isinstance(node, ast.Call):
-                self._audit_range_call(path, node)
-                self._audit_numeric_call(path, node)
+        if isinstance(node, ast.Compare):
+            self._audit_len_compare(path, node)
 
-            if isinstance(node, ast.Compare):
-                self._audit_len_compare(path, node)
-
-            if isinstance(node, ast.Subscript):
-                self._audit_fixed_slice(path, node)
+        if isinstance(node, ast.Subscript):
+            self._audit_fixed_slice(path, node)
 
     def _audit_range_call(self, path: Path, node: ast.Call) -> None:
         if not (
@@ -332,10 +335,9 @@ class ExpansionReadinessAuditor:
         )
 
     def _audit_numeric_call(self, path: Path, node: ast.Call) -> None:
-        """Catch direct numeric arguments only when their callee is pool-specific."""
+        """Catch numeric arguments only for explicitly pool-sized APIs."""
         if not isinstance(node.func, ast.Name):
             return
-
         if node.func.id not in {
             "reserve_pool",
             "allocate_pool",
@@ -377,7 +379,7 @@ class ExpansionReadinessAuditor:
         if value not in KNOWN_CURRENT_COUNTS:
             return
 
-        target_text = self._expression_text(node.left.args[0])
+        target_text = self._expression_text(node.left.args[0] if node.left.args else None)
         if not self._looks_pool_related(target_text):
             return
 
@@ -482,7 +484,7 @@ class ExpansionReadinessAuditor:
                 child_location = f"{location}.{key}"
                 next_keys = set(key_path)
                 next_keys.add(str(key).lower())
-                self._inspect_json_value(path, str(key), item, child_location, next_keys)
+                self._inspect_json_value(path, item, child_location, next_keys)
                 self._walk_json(path, item, child_location, next_keys)
         elif isinstance(value, list):
             for index, item in enumerate(value):
@@ -491,12 +493,10 @@ class ExpansionReadinessAuditor:
     def _inspect_json_value(
         self,
         path: Path,
-        key: str,
         value: Any,
         location: str,
         key_path: Set[str],
     ) -> None:
-        del key
         if not (
             isinstance(value, int)
             and not isinstance(value, bool)
@@ -594,12 +594,13 @@ class ExpansionReadinessAuditor:
 
         return "PASS"
 
-    # --------------------------------------------------------
-    # Utility / CLI
-    # --------------------------------------------------------
-
     def _relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.root))
+
+
+# ============================================================
+# CLI
+# ============================================================
 
 
 def _print_result(result: AuditResult) -> None:
@@ -637,7 +638,6 @@ def _print_result(result: AuditResult) -> None:
     else:
         print("EXPANSION READINESS AUDIT FAILED ❌")
     print("=" * 70)
-
 
 
 def main() -> None:
