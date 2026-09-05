@@ -41,6 +41,19 @@ D:\AI-Agent\Sandbox\agent-test\
     repository-controlled files
 ```
 
+## Key-file preservation rule
+If a local API-key file already exists on the machine, repository synchronization or cleanup MUST NOT delete, overwrite, truncate, rename, or otherwise destroy it merely because the file is absent from Git or absent from the selected repository revision.
+
+This applies to current secret files such as:
+```text
+groq_keys.txt
+openrouter_keys.txt
+groq_keys.backup.txt
+openrouter_keys.backup.txt
+```
+
+The existence of a local key file is protected local state. A sync/update operation must preserve it unless the human owner explicitly requests a local secret-management operation outside normal repository synchronization.
+
 ## Synchronization
 Synchronization means synchronizing repository-controlled state.
 
