@@ -46,6 +46,12 @@ execution_gate_state.json
 worker_router_state.json
 
 # ------------------------------------------------------------
+# Generated derived profiles
+# ------------------------------------------------------------
+leader_profiles.json
+worker_profiles.json
+
+# ------------------------------------------------------------
 # Python caches / bytecode
 # ------------------------------------------------------------
 __pycache__/
