@@ -18,6 +18,8 @@ STATE_FILE = BASE_DIR / "worker_router_state.json"
 # Compatibility-only names. They are never read for routing configuration.
 WORKER_PROFILES_FILE = BASE_DIR / "worker_profiles.json"
 ROLES_FILE = BASE_DIR / "roles.json"
+PROFILES_FILE = WORKER_PROFILES_FILE
+HEALTH_FILE = WORKER_HEALTH_FILE
 
 REQUIRED_ROLES = {
     "coder",
@@ -140,10 +142,6 @@ class WorkerRouter:
         self._normalize_state()
         self._save_state()
 
-    # ------------------------------------------------------------------
-    # Compatibility properties
-    # ------------------------------------------------------------------
-
     @property
     def healthy_connections(self) -> Set[str]:
         return set(self.external_healthy_connections) - set(
@@ -155,10 +153,6 @@ class WorkerRouter:
         return set(self.external_failed_connections) | set(
             self.runtime_failed_connections
         )
-
-    # ------------------------------------------------------------------
-    # Configuration
-    # ------------------------------------------------------------------
 
     def _load_configuration(self) -> None:
         registry = load_registry_from_path(self.registry_file)
@@ -179,7 +173,6 @@ class WorkerRouter:
 
         pools: Dict[str, List[str]] = {}
         assigned: Set[str] = set()
-
         for role, values in roles.items():
             if not isinstance(role, str) or not role.strip():
                 raise ConfigurationError("Worker role names must be non-empty")
@@ -200,7 +193,6 @@ class WorkerRouter:
                     )
                 pool.append(worker_id)
                 assigned.add(worker_id)
-
             pools[role] = pool
 
         for role in REQUIRED_ROLES:
@@ -208,7 +200,6 @@ class WorkerRouter:
                 raise ConfigurationError(
                     f"Required worker role has no configured pool: {role}"
                 )
-
         if not pools.get(STANDBY_ROLE):
             raise ConfigurationError("No standby worker pool is configured")
 
@@ -216,10 +207,6 @@ class WorkerRouter:
         self.model = model
         self.worker_pools = pools
         self._load_health(read_json(self.health_file))
-
-    # ------------------------------------------------------------------
-    # Health
-    # ------------------------------------------------------------------
 
     def _load_health(self, health: Dict[str, Any]) -> None:
         healthy: Set[str] = set()
@@ -263,7 +250,6 @@ class WorkerRouter:
                     failed.add(worker_id)
                     healthy.discard(worker_id)
 
-        failed.difference_update(set())
         healthy.difference_update(failed)
         self.external_healthy_connections = healthy
         self.external_failed_connections = failed
@@ -273,14 +259,9 @@ class WorkerRouter:
             self._load_health(read_json(self.health_file))
             self._save_state()
 
-    # ------------------------------------------------------------------
-    # State
-    # ------------------------------------------------------------------
-
     def _load_state(self) -> None:
         if not self.state_file.exists():
             return
-
         try:
             payload = json.loads(self.state_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -325,22 +306,18 @@ class WorkerRouter:
         active_for = payload.get("active_standby_for")
         if isinstance(active_for, str):
             self.active_standby_for = active_for
-
         active_worker = payload.get("active_standby_worker")
         if isinstance(active_worker, str):
             self.active_standby_worker = active_worker
 
     def _normalize_state(self) -> None:
         all_configured = {
-            worker_id
-            for pool in self.worker_pools.values()
-            for worker_id in pool
+            worker_id for pool in self.worker_pools.values() for worker_id in pool
         }
         self.runtime_failed_connections &= all_configured
 
         valid: Dict[str, WorkerLease] = {}
         used_workers: Set[str] = set()
-
         for task_id, lease in self.leases.items():
             if lease.worker_id not in all_configured:
                 continue
@@ -350,7 +327,6 @@ class WorkerRouter:
                 continue
             valid[task_id] = lease
             used_workers.add(lease.worker_id)
-
         self.leases = valid
 
         if self.active_standby_worker:
@@ -376,41 +352,29 @@ class WorkerRouter:
                 "registry_file": str(self.registry_file),
                 "provider": self.provider,
                 "model": self.model,
-                "external_healthy_connections": sorted(
-                    self.external_healthy_connections
-                ),
-                "external_failed_connections": sorted(
-                    self.external_failed_connections
-                ),
-                "runtime_failed_connections": sorted(
-                    self.runtime_failed_connections
-                ),
+                "external_healthy_connections": sorted(self.external_healthy_connections),
+                "external_failed_connections": sorted(self.external_failed_connections),
+                "runtime_failed_connections": sorted(self.runtime_failed_connections),
                 "healthy_connections": sorted(self.healthy_connections),
                 "failed_connections": sorted(self.failed_connections),
                 "leases": {
-                    task_id: lease.to_dict()
-                    for task_id, lease in self.leases.items()
+                    task_id: lease.to_dict() for task_id, lease in self.leases.items()
                 },
                 "active_standby_for": self.active_standby_for,
                 "active_standby_worker": self.active_standby_worker,
             },
         )
 
-    # ------------------------------------------------------------------
-    # Routing
-    # ------------------------------------------------------------------
-
     def _worker_is_leased(self, worker_id: str) -> bool:
         return any(lease.worker_id == worker_id for lease in self.leases.values())
 
     def _healthy_for_role(self, role: str) -> List[str]:
-        runtime_failed = self.runtime_failed_connections
         return [
             worker_id
             for worker_id in self.worker_pools.get(role, [])
             if worker_id in self.external_healthy_connections
             and worker_id not in self.external_failed_connections
-            and worker_id not in runtime_failed
+            and worker_id not in self.runtime_failed_connections
             and not self._worker_is_leased(worker_id)
         ]
 
@@ -422,7 +386,6 @@ class WorkerRouter:
 
         with self._lock:
             self._load_health(read_json(self.health_file))
-
             if task_id in self.leases:
                 raise LeaseError(f"Task already has a worker lease: {task_id}")
 
@@ -455,31 +418,25 @@ class WorkerRouter:
                     self._save_state()
                     return lease
 
-            raise NoWorkerAvailable(
-                f"No healthy worker available for role: {role}"
-            )
+            raise NoWorkerAvailable(f"No healthy worker available for role: {role}")
 
     def release(self, task_id: str) -> WorkerLease:
         with self._lock:
             lease = self.leases.pop(task_id, None)
             if lease is None:
                 raise LeaseError(f"No active lease found for task: {task_id}")
-
             if lease.standby:
                 if self.active_standby_worker == lease.worker_id:
                     self.active_standby_worker = None
                 if self.active_standby_for == lease.role:
                     self.active_standby_for = None
-
             self._save_state()
             return lease
 
     def mark_failed(self, worker_id: str) -> None:
         with self._lock:
             configured = {
-                item
-                for pool in self.worker_pools.values()
-                for item in pool
+                item for pool in self.worker_pools.values() for item in pool
             }
             if worker_id not in configured:
                 raise ConfigurationError(f"Unknown worker connection: {worker_id}")
@@ -490,9 +447,7 @@ class WorkerRouter:
     def mark_healthy(self, worker_id: str) -> None:
         with self._lock:
             configured = {
-                item
-                for pool in self.worker_pools.values()
-                for item in pool
+                item for pool in self.worker_pools.values() for item in pool
             }
             if worker_id not in configured:
                 raise ConfigurationError(f"Unknown worker connection: {worker_id}")
@@ -506,11 +461,10 @@ class WorkerRouter:
             lease = self.leases.get(task_id)
             if lease is None:
                 raise LeaseError(f"No active lease for task: {task_id}")
-            worker_id = lease.worker_id
-            self.runtime_failed_connections.add(worker_id)
+            self.runtime_failed_connections.add(lease.worker_id)
             self.leases.pop(task_id, None)
             if lease.standby:
-                if self.active_standby_worker == worker_id:
+                if self.active_standby_worker == lease.worker_id:
                     self.active_standby_worker = None
                 if self.active_standby_for == lease.role:
                     self.active_standby_for = None
@@ -535,8 +489,7 @@ class WorkerRouter:
                 "provider": self.provider,
                 "model": self.model,
                 "pools": {
-                    role: list(pool)
-                    for role, pool in self.worker_pools.items()
+                    role: list(pool) for role, pool in self.worker_pools.items()
                 },
                 "external_healthy": sorted(self.external_healthy_connections),
                 "external_failed": sorted(self.external_failed_connections),
@@ -544,8 +497,7 @@ class WorkerRouter:
                 "healthy": sorted(self.healthy_connections),
                 "failed": sorted(self.failed_connections),
                 "leases": {
-                    task_id: lease.to_dict()
-                    for task_id, lease in self.leases.items()
+                    task_id: lease.to_dict() for task_id, lease in self.leases.items()
                 },
                 "active_standby_for": self.active_standby_for,
                 "active_standby_worker": self.active_standby_worker,
@@ -578,7 +530,6 @@ def synthetic_test() -> int:
 
     state_file = BASE_DIR / "worker_router_test_state.json"
     health_file = BASE_DIR / "worker_router_test_health.json"
-
     for path in (state_file, health_file):
         if path.exists():
             path.unlink()
@@ -595,17 +546,12 @@ def synthetic_test() -> int:
         encoding="utf-8",
     )
 
-    router = WorkerRouter(
-        health_file=health_file,
-        state_file=state_file,
-    )
+    router = WorkerRouter(health_file=health_file, state_file=state_file)
 
     for role in REQUIRED_ROLES:
         if not router.worker_pools.get(role):
             raise AssertionError(f"Missing configured role pool: {role}")
-    print(
-        f"TEST 1 registry-driven role pools ({len(router.worker_pools)} roles): PASS ✅"
-    )
+    print(f"TEST 1 registry-driven role pools ({len(router.worker_pools)} roles): PASS ✅")
 
     leases = []
     for role in REQUIRED_ROLES:
@@ -631,16 +577,11 @@ def synthetic_test() -> int:
 
     first = router.acquire("coder", "TASK-CODER-FAIL-1")
     first_pool = router.worker_pools["coder"]
-    expected_next = next(
-        (worker_id for worker_id in first_pool if worker_id != first.worker_id),
-        None,
-    )
+    expected_next = next((worker_id for worker_id in first_pool if worker_id != first.worker_id), None)
     router.fail_current_worker("TASK-CODER-FAIL-1")
     second = router.acquire("coder", "TASK-CODER-FAIL-2")
     if expected_next is not None and second.worker_id != expected_next:
-        raise AssertionError(
-            "Failure rotation did not select next configured worker"
-        )
+        raise AssertionError("Failure rotation did not select next configured worker")
     print("TEST 4 failure rotation: PASS ✅")
     router.release("TASK-CODER-FAIL-2")
 
@@ -661,10 +602,7 @@ def synthetic_test() -> int:
     router.reset_runtime_state()
     router.refresh_health()
     persisted = router.acquire("coder", "TASK-PERSIST-1")
-    restored = WorkerRouter(
-        health_file=health_file,
-        state_file=state_file,
-    )
+    restored = WorkerRouter(health_file=health_file, state_file=state_file)
     restored_lease = restored.active_leases().get("TASK-PERSIST-1")
     if restored_lease is None or restored_lease.worker_id != persisted.worker_id:
         raise AssertionError("Lease persistence failed")
