@@ -1,23 +1,19 @@
-# AI-Agent Architecture Baseline
+# Architecture
 
-## Purpose
-The AI-Agent is an autonomous coding/orchestration system with strict separation between project understanding, planning, specialist work, guarded mutation, testing, verification, and approval.
-
-## Core flow
 ```text
 User Goal
   ↓
-Project/Documentation Discovery
+Discovery
   ↓
-Project Scanner
+Scanner
   ↓
-Project State Classifier
+State Classifier
   ↓
 Specification Analyzer
   ↓
 Current-State Analyzer
   ↓
-Gap/Compliance Analysis
+Gap / Compliance
   ↓
 Context Builder
   ↓
@@ -25,7 +21,7 @@ Central Leader
   ↓
 Plan / Decomposition
   ↓
-Specialist Workers
+Workers
   ↓
 Independent Validation
   ↓
@@ -35,12 +31,12 @@ Execution Gate
   ↓
 Checkpoint
   ↓
-Apply
+Guarded Apply
   ↓
 Tests
   ↓
 Verification
-  ├─ APPROVE
+  ├─ PASS → APPROVE
   └─ ROLLBACK → VERIFY
 ```
 
@@ -49,40 +45,25 @@ The agent is autonomous by default inside the active project workspace. Internal
 
 Human approval is reserved for deployments or explicitly configured high-risk actions outside normal project-development authority.
 
+## Resource authority
+Execution uses three separate authority domains:
+
+- **Workspace:** project files and normal mutation targets.
+- **Tools:** approved development executables, which may physically reside outside the workspace.
+- **External resources:** explicitly declared external files/directories with a bounded access mode.
+
+A tool path such as `C:\Python312\python.exe` grants executable authority only. It does not grant authority over the rest of `C:\`.
+
 ## Project state
 Supported states are BUILD, CONTINUE, MAINTAIN, REPAIR, CONFLICT, and UNKNOWN.
 
-UNKNOWN and unresolved CONFLICT are safety stops.
+## Leadership and workers
+Leader and worker pools are configuration-driven. Each role owns a configurable pool. Pool size is configuration, not architecture.
 
-Confirmed failure evidence takes precedence over maintenance/continuation signals. Tests, build, or syntax failure means REPAIR.
-
-## Leadership
-Primary:
-- Provider: OpenRouter
-- Model: `nvidia/nemotron-3-ultra-550b-a55b:free`
-
-Failover:
-- Provider: OpenRouter
-- Model: `nvidia/nemotron-3-super-120b-a12b:free`
-
-Leadership is a pool of N connections. The implementation must not encode a fixed account count.
-
-## Workers
-Current conceptual roles:
-- coder
-- debugger
-- tester
-- architect
-- reviewer
-- standby
-
-Each role owns a configurable pool. Pool size is configuration, not architecture.
-
-## Identity
 Connections use stable IDs such as `OR-01` and `GROQ-01`. IDs are identifiers only; routing must not assume a fixed maximum ID.
 
 ## Execution authority
-The model proposes. The local agent validates. Internal execution authorization promotes a validated task to the existing execution gate. The gate controls mutation.
+The model proposes. The local agent validates. Independent validation establishes evidence. Internal execution authorization promotes the validated task to the existing execution gate. The gate controls mutation.
 
 Required mutation path:
 1. proposal validation
@@ -94,6 +75,11 @@ Required mutation path:
 7. verification
 8. approve or rollback
 
+## Process containment
+The optional process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
+
+These controls are stronger than a raw `subprocess.run`, but they are not an OS-level filesystem sandbox. The `strict_os_required` mode must fail closed until a validated native sandbox backend exists for the host platform.
+
 ## Expansion invariant
 The architecture is N-driven.
 
@@ -103,11 +89,6 @@ Examples:
 ## Invariants
 1. No secret values enter Git.
 2. No routing logic depends on a fixed maximum connection ID.
-3. No worker pool size is structurally hardcoded.
-4. UNKNOWN/CONFLICT cannot auto-execute.
-5. Confirmed breakage becomes REPAIR.
-6. Model output is untrusted input.
-7. Filesystem mutation is guarded.
-8. Rollback is independently verified.
-9. Local tests determine executable reality.
-10. Expansion preserves the same interfaces and rules.
+3. No worker receives implicit authority over unrelated filesystem data.
+4. External resources require explicit bounded authorization.
+5. Normal development remains autonomous; human confirmation is exceptional rather than per-operation.
