@@ -1,0 +1,65 @@
+{
+  "status": "PASS",
+  "version": "v5",
+  "tests": {
+    "valid_change": {
+      "status": "APPROVED",
+      "rollback": false,
+      "test": {
+        "passed": true,
+        "return_code": 0,
+        "stdout": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr": "",
+        "duration_ms": 689.4264000002295,
+        "command": [
+          "C:\\Users\\badee\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+          "-m",
+          "pytest",
+          "-q"
+        ]
+      }
+    },
+    "invalid_proposal": {
+      "status": "REJECTED",
+      "rollback": false
+    },
+    "path_escape": {
+      "status": "REJECTED",
+      "rollback": false
+    },
+    "test_failure_rollback": {
+      "status": "ROLLED_BACK",
+      "rollback": true,
+      "test_before_rollback": {
+        "passed": false,
+        "return_code": 1,
+        "stdout": "F                                                                        [100%]\n================================== FAILURES ===================================\n__________________________________ test_add ___________________________________\n\n    def test_add():\n>       assert add(2, 3) == 5\nE       assert -1 == 5\nE        +  where -1 = add(2, 3)\n\ntest_calculator.py:5: AssertionError\n=========================== short test summary info ===========================\nFAILED test_calculator.py::test_add - assert -1 == 5\n1 failed in 0.09s\n",
+        "stderr": "",
+        "duration_ms": 818.7933999870438,
+        "command": [
+          "C:\\Users\\badee\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+          "-m",
+          "pytest",
+          "-q"
+        ]
+      },
+      "test_after_rollback": {
+        "passed": true,
+        "return_code": 0,
+        "stdout": ".                                                                        [100%]\n1 passed in 0.01s\n",
+        "stderr": "",
+        "duration_ms": 673.7433999951463,
+        "command": [
+          "C:\\Users\\badee\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+          "-m",
+          "pytest",
+          "-q"
+        ]
+      }
+    }
+  },
+  "final_gate_state": "VERIFIED_AFTER_ROLLBACK",
+  "workspace": "D:\\AI-Agent\\Sandbox\\agent-test\\.agent_gate_test",
+  "valid_changed_code": "def add(a, b):\n    return (a + b)\n",
+  "failing_code": "def add(a, b):\n    return a - b\n"
+}

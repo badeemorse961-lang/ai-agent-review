@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "architecture": {
+    "provider": "groq",
+    "model": "openai/gpt-oss-120b",
+    "roles": [
+      "coder",
+      "debugger",
+      "tester",
+      "architect",
+      "reviewer"
+    ],
+    "standby_role": "standby",
+    "safe_stop_on_required_role_exhaustion": true
+  },
+  "health_source": "groq_worker_health.json",
+  "healthy_worker_count": 15,
+  "workers": {
+    "coder": {
+      "type": "worker",
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "configured_connections": [
+        "GROQ-01",
+        "GROQ-02",
+        "GROQ-03",
+        "GROQ-04"
+      ],
+      "healthy_connections": [
+        "GROQ-01",
+        "GROQ-02",
+        "GROQ-03",
+        "GROQ-04"
+      ],
+      "active_connection": "GROQ-01",
+      "state": "READY"
+    },
+    "debugger": {
+      "type": "worker",
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "configured_connections": [
+        "GROQ-05",
+        "GROQ-06",
+        "GROQ-07"
+      ],
+      "healthy_connections": [
+        "GROQ-05",
+        "GROQ-06",
+        "GROQ-07"
+      ],
+      "active_connection": "GROQ-05",
+      "state": "READY"
+    },
+    "tester": {
+      "type": "worker",
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "configured_connections": [
+        "GROQ-08",
+        "GROQ-09"
+      ],
+      "healthy_connections": [
+        "GROQ-08",
+        "GROQ-09"
+      ],
+      "active_connection": "GROQ-08",
+      "state": "READY"
+    },
+    "architect": {
+      "type": "worker",
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "configured_connections": [
+        "GROQ-10",
+        "GROQ-11"
+      ],
+      "healthy_connections": [
+        "GROQ-10",
+        "GROQ-11"
+      ],
+      "active_connection": "GROQ-10",
+      "state": "READY"
+    },
+    "reviewer": {
+      "type": "worker",
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "configured_connections": [
+        "GROQ-12",
+        "GROQ-13",
+        "GROQ-14"
+      ],
+      "healthy_connections": [
+        "GROQ-12",
+        "GROQ-13",
+        "GROQ-14"
+      ],
+      "active_connection": "GROQ-12",
+      "state": "READY"
+    },
+    "standby": {
+      "type": "worker",
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "configured_connections": [
+        "GROQ-15"
+      ],
+      "healthy_connections": [
+        "GROQ-15"
+      ],
+      "active_connection": "GROQ-15",
+      "state": "READY"
+    }
+  },
+  "runtime": {
+    "state": "READY",
+    "active_role": null,
+    "active_connection": null,
+    "active_model": null
+  }
+}

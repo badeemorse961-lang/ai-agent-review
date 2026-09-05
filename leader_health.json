@@ -1,0 +1,269 @@
+{
+  "version": 3,
+  "checked_at": "2026-09-04T23:10:52.015004+00:00",
+  "provider": "openrouter",
+  "primary": {
+    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "healthy_connections": [
+      "OR-01",
+      "OR-02",
+      "OR-03",
+      "OR-04",
+      "OR-05",
+      "OR-06",
+      "OR-08",
+      "OR-09",
+      "OR-10",
+      "OR-11"
+    ],
+    "unhealthy_connections": [
+      "OR-07"
+    ],
+    "healthy_count": 10,
+    "unhealthy_count": 1,
+    "safe_to_activate": true
+  },
+  "failover": {
+    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "healthy_connections": [
+      "OR-01",
+      "OR-02",
+      "OR-03",
+      "OR-04",
+      "OR-05",
+      "OR-06",
+      "OR-07",
+      "OR-08",
+      "OR-09",
+      "OR-10",
+      "OR-11"
+    ],
+    "unhealthy_connections": [],
+    "healthy_count": 11,
+    "unhealthy_count": 0,
+    "safe_to_activate": true
+  },
+  "leadership_ready": true,
+  "connections": {
+    "OR-01": {
+      "connection_id": "OR-01",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1296.88,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 5612.16,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-02": {
+      "connection_id": "OR-02",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1547.57,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 3976.82,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-03": {
+      "connection_id": "OR-03",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1315.57,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1083.55,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-04": {
+      "connection_id": "OR-04",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1385.17,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1410.08,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-05": {
+      "connection_id": "OR-05",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 4160.33,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1634.23,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-06": {
+      "connection_id": "OR-06",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1726.09,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 2588.59,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-07": {
+      "connection_id": "OR-07",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": false,
+        "status": "INVALID_RESPONSE",
+        "http_status": 200,
+        "latency_ms": 1646.39,
+        "error": "Response did not contain a valid choices array."
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1122.44,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-08": {
+      "connection_id": "OR-08",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1596.87,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 4731.1,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-09": {
+      "connection_id": "OR-09",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1175.67,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1077.03,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-10": {
+      "connection_id": "OR-10",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1494.25,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1076.08,
+        "error": null
+      },
+      "leadership_ready": true
+    },
+    "OR-11": {
+      "connection_id": "OR-11",
+      "primary": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 1392.87,
+        "error": null
+      },
+      "failover": {
+        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "healthy": true,
+        "status": "OK",
+        "http_status": 200,
+        "latency_ms": 967.89,
+        "error": null
+      },
+      "leadership_ready": true
+    }
+  }
+}

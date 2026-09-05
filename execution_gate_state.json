@@ -1,0 +1,20 @@
+{
+  "state": "VERIFIED_AFTER_ROLLBACK",
+  "workspace": "D:\\AI-Agent\\Sandbox\\agent-test\\.agent_gate_test",
+  "checkpoint": null,
+  "transaction_id": null,
+  "last_test": {
+    "passed": true,
+    "return_code": 0,
+    "stdout": ".                                                                        [100%]\n1 passed in 0.01s\n",
+    "stderr": "",
+    "duration_ms": 673.7433999951463,
+    "command": [
+      "C:\\Users\\badee\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "-m",
+      "pytest",
+      "-q"
+    ]
+  },
+  "updated_at": 1788564474.0661242
+}

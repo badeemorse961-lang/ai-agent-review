@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "completed_at": "2026-09-04T23:21:16.967295+00:00",
+  "task_type": "synthetic_orchestration_smoke_test",
+  "project_files_sent": false,
+  "leader": {
+    "connection": "OR-01",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "success": true,
+    "latency_ms": 5221.97,
+    "validated": true
+  },
+  "worker": {
+    "role": "coder",
+    "connection": "GROQ-01",
+    "model": "openai/gpt-oss-120b",
+    "standby": false,
+    "success": true,
+    "latency_ms": 1370.99,
+    "validated": true,
+    "lease_released": true
+  },
+  "local_validation": {
+    "leader_plan": true,
+    "worker_result": true
+  },
+  "overall": "PASSED"
+}

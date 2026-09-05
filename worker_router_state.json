@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "updated_at": "2026-09-04T23:21:16.967295+00:00",
+  "provider": "groq",
+  "model": "openai/gpt-oss-120b",
+  "state": "READY",
+  "healthy_connections": [
+    "GROQ-01",
+    "GROQ-02",
+    "GROQ-03",
+    "GROQ-04",
+    "GROQ-05",
+    "GROQ-06",
+    "GROQ-07",
+    "GROQ-08",
+    "GROQ-09",
+    "GROQ-10",
+    "GROQ-11",
+    "GROQ-12",
+    "GROQ-13",
+    "GROQ-14",
+    "GROQ-15"
+  ],
+  "leases": {},
+  "failed_connections": {},
+  "active_standby_for": null
+}

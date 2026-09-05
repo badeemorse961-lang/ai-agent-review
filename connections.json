@@ -1,0 +1,213 @@
+{
+  "version": 1,
+  "connections": {
+    "GROQ-01": {
+      "connection_id": "GROQ-01",
+      "provider": "groq",
+      "key_fingerprint": "5b640094f3e50885c89c01d8e38f4c5b903db6d9c8dab8030926b31a8e67c8eb",
+      "role": "central_leader",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-02": {
+      "connection_id": "GROQ-02",
+      "provider": "groq",
+      "key_fingerprint": "bccd1822dc4acbbfefeefc93d289ca83bded80a15ed6ef075ca4ad96d897ed04",
+      "role": "central_leader",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-03": {
+      "connection_id": "GROQ-03",
+      "provider": "groq",
+      "key_fingerprint": "7d61268e8217cf1413a15db1ab680e5d4f740298b4851b470d710971ed7b857f",
+      "role": "central_leader",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-04": {
+      "connection_id": "GROQ-04",
+      "provider": "groq",
+      "key_fingerprint": "9ef7a41f539ff393fd5b0e783b1d6e5698b89e328613e45917477aabab30f0aa",
+      "role": "central_leader",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-05": {
+      "connection_id": "GROQ-05",
+      "provider": "groq",
+      "key_fingerprint": "44d79b13e6642728b78595e8ef62469fdf71e85b3f996798a6d3da013bde2984",
+      "role": "coder",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-06": {
+      "connection_id": "GROQ-06",
+      "provider": "groq",
+      "key_fingerprint": "187c6ab25ed7478d8aed7e6c6d5359f6e29cd29652dbef32c5be457d42de1220",
+      "role": "coder",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-07": {
+      "connection_id": "GROQ-07",
+      "provider": "groq",
+      "key_fingerprint": "917db9bdcadeac6529a9dc816d0956069e14f0a969c38df5106a68a26a9ab49f",
+      "role": "coder",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-08": {
+      "connection_id": "GROQ-08",
+      "provider": "groq",
+      "key_fingerprint": "7cc081eb0119a07bb5b44059acd8544b4a66edee224222f3231f9efaf19f9f48",
+      "role": "debugger",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-09": {
+      "connection_id": "GROQ-09",
+      "provider": "groq",
+      "key_fingerprint": "6bfd28160508bfca7cffa04808bfe5708153e71a529fc973293251f9abd9bd25",
+      "role": "debugger",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-10": {
+      "connection_id": "GROQ-10",
+      "provider": "groq",
+      "key_fingerprint": "4e1b9c77ebc933d627abad6ac6eac92f21c7a474524652ca32637c86f8854a39",
+      "role": "tester",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-11": {
+      "connection_id": "GROQ-11",
+      "provider": "groq",
+      "key_fingerprint": "bdf948e49bf89b9c766cde9912a25d45b51ea559cf557a2e383977203aa23838",
+      "role": "architect",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-12": {
+      "connection_id": "GROQ-12",
+      "provider": "groq",
+      "key_fingerprint": "f7a4289295fb4b3d3181ffd9b4f3f822fc2bf1e93394ff3e416089be70f86714",
+      "role": "reviewer",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-13": {
+      "connection_id": "GROQ-13",
+      "provider": "groq",
+      "key_fingerprint": "4c7a7d5e5062f281fbd9fb1ea10f0959f99cf20acede754a5a9fc453fc977e30",
+      "role": "standby",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-14": {
+      "connection_id": "GROQ-14",
+      "provider": "groq",
+      "key_fingerprint": "96e7d10b21dd980060e0fe7fc114d9d51dbfadc25632d7ad361f3304608f1379",
+      "role": "standby",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "GROQ-15": {
+      "connection_id": "GROQ-15",
+      "provider": "groq",
+      "key_fingerprint": "58cfbe8778224a746ad1b36b03eb3b130959db88c6c88a2493d36accf39d507a",
+      "role": "standby",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-01": {
+      "connection_id": "OR-01",
+      "provider": "openrouter",
+      "key_fingerprint": "9378ee649c06a443193b332b78ad5d71366e01848266d0544a199ccb9cad09cb",
+      "role": "central_leader",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-02": {
+      "connection_id": "OR-02",
+      "provider": "openrouter",
+      "key_fingerprint": "99b34e9ec28b4777130c4e6d92413e0c3e3bd71335dce6adc7dc817eb07873b7",
+      "role": "central_leader",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-03": {
+      "connection_id": "OR-03",
+      "provider": "openrouter",
+      "key_fingerprint": "12cc99d763bea795a14d7ee8ac27be77b793e8805a088793da8523611c0e9a80",
+      "role": "coder",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-04": {
+      "connection_id": "OR-04",
+      "provider": "openrouter",
+      "key_fingerprint": "3443908467db0b8766ed96722256bdef86bd56a8496c7cb128db2350110c010b",
+      "role": "debugger",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-05": {
+      "connection_id": "OR-05",
+      "provider": "openrouter",
+      "key_fingerprint": "86f4c1cfc8375123450765ab7c0e21e20c03400b0f4fef329b8a6e86320cb3ee",
+      "role": "tester",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-06": {
+      "connection_id": "OR-06",
+      "provider": "openrouter",
+      "key_fingerprint": "f912b05468cbb3404a59f900c7727b77562e164b319dd527edc9bf40dec9ab00",
+      "role": "tester",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-07": {
+      "connection_id": "OR-07",
+      "provider": "openrouter",
+      "key_fingerprint": "875e9dded19ebfcc988b561c9c7ab0a92d3fd1395f01be140cf09843bdd61de1",
+      "role": "architect",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-08": {
+      "connection_id": "OR-08",
+      "provider": "openrouter",
+      "key_fingerprint": "a8835d1ffb96f974f4a301ae62ec51aa6e4c49e590a137dbcf885faa907d65ac",
+      "role": "architect",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-09": {
+      "connection_id": "OR-09",
+      "provider": "openrouter",
+      "key_fingerprint": "2f23328ece1d286b4d06cb26514b239b1b2576d207381addad1cf2d3bf930675",
+      "role": "reviewer",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-10": {
+      "connection_id": "OR-10",
+      "provider": "openrouter",
+      "key_fingerprint": "7172b4935b5acbddb06059eb2ca4a31519d06216ced23f4718efc18b3b126139",
+      "role": "reviewer",
+      "status": "VALIDATED",
+      "active": false
+    },
+    "OR-11": {
+      "connection_id": "OR-11",
+      "provider": "openrouter",
+      "key_fingerprint": "0dc9fdd32e605ca80c49da472fc076e8247a64b4b2165c94151947d47dbd9521",
+      "role": "reviewer",
+      "status": "VALIDATED",
+      "active": false
+    }
+  }
+}

@@ -1,0 +1,748 @@
+{
+  "schema_version": 1,
+  "project_root": "D:\\AI-Agent\\Sandbox\\agent-test",
+  "files_scanned": 41,
+  "findings": [
+    {
+      "severity": "WARN",
+      "file": "calculator.py",
+      "line": 1,
+      "category": "AST_PARSE_FAILURE",
+      "text": "invalid non-printable character U+FEFF (calculator.py, line 1)",
+      "recommendation": "Fix syntax before relying on this file."
+    },
+    {
+      "severity": "HIGH",
+      "file": "expansion_readiness_audit.py",
+      "line": 361,
+      "category": "FIXED_POOL_SIZE_COMPARISON",
+      "text": "and len(node.args) == 1",
+      "recommendation": "Compare against a configured or computed pool size, not a literal."
+    },
+    {
+      "severity": "HIGH",
+      "file": "expansion_readiness_audit.py",
+      "line": 401,
+      "category": "FIXED_POOL_SIZE_COMPARISON",
+      "text": "and len(node.comparators) == 1",
+      "recommendation": "Compare against a configured or computed pool size, not a literal."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "expansion_readiness_audit.py",
+      "line": 19,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "#   - Detect hardcoded pool sizes such as 11 / 15 / 4 / 3 / 2",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "HIGH",
+      "file": "expansion_readiness_audit.py",
+      "line": 361,
+      "category": "AST_FIXED_LEN_COMPARISON",
+      "text": "len(...) Eq 1",
+      "recommendation": "Use dynamic pool semantics."
+    },
+    {
+      "severity": "HIGH",
+      "file": "expansion_readiness_audit.py",
+      "line": 401,
+      "category": "AST_FIXED_LEN_COMPARISON",
+      "text": "len(...) Eq 1",
+      "recommendation": "Use dynamic pool semantics."
+    },
+    {
+      "severity": "HIGH",
+      "file": "finalize_roles.py",
+      "line": 44,
+      "category": "FIXED_POOL_SIZE_COMPARISON",
+      "text": "if len(leader_connections) != 11:",
+      "recommendation": "Compare against a configured or computed pool size, not a literal."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "finalize_roles.py",
+      "line": 44,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "if len(leader_connections) != 11:",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "finalize_roles.py",
+      "line": 57,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "\"coder\": groq_connections[0:4],",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "finalize_roles.py",
+      "line": 58,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "\"debugger\": groq_connections[4:7],",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "finalize_roles.py",
+      "line": 60,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "\"architect\": groq_connections[9:11],",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "finalize_roles.py",
+      "line": 61,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "\"reviewer\": groq_connections[11:14],",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "finalize_roles.py",
+      "line": 62,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "\"standby\": groq_connections[14:15],",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "HIGH",
+      "file": "finalize_roles.py",
+      "line": 44,
+      "category": "AST_FIXED_LEN_COMPARISON",
+      "text": "len(...) NotEq 11",
+      "recommendation": "Use dynamic pool semantics."
+    },
+    {
+      "severity": "HIGH",
+      "file": "leader_router.py",
+      "line": 1447,
+      "category": "FIXED_RANGE",
+      "text": "for index in range(3):",
+      "recommendation": "Replace fixed iteration count with pool/configuration length."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1165,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1166,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1167,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1168,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-07\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1169,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1177,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1178,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1179,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1189,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1190,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1191,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1192,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1195,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-07\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1201,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1202,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1203,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1287,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1288,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1289,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1290,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1296,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if \"OR-07\" in ultra_pool:",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1333,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if lease_1.account_id != \"OR-01\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1413,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if second.account_id != \"OR-02\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1501,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if super_lease.account_id != \"OR-01\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1532,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if super_first.account_id != \"OR-01\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1551,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if super_second.account_id != \"OR-02\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1587,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if final_super_1.account_id != \"OR-02\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1606,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if final_super_2.account_id != \"OR-03\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1652,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1653,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1654,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1655,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1659,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1660,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "leader_router.py",
+      "line": 1661,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"OR-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "HIGH",
+      "file": "leader_router.py",
+      "line": 1447,
+      "category": "AST_FIXED_RANGE",
+      "text": "range(3)",
+      "recommendation": "Use dynamic collection size."
+    },
+    {
+      "severity": "HIGH",
+      "file": "project_state_classifier.py",
+      "line": 1618,
+      "category": "FIXED_POOL_SIZE_COMPARISON",
+      "text": "if len(sys.argv) == 1:",
+      "recommendation": "Compare against a configured or computed pool size, not a literal."
+    },
+    {
+      "severity": "HIGH",
+      "file": "project_state_classifier.py",
+      "line": 1618,
+      "category": "AST_FIXED_LEN_COMPARISON",
+      "text": "len(...) Eq 1",
+      "recommendation": "Use dynamic pool semantics."
+    },
+    {
+      "severity": "WARN",
+      "file": "test_calculator.py",
+      "line": 1,
+      "category": "AST_PARSE_FAILURE",
+      "text": "invalid non-printable character U+FEFF (test_calculator.py, line 1)",
+      "recommendation": "Fix syntax before relying on this file."
+    },
+    {
+      "severity": "HIGH",
+      "file": "worker_profiles.py",
+      "line": 166,
+      "category": "AST_FIXED_LEN_COMPARISON",
+      "text": "len(...) NotEq 15",
+      "recommendation": "Use dynamic pool semantics."
+    },
+    {
+      "severity": "HIGH",
+      "file": "worker_profiles.py",
+      "line": 173,
+      "category": "AST_FIXED_LEN_COMPARISON",
+      "text": "len(...) NotEq 15",
+      "recommendation": "Use dynamic pool semantics."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 238,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "#       \"GROQ-01\": {\"status\": \"HEALTHY\"},",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 280,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "#   \"healthy\": [\"GROQ-01\", ...],",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 281,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "#   \"failed\": [\"GROQ-09\", ...]",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 305,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "#       {\"id\": \"GROQ-01\", \"status\": \"HEALTHY\"}",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 428,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "#       \"coder\": [\"GROQ-01\", ...]",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 957,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-01\": {",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 960,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-02\": {",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 963,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-03\": {",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 966,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-04\": {",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 969,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-05\": {",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 972,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-15\": {",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 980,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 981,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 982,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 983,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 984,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-05\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 985,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-15\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 993,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-01\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 994,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 995,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 996,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 999,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-05\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1002,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1005,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1008,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1011,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-15\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1255,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if first.worker_id != \"GROQ-01\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1274,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if second.worker_id != \"GROQ-02\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1298,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-02\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1299,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-03\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1300,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "\"GROQ-04\",",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "INFO",
+      "file": "worker_router.py",
+      "line": 1322,
+      "category": "FIXED_CONNECTION_ID",
+      "text": "if standby_lease.worker_id != \"GROQ-15\":",
+      "recommendation": "Connection IDs may remain literal data, but selection logic must not depend on a fixed ID range."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "worker_router.py",
+      "line": 1322,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "if standby_lease.worker_id != \"GROQ-15\":",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "worker_router.py",
+      "line": 1351,
+      "category": "POOL_NUMERIC_LITERAL",
+      "text": "\"TASK-CODER-STANDBY-2\",",
+      "recommendation": "Verify that this number is configuration data rather than a structural assumption."
+    }
+  ],
+  "synthetic_tests": {
+    "N=1": "PASS",
+    "N=2": "PASS",
+    "N=3": "PASS",
+    "N=4": "PASS",
+    "N=5": "PASS",
+    "N=10": "PASS",
+    "N=11": "PASS",
+    "N=15": "PASS",
+    "N=21": "PASS",
+    "N=31": "PASS",
+    "N=50": "PASS",
+    "N=100": "PASS"
+  },
+  "dynamic_pool_test": {
+    "N=5": "PASS",
+    "N=11": "PASS",
+    "N=21": "PASS",
+    "N=31": "PASS"
+  },
+  "status": "REVIEW_REQUIRED"
+}
