@@ -7,9 +7,9 @@ Registry-driven router migration has reached a **green local validation checkpoi
 
 Executable code was locally validated at:
 
-`13df920 Correct expansion audit regression test`
+`97f282eb7c00e8f219f3d4defd40d87fd959b661`
 
-The subsequent branch commits are documentation and compatibility-test refinements; they are pending the next local validation cycle.
+The latest local validation cycle completed successfully after the final compatibility refinement.
 
 ## Completed in this checkpoint
 
@@ -28,46 +28,17 @@ The subsequent branch commits are documentation and compatibility-test refinemen
 - Calculator regression defects exposed by the full test suite were repaired with minimal changes and source encoding was normalized.
 - Expansion Readiness Audit v2 distinguishes structural fixed-size assumptions from legitimate CLI/test/self-audit constructs.
 - Added regression coverage for the expansion audit and compatibility behavior.
+- Final LeaderFailover compatibility repair removed a dependency on a non-existent `LeaderRouter.active_leases()` API by using the router's authoritative `snapshot()["leases"]` state instead.
 
 ## Local validation results at executable checkpoint
 
 Environment:
 
 - Python: `3.12.10`
-- `python -m compileall -q .`: PASS
-- `python -m pytest -q`: `18 passed`
-- `python expansion_readiness_audit.py`: PASS
-- `python config_registry.py`: VALID
-- `python leader_router.py`: PASS
-- `python worker_router.py`: PASS
-- `python orchestration_smoke_test.py`: PASS
-- repeated `python orchestration_smoke_test.py` without deleting runtime state: PASS
+- `python -m pytest -q`: `19 passed`
+- `python leader_failover.py`: PASS / READY
 
-Observed orchestration runs:
-
-```text
-Run 1:
-  Healthy Ultra leaders : 8
-  Healthy Super leaders : 10
-  Configured Groq workers: 15
-  Leader attempts: 1
-  Worker attempts: 1
-  Leader validation: PASS
-  Worker validation: PASS
-  Overall: PASS
-
-Run 2:
-  Healthy Ultra leaders : 8
-  Healthy Super leaders : 10
-  Configured Groq workers: 15
-  Leader attempts: 2
-  Worker attempts: 1
-  Leader validation: PASS
-  Worker validation: PASS
-  Overall: PASS
-```
-
-The second leader attempt demonstrates live runtime failover while still completing successfully.
+The final compatibility regression now passes together with the complete local test suite.
 
 ## Expansion readiness audit
 
@@ -95,13 +66,13 @@ LeaseError: Task already has a worker lease: SMOKE-CODER-001
 
 This was reproduced as a stale persisted task-lease collision. The correct fix was **not** to weaken WorkerRouter lease protection. Instead, orchestration smoke task IDs were made run-unique.
 
-The fix was then validated by two consecutive successful smoke runs without clearing runtime state.
+The fix was then validated by consecutive successful smoke runs without clearing runtime state.
 
 ## Compatibility review refinement
 
 Final review identified one compatibility semantic that needed preservation: the legacy `LeaderFailover.reset()` contract returned the active primary connection after reset. The facade was adjusted so reset clears runtime failures and then keeps the newly acquired primary compatibility lease active rather than immediately releasing it.
 
-A regression test was added to verify:
+A regression test verifies:
 
 ```text
 reset()
@@ -110,9 +81,13 @@ reset()
 → current_model() is primary model
 → current_tier() == primary
 → state() == READY
+
+failover("compatibility_test_failure")
+→ moves to the next available primary connection
+→ remains READY on the primary tier
 ```
 
-This compatibility refinement is on the branch but was not included in the last local test run at `13df920`; it requires the next sync/test cycle.
+The final compatibility cycle passed with the full suite at 19/19.
 
 ## Health variability observation
 
@@ -131,7 +106,7 @@ groq_keys.backup.txt
 openrouter_keys.backup.txt
 ```
 
-Local generated profile copies remain preserved outside the repository at the protected local backup location created during branch synchronization. They must not be deleted merely because they are absent from Git.
+Local generated profile copies remain preserved outside repo synchronization control at the protected local backup location created during branch synchronization. They must not be deleted merely because they are absent from Git.
 
 Do not discard, reset, or overwrite unrelated intentional local work.
 
@@ -143,28 +118,24 @@ Pull request:
 
 Current branch state:
 
-- `36` commits ahead of `main`
+- `38` commits ahead of `main`
 - `0` commits behind `main`
 - PR remains open and unmerged
+- No submitted reviews or review threads are currently present
+- No commit status checks are currently reported for the latest head
 
-Current branch head after the latest compatibility refinement is tracked by the PR; the local executable checkpoint remains `13df920` until the next sync/validation.
+Current branch head:
+
+`97f282eb7c00e8f219f3d4defd40d87fd959b661`
 
 Required promotion sequence:
 
 ```text
-sync latest branch
-    ↓
-compile
-    ↓
-full regression
-    ↓
-expansion audit
-    ↓
-router tests
-    ↓
-orchestration smoke
+local validation green
     ↓
 complete diff review
+    ↓
+dependency / architecture review
     ↓
 security / secret-boundary review
     ↓
@@ -182,7 +153,8 @@ Executable evidence currently supports these conclusions:
 - runtime failover works;
 - orchestration is repeatable with persisted state;
 - expansion readiness coverage passes;
-- full regression passes at the executable checkpoint;
+- full regression passes;
+- LeaderFailover compatibility behavior is preserved without creating a second runtime authority;
 - generated profile/discovery artifacts are no longer routing authorities.
 
 A separate production-hardening milestone remains for `connection_manager.py`: move secret-file location outside permanent repository-relative paths and make key rotation preserve stable connection identity independently of secret-file line order.
