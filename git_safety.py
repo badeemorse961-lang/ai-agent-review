@@ -117,7 +117,8 @@ class GitSafetyPolicy:
         if normalized != "git":
             raise ProcessSandboxSafetyStop("Git safety policy received a non-Git executable")
 
-        self._validate_repository_root(workspace_root)
+        root = workspace_root.resolve()
+        self._validate_repository_root(root)
 
         if len(args) < 2:
             raise ProcessSandboxSafetyStop("Git subcommand is required")
@@ -134,16 +135,15 @@ class GitSafetyPolicy:
                 f"Git subcommand is not allowlisted: {subcommand!r}"
             )
 
-        self._validate_shape(subcommand, args[1:])
+        self._validate_shape(subcommand, args[1:], root)
         return args
 
     @staticmethod
     def _validate_repository_root(workspace_root: Path) -> None:
-        root = workspace_root.resolve()
-        if not root.exists() or not root.is_dir():
+        if not workspace_root.exists() or not workspace_root.is_dir():
             raise ProcessSandboxSafetyStop("Git workspace root must be an existing directory")
 
-        dot_git = root / ".git"
+        dot_git = workspace_root / ".git"
         if not dot_git.exists():
             raise ProcessSandboxSafetyStop(
                 "Git terminal execution requires the active workspace to be a Git repository"
@@ -175,7 +175,12 @@ class GitSafetyPolicy:
             return value.lower()
         return ""
 
-    def _validate_shape(self, subcommand: str, args: Sequence[str]) -> None:
+    def _validate_shape(
+        self,
+        subcommand: str,
+        args: Sequence[str],
+        workspace_root: Path,
+    ) -> None:
         allowed = self._ALLOWED_ARGUMENTS[subcommand]
         positional_seen = False
 
@@ -205,7 +210,7 @@ class GitSafetyPolicy:
                         "Git rev-parse only permits approved identity queries"
                     )
             elif subcommand in {"diff", "ls-files"}:
-                self._validate_relative_workspace_path(value)
+                self._validate_relative_workspace_path(value, workspace_root)
             elif subcommand == "show":
                 if "/" in value or "\\" in value:
                     raise ProcessSandboxSafetyStop(
@@ -217,9 +222,17 @@ class GitSafetyPolicy:
                 )
 
     @staticmethod
-    def _validate_relative_workspace_path(value: str) -> None:
+    def _validate_relative_workspace_path(value: str, workspace_root: Path) -> None:
         path = Path(value)
         if path.is_absolute() or value.startswith("~"):
             raise ProcessSandboxSafetyStop(
                 f"Git path must be workspace-relative: {value!r}"
             )
+
+        candidate = (workspace_root / path).resolve(strict=False)
+        try:
+            candidate.relative_to(workspace_root)
+        except ValueError as exc:
+            raise ProcessSandboxSafetyStop(
+                f"Git path escapes the active workspace: {value!r}"
+            ) from exc
