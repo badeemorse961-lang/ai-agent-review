@@ -4,159 +4,77 @@ import json
 from pathlib import Path
 from typing import Any
 
+from config_registry import (
+    get_leader_pool,
+    load_registry,
+    validate_registry,
+)
+
 
 BASE_DIR = Path(__file__).resolve().parent
-
-ROLES_FILE = BASE_DIR / "roles.json"
-CAPABILITIES_FILE = BASE_DIR / "leader_capabilities.json"
 OUTPUT_FILE = BASE_DIR / "leader_profiles.json"
 
 
-PRIMARY_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
-FAILOVER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing file: {path.name}")
-
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def unique(items: list[str]) -> list[str]:
-    seen = set()
-    result = []
-
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-
-    return result
+def save_json(path: Path, data: dict[str, Any]) -> None:
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
-    roles = load_json(ROLES_FILE)
-    capabilities = load_json(CAPABILITIES_FILE)
+    registry = validate_registry()
+    leader = load_registry()["architecture"]["leader"]
 
-    leader_role = roles["roles"]["central_leader"]
-
-    ultra_pool = unique(
-        capabilities.get("ultra_pool", [])
-    )
-
-    super_pool = unique(
-        capabilities.get("super_pool", [])
-    )
-
-    if not ultra_pool:
-        raise RuntimeError(
-            "No Nemotron Ultra connections available."
-        )
-
-    if not super_pool:
-        raise RuntimeError(
-            "No Nemotron Super connections available."
-        )
-
-    # The capability audit is the source of truth for
-    # which OpenRouter connections actually support each model.
-    if set(ultra_pool) != set(
-        leader_role["model_strategy"]["primary"]["pool"]
-    ):
-        raise RuntimeError(
-            "Ultra capability pool does not match roles.json."
-        )
-
-    if set(super_pool) != set(
-        leader_role["model_strategy"]["failover"]["pool"]
-    ):
-        raise RuntimeError(
-            "Super capability pool does not match roles.json."
-        )
+    primary_pool = get_leader_pool("primary")
+    failover_pool = get_leader_pool("failover")
 
     profiles = {
-        "version": 2,
-
+        "version": 3,
+        "source": "config/registry.json",
         "architecture": {
-            "provider": "openrouter",
-
-            "strategy": (
-                "model-aware-primary-failover"
+            "provider": leader["provider"],
+            "strategy": "model-aware-primary-failover",
+            "primary_model": leader["primary_model"],
+            "failover_model": leader["failover_model"],
+            "safe_stop_on_exhaustion": bool(
+                leader.get("safe_stop_on_exhaustion", True)
             ),
-
-            "primary_model": PRIMARY_MODEL,
-            "failover_model": FAILOVER_MODEL,
-
-            "safe_stop_on_exhaustion": True,
         },
-
         "pools": {
             "primary": {
-                "provider": "openrouter",
-                "model": PRIMARY_MODEL,
-                "connections": ultra_pool,
+                "provider": leader["provider"],
+                "model": leader["primary_model"],
+                "connections": primary_pool,
             },
-
             "failover": {
-                "provider": "openrouter",
-                "model": FAILOVER_MODEL,
-                "connections": super_pool,
+                "provider": leader["provider"],
+                "model": leader["failover_model"],
+                "connections": failover_pool,
             },
         },
-
         "runtime": {
             "active_tier": "primary",
-            "active_connection": ultra_pool[0],
-            "active_model": PRIMARY_MODEL,
-
+            "active_connection": primary_pool[0],
+            "active_model": leader["primary_model"],
             "primary_index": 0,
             "failover_index": 0,
-
             "state": "READY",
-
             "failure_history": [],
         },
     }
 
-    OUTPUT_FILE.write_text(
-        json.dumps(
-            profiles,
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    save_json(OUTPUT_FILE, profiles)
 
     print("=" * 70)
-    print("LEADER PROFILES INITIALIZED")
+    print("LEADER PROFILES DERIVED FROM REGISTRY")
     print("=" * 70)
-
-    print()
-    print("PRIMARY TIER")
-    print(f"  Model       : {PRIMARY_MODEL}")
-    print(f"  Connections : {len(ultra_pool)}")
-    print(f"  Active      : {ultra_pool[0]}")
-
-    print()
-    print("FAILOVER TIER")
-    print(f"  Model       : {FAILOVER_MODEL}")
-    print(f"  Connections : {len(super_pool)}")
-
-    print()
-    print("RUNTIME")
-    print("  State       : READY")
-    print("  Active tier : primary")
-    print(f"  Active conn : {ultra_pool[0]}")
-
-    print()
-    print(
-        "Safe stop on full leadership exhaustion: ENABLED"
-    )
-
-    print()
-    print(f"Saved: {OUTPUT_FILE.name}")
+    print(f"Primary model : {leader['primary_model']}")
+    print(f"Primary count : {len(primary_pool)}")
+    print(f"Failover model: {leader['failover_model']}")
+    print(f"Failover count: {len(failover_pool)}")
+    print(f"Saved         : {OUTPUT_FILE.name}")
+    print("Result        : VALID ✅")
     print("=" * 70)
 
     return 0
