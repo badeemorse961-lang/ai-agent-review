@@ -113,16 +113,11 @@ class WorkerDispatcher:
         validation = plan.get("validation")
         if not isinstance(validation, Mapping):
             raise WorkerDispatchSafetyStop("Worker dispatch requires validation metadata")
-        for key in ("dag_valid", "roles_valid"):
+        for key in ("dag_valid", "roles_valid", "dependencies_valid"):
             if validation.get(key) is not True:
                 raise WorkerDispatchSafetyStop(
                     f"Validated plan is missing positive {key} proof"
                 )
-        dependencies_valid = validation.get("dependencies_valid")
-        if dependencies_valid is not None and dependencies_valid is not True:
-            raise WorkerDispatchSafetyStop(
-                "Validated plan has invalid dependencies proof"
-            )
 
         tasks = plan.get("tasks")
         if not isinstance(tasks, list) or not tasks:
