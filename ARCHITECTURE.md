@@ -29,6 +29,8 @@ Specialist Workers
   ↓
 Independent Validation
   ↓
+Execution Authorization (internal)
+  ↓
 Execution Gate
   ↓
 Checkpoint
@@ -41,6 +43,11 @@ Verification
   ├─ APPROVE
   └─ ROLLBACK → VERIFY
 ```
+
+## Autonomous operation
+The agent is autonomous by default inside the active project workspace. Internal execution authorization is a machine-checked policy decision, not a request for human confirmation on every file or command.
+
+Human approval is reserved for deployments or explicitly configured high-risk actions outside the normal project-development authority.
 
 ## Project state
 Supported states are BUILD, CONTINUE, MAINTAIN, REPAIR, CONFLICT, and UNKNOWN.
@@ -75,15 +82,17 @@ Each role owns a configurable pool. Pool size is configuration, not architecture
 Connections use stable IDs such as `OR-01` and `GROQ-01`. IDs are identifiers only; routing must not assume a fixed maximum ID.
 
 ## Execution authority
-The model proposes. The local agent validates. The execution gate controls mutation.
+The model proposes. The local agent validates. Internal execution authorization promotes a validated task to the existing execution gate. The gate controls mutation.
 
 Required mutation path:
 1. proposal validation
-2. checkpoint
-3. guarded apply
-4. tests
-5. verification
-6. approve or rollback
+2. independent validation
+3. internal execution authorization
+4. checkpoint
+5. guarded apply
+6. tests
+7. verification
+8. approve or rollback
 
 ## Expansion invariant
 The architecture is N-driven.
