@@ -62,13 +62,10 @@ class ProcessSandbox:
         "PATHEXT",
         "TEMP",
         "TMP",
-        "HOME",
-        "USERPROFILE",
-        "PYTHONPATH",
-        "VIRTUAL_ENV",
         "LANG",
         "LC_ALL",
     }
+    _REQUEST_ENV_ALLOWLIST = {"TEMP", "TMP", "LANG", "LC_ALL"}
 
     def __init__(
         self,
@@ -135,7 +132,7 @@ class ProcessSandbox:
         else:
             start_new_session = True
 
-        process = None
+        process: subprocess.Popen[str] | None = None
         try:
             process = subprocess.Popen(
                 list(normalized_command),
@@ -195,7 +192,7 @@ class ProcessSandbox:
         unknown = {
             str(key).upper()
             for key in requested
-            if str(key).upper() not in self._DEFAULT_ENV_ALLOWLIST
+            if str(key).upper() not in self._REQUEST_ENV_ALLOWLIST
             and not str(key).upper().startswith("AGENT_")
         }
         if unknown:
@@ -215,14 +212,28 @@ class ProcessSandbox:
         }
         for key, value in requested.items():
             upper = str(key).upper()
-            if upper in self._DEFAULT_ENV_ALLOWLIST or upper.startswith("AGENT_"):
+            if upper in self._REQUEST_ENV_ALLOWLIST or upper.startswith("AGENT_"):
                 base[str(key)] = str(value)
         return base
 
     def _terminate_process_tree(self, process: subprocess.Popen[str]) -> None:
         if os.name == "nt":
-            process.kill()
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    shell=False,
+                )
+            except OSError:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
             return
+
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except OSError:
