@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from process_sandbox import ProcessSandbox, ProcessSandboxSafetyStop
+from process_sandbox import ProcessSandboxSafetyStop
+from process_sandbox import ProcessSandbox
 from sandbox_policy import ExternalResource, WorkspaceResourcePolicy
-from worker_execution import WorkerExecutionBoundary
+from worker_execution import WorkerExecutionBoundary, WorkerExecutionSafetyStop
 
 
 def build_boundary(
@@ -104,7 +105,7 @@ def test_worker_cannot_claim_undeclared_external_resource(tmp_path: Path) -> Non
     boundary, script, executable = build_boundary(tmp_path)
     script.write_text("print('worker-ok')\n", encoding="utf-8")
 
-    with pytest.raises(ProcessSandboxSafetyStop):
+    with pytest.raises(WorkerExecutionSafetyStop):
         boundary.execute(
             {
                 "task_id": "task-3",

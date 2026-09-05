@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from process_sandbox import ProcessSandbox
+from terminal_executor import TerminalExecutor
 
 
 SCHEMA_VERSION = 1
@@ -82,16 +82,11 @@ ExecutorHook = Callable[[ExecutionRequest], tuple[int, str, str, bool]]
 class WorkerExecutionBoundary:
     """Guarded execution boundary for one already-assigned worker task.
 
-    The worker may operate freely inside the explicit active workspace, but the
-    boundary rejects declared targets outside that workspace and rejects shell
-    wrappers or inline interpreter launchers. A process cwd alone is not treated
-    as a complete isolation guarantee: the checkpoint hook must explicitly attest
-    that execution is isolated before the executor is allowed to launch.
-
-    An optional ``ProcessSandbox`` adds explicit tool-path validation, process
-    group isolation, environment minimization, and bounded child-process launch.
-    External resources are passed through to that sandbox as explicit read/write
-    capabilities; they do not become implicit workspace authority.
+    Production execution must cross the explicit ``TerminalExecutor`` facade,
+    which composes terminal command policy with the process/resource sandbox.
+    A custom ``executor`` may still be injected as a narrow test or integration
+    adapter, but the default production path never falls back to raw
+    ``subprocess`` execution.
     """
 
     _PATH_LIKE_SUFFIXES = {
@@ -114,6 +109,7 @@ class WorkerExecutionBoundary:
         checkpoint: Optional[CheckpointHook] = None,
         executor: Optional[ExecutorHook] = None,
         process_sandbox: Optional[ProcessSandbox] = None,
+        terminal_executor: Optional[TerminalExecutor] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     ) -> None:
@@ -138,15 +134,25 @@ class WorkerExecutionBoundary:
 
         self.allowed_commands = normalized
         self.checkpoint = checkpoint
-        self.executor = executor or self._subprocess_executor
+        self.executor = executor
         self.process_sandbox = process_sandbox
+        self.terminal_executor = terminal_executor
         self.timeout_seconds = float(timeout_seconds)
         self.max_output_chars = max_output_chars
 
-        if self.process_sandbox is not None and self.process_sandbox.policy.workspace_root != self.workspace_root:
-            raise WorkerExecutionSafetyStop(
-                "Process sandbox workspace must match worker workspace"
-            )
+        if self.process_sandbox is not None:
+            sandbox_workspace = self.process_sandbox.policy.workspace_root
+            if sandbox_workspace != self.workspace_root:
+                raise WorkerExecutionSafetyStop(
+                    "Process sandbox workspace must match worker workspace"
+                )
+
+            if self.terminal_executor is None:
+                self.terminal_executor = TerminalExecutor(self.process_sandbox)
+            elif self.terminal_executor.sandbox is not self.process_sandbox:
+                raise WorkerExecutionSafetyStop(
+                    "Terminal executor must use the worker process sandbox"
+                )
 
     def execute(
         self,
@@ -178,7 +184,10 @@ class WorkerExecutionBoundary:
                 "Checkpoint must explicitly attest isolated execution"
             )
 
-        returncode, stdout, stderr, timed_out = self.executor(request)
+        if self.executor is not None:
+            returncode, stdout, stderr, timed_out = self.executor(request)
+        else:
+            returncode, stdout, stderr, timed_out = self._terminal_executor(request)
 
         stdout, stdout_truncated = self._bound_output(stdout)
         stderr, stderr_truncated = self._bound_output(stderr)
@@ -354,42 +363,31 @@ class WorkerExecutionBoundary:
 
         return resolved.relative_to(self.workspace_root).as_posix()
 
-    def _subprocess_executor(
+    def _terminal_executor(
         self,
         request: ExecutionRequest,
     ) -> tuple[int, str, str, bool]:
-        if self.process_sandbox is not None:
-            result = self.process_sandbox.run(
+        if self.terminal_executor is None:
+            raise WorkerExecutionSafetyStop(
+                "Production worker execution requires TerminalExecutor; "
+                "provide an explicit process sandbox or a controlled executor adapter"
+            )
+
+        try:
+            result = self.terminal_executor.run(
                 request.command,
                 target_paths=request.targets,
                 external_reads=request.external_reads,
                 external_writes=request.external_writes,
             )
-            return result.returncode, result.stdout, result.stderr, result.timed_out
+        except Exception as exc:
+            if isinstance(exc, WorkerExecutionSafetyStop):
+                raise
+            raise WorkerExecutionSafetyStop(
+                f"Terminal execution safety boundary rejected the request: {exc}"
+            ) from exc
 
-        try:
-            completed = subprocess.run(
-                list(request.command),
-                cwd=request.workspace_root,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=request.timeout_seconds,
-                check=False,
-            )
-            return completed.returncode, completed.stdout, completed.stderr, False
-        except subprocess.TimeoutExpired as exc:
-            stdout = self._text_from_timeout(exc.stdout)
-            stderr = self._text_from_timeout(exc.stderr)
-            return -1, stdout, stderr, True
-
-    @staticmethod
-    def _text_from_timeout(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return str(value)
+        return result.returncode, result.stdout, result.stderr, result.timed_out
 
     def _bound_output(self, value: Any) -> tuple[str, bool]:
         text = "" if value is None else str(value)
@@ -417,6 +415,7 @@ def execute_worker_task(
     checkpoint: Optional[CheckpointHook] = None,
     executor: Optional[ExecutorHook] = None,
     process_sandbox: Optional[ProcessSandbox] = None,
+    terminal_executor: Optional[TerminalExecutor] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
 ) -> ExecutionResult:
@@ -426,6 +425,7 @@ def execute_worker_task(
         checkpoint=checkpoint,
         executor=executor,
         process_sandbox=process_sandbox,
+        terminal_executor=terminal_executor,
         timeout_seconds=timeout_seconds,
         max_output_chars=max_output_chars,
     )
