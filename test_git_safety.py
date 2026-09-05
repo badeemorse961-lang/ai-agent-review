@@ -88,6 +88,12 @@ def test_git_path_arguments_must_be_workspace_relative(git_workspace: Path) -> N
             workspace_root=git_workspace,
         )
 
+    with pytest.raises(ProcessSandboxSafetyStop):
+        policy.validate(
+            ["git", "diff", "--", "../outside.txt"],
+            workspace_root=git_workspace,
+        )
+
 
 def test_non_git_executable_is_rejected(git_workspace: Path) -> None:
     with pytest.raises(ProcessSandboxSafetyStop):
