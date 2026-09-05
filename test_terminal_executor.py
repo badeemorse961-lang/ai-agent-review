@@ -44,6 +44,21 @@ def test_terminal_executor_rejects_inline_python(tmp_path: Path) -> None:
         executor.run([str(executable), "-c", "print('blocked')"])
 
 
+def test_terminal_executor_blocks_git_mutation_before_process_launch(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / ".git").mkdir()
+    executable = Path(sys.executable).resolve()
+    sandbox = ProcessSandbox(
+        WorkspaceResourcePolicy(workspace, allowed_tool_paths=[executable]),
+        timeout_seconds=3,
+    )
+    executor = TerminalExecutor(sandbox)
+
+    with pytest.raises(ProcessSandboxSafetyStop):
+        executor.run(["git", "commit", "-m", "must-not-run"])
+
+
 def test_terminal_executor_preserves_explicit_external_read_boundary(tmp_path: Path) -> None:
     external = tmp_path / "assets"
     external.mkdir()
