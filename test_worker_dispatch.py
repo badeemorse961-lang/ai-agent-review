@@ -50,7 +50,11 @@ class WorkerDispatchTests(unittest.TestCase):
                 "worker_assignment_authorized": False,
                 "model_output_trusted": False,
             },
-            "validation": {"dag_valid": True, "roles_valid": True},
+            "validation": {
+                "dag_valid": True,
+                "roles_valid": True,
+                "dependencies_valid": True,
+            },
         }
 
     def test_dispatch_follows_dependency_order(self) -> None:
