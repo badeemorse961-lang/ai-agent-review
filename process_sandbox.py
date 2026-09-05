@@ -66,6 +66,18 @@ class ProcessSandbox:
         "LC_ALL",
     }
     _REQUEST_ENV_ALLOWLIST = {"TEMP", "TMP", "LANG", "LC_ALL"}
+    _PATH_LIKE_SUFFIXES = {
+        ".cfg",
+        ".ini",
+        ".json",
+        ".py",
+        ".pyc",
+        ".toml",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
 
     def __init__(
         self,
@@ -115,6 +127,7 @@ class ProcessSandbox:
                 self.policy.validate_external_path(path, access="write")
 
             resolved_executable = self.policy.validate_tool_executable(normalized_command[0])
+            self._validate_command_paths(normalized_command[1:])
         except SandboxPolicySafetyStop as exc:
             raise ProcessSandboxSafetyStop(str(exc)) from exc
         except FileNotFoundError as exc:
@@ -186,6 +199,30 @@ class ProcessSandbox:
         ):
             raise ProcessSandboxSafetyStop("Shell wrappers and inline launchers are forbidden")
         return args
+
+    def _validate_command_paths(self, args: Sequence[str]) -> None:
+        for value in args:
+            if not self._looks_like_path_argument(value):
+                continue
+            try:
+                self.policy.validate_workspace_path(value)
+            except SandboxPolicySafetyStop:
+                try:
+                    self.policy.validate_external_path(value, access="read")
+                except SandboxPolicySafetyStop as exc:
+                    raise ProcessSandboxSafetyStop(
+                        f"Command path is not authorized: {value!r}"
+                    ) from exc
+
+    @classmethod
+    def _looks_like_path_argument(cls, value: str) -> bool:
+        path = Path(value)
+        return (
+            path.is_absolute()
+            or "/" in value
+            or "\\" in value
+            or path.suffix.lower() in cls._PATH_LIKE_SUFFIXES
+        )
 
     def _build_environment(self, requested: Mapping[str, str] | None) -> dict[str, str]:
         requested = requested or {}
