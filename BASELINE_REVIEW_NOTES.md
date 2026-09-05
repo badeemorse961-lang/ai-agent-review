@@ -1,51 +1,26 @@
 # Baseline Review Notes
 
-## Temporary review repository
-`badeemorse961-lang/ai-agent-review`
+This document records the known cleanup findings and the intended direction for the repository baseline.
 
-## Existing building blocks found
-The repository contains components for:
-- connection registry/fingerprints
-- leader model discovery
-- leader health checking
-- model-aware failover
-- worker health checks
-- worker routing/leases
-- workspace guarding
-- execution checkpoint/rollback
-- project scanning
-- automatic project-state classification
-- orchestration smoke testing
+## Immediate cleanup targets
 
-## Current leadership design
-- OpenRouter / Nemotron Ultra primary
-- OpenRouter / Nemotron Super failover
+- Remove legacy agent implementation that is not part of the target architecture.
+- Remove competing role-generation scripts so there is one authoritative configuration path.
+- Remove generated runtime state, health snapshots, result files, backups, and execution checkpoints from source control.
+- Keep validated core components available for refactoring rather than deleting working subsystems prematurely.
 
-## Findings
-### Fixed-size assumptions
-`finalize_roles.py` contains a fixed leader count and fixed role slices.
-`worker_profiles.py` contains a fixed Groq worker count.
+## Configuration authority
 
-These are genuine N-driven candidates.
+The repository must converge on a single configuration authority for provider connections, model definitions, pools, roles, and policies. Runtime state and health observations must not become configuration truth.
 
-### Legacy implementation
-`agent.py` is an earlier experimental implementation and still references the removed local Qwen model and hardcoded project paths/files. It must not be treated as the final authoritative agent.
+## Current known risks
 
-### Multiple role-generation paths
-`assign_roles.py`, `role_manager.py`, and `finalize_roles.py` represent different generations of role configuration. The final architecture should have one authoritative role/configuration pipeline.
+- `connections.json` contains stale role assignments and must not be treated as the authoritative role registry.
+- `finalize_roles.py` contains fixed-size assumptions and should not remain an independent writer of role assignments.
+- `worker_profiles.py` contains fixed connection-count assumptions and must become configuration-driven.
+- `connection_manager.py` still expects repository-relative secret files; production configuration must locate secrets outside the repository.
+- `leader_profiles.py` and the routing layers should consume centralized configuration rather than duplicate model/pool facts.
 
-### Repository hygiene
-Checkpoint/history and runtime/test artifacts are currently mixed into the repository snapshot. Final policy must distinguish source, tests, configuration, generated artifacts, and local-only state.
+## Cleanup principle
 
-## Next implementation phases
-1. Adopt and validate these rules locally.
-2. Normalize role/pool configuration to N-driven semantics.
-3. Establish repository/local synchronization.
-4. Implement specification analysis.
-5. Implement current-state analysis.
-6. Implement gap/compliance analysis.
-7. Build context composition.
-8. Integrate the central leader.
-9. Integrate specialist orchestration.
-
-These documents define the intended baseline. They do not by themselves prove every current source file already satisfies it.
+Delete only clearly obsolete or conflicting artifacts first. Preserve validated execution, scanning, classification, routing, and safety components until their dependencies are mapped and migrated to the authoritative configuration layer.
