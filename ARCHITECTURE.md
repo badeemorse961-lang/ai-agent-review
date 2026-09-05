@@ -115,12 +115,21 @@ TerminalExecutor
         ↓
 TerminalPolicy
         ↓
+GitSafetyPolicy (for Git commands)
+        ↓
 ProcessSandbox
         ↓
 Execution Gate
 ```
 
 `WorkerExecutionBoundary` may accept an explicitly injected executor adapter for tests or tightly controlled integration adapters. It must not silently fall back to raw `subprocess` execution in its normal production path.
+
+## Git safety boundary
+Git access through the terminal is repository-inspection only. `GitSafetyPolicy` accepts a narrow set of read-only commands (`status`, `diff`, `log`, `show`, `branch`, `rev-parse`, `ls-files`) and rejects repository/history mutations and authority-expanding operations such as `commit`, `push`, `pull`, `fetch`, `reset`, `clean`, `checkout`, `switch`, `restore`, `merge`, and `rebase`.
+
+Git repository-scope overrides and configuration injection are also rejected. Git path arguments are stricter than generic terminal path handling and must remain workspace-relative where accepted.
+
+Repository mutation must use a separate task-scoped mutation/control plane with explicit checkpoint and verification semantics; terminal Git access must not silently become that authority.
 
 ## Process containment
 The optional process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
@@ -150,3 +159,4 @@ Examples:
 12. External resources require explicit bounded authorization.
 13. Normal development remains autonomous; human confirmation is exceptional rather than per-operation.
 14. Standard worker process execution crosses the TerminalExecutor and TerminalPolicy boundaries before ProcessSandbox launch.
+15. Git terminal access cannot grant repository mutation authority; mutating Git operations require a separate explicit control plane.
