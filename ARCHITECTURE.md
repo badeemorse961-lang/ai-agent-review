@@ -47,7 +47,7 @@ Verification
 ## Autonomous operation
 The agent is autonomous by default inside the active project workspace. Internal execution authorization is a machine-checked policy decision, not a request for human confirmation on every file or command.
 
-Human approval is reserved for deployments or explicitly configured high-risk actions outside the normal project-development authority.
+Human approval is reserved for deployments or explicitly configured high-risk actions outside normal project-development authority.
 
 ## Project state
 Supported states are BUILD, CONTINUE, MAINTAIN, REPAIR, CONFLICT, and UNKNOWN.
@@ -99,9 +99,6 @@ The architecture is N-driven.
 
 Examples:
 `11 → 21` leadership, `4 → 10` coder, or any other pool expansion must be resource/configuration expansion, not an architecture rewrite.
-
-## Review findings
-The repository currently contains multiple generations of role-management logic, an older experimental `agent.py`, and fixed-size assumptions in role/profile generation. These must be normalized before the final baseline.
 
 ## Invariants
 1. No secret values enter Git.
