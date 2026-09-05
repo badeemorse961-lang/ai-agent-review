@@ -39,10 +39,6 @@ class ExecutionAuthorizationTests(unittest.TestCase):
     def _checkpoint() -> dict:
         return {"checkpoint_id": "CP-1", "isolated": True}
 
-    @staticmethod
-    def _approval() -> dict:
-        return {"approved": True, "task_id": "TASK-1"}
-
     def _change(self, path: str = "target.txt") -> FileChange:
         return FileChange(path=path, old_text="before\n", new_text="after\n")
 
@@ -53,7 +49,6 @@ class ExecutionAuthorizationTests(unittest.TestCase):
             boundary.authorize(
                 self._verdict(passed=False),
                 checkpoint=self._checkpoint(),
-                approval=self._approval(),
                 changes=[self._change()],
             )
 
@@ -64,20 +59,19 @@ class ExecutionAuthorizationTests(unittest.TestCase):
             boundary.authorize(
                 self._verdict(),
                 checkpoint={"checkpoint_id": "CP-1", "isolated": False},
-                approval=self._approval(),
                 changes=[self._change()],
             )
 
-    def test_authorization_requires_explicit_task_scoped_approval(self) -> None:
+    def test_authorization_is_internal_and_does_not_require_human_approval(self) -> None:
         root = self._workspace()
         boundary = ExecutionAuthorizationBoundary(root)
-        with self.assertRaises(ExecutionAuthorizationSafetyStop):
-            boundary.authorize(
-                self._verdict(),
-                checkpoint=self._checkpoint(),
-                approval={"approved": True, "task_id": "TASK-2"},
-                changes=[self._change()],
-            )
+        record = boundary.authorize(
+            self._verdict(),
+            checkpoint=self._checkpoint(),
+            changes=[self._change()],
+        )
+        self.assertTrue(record.authorized)
+        self.assertIn("independent_validation_passed", record.basis)
 
     def test_targets_must_match_validation_evidence_exactly(self) -> None:
         root = self._workspace()
@@ -86,7 +80,6 @@ class ExecutionAuthorizationTests(unittest.TestCase):
             boundary.authorize(
                 self._verdict(targets=["other.txt"]),
                 checkpoint=self._checkpoint(),
-                approval=self._approval(),
                 changes=[self._change()],
             )
 
@@ -96,16 +89,15 @@ class ExecutionAuthorizationTests(unittest.TestCase):
         record = boundary.authorize(
             self._verdict(),
             checkpoint=self._checkpoint(),
-            approval=self._approval(),
             changes=[self._change()],
         )
         self.assertEqual(record.task_id, "TASK-1")
         self.assertEqual(record.worker_id, "GROQ-01")
-        self.assertTrue(record.approved)
+        self.assertTrue(record.authorized)
         self.assertEqual(record.changed_targets, ("target.txt",))
-        self.assertEqual(record.to_dict()["schema_version"], 1)
+        self.assertEqual(record.to_dict()["schema_version"], 2)
 
-    def test_apply_delegates_only_after_authorization(self) -> None:
+    def test_apply_delegates_only_after_internal_authorization(self) -> None:
         root = self._workspace()
         boundary = ExecutionAuthorizationBoundary(root)
         target = root / "target.txt"
@@ -115,11 +107,11 @@ class ExecutionAuthorizationTests(unittest.TestCase):
         result = boundary.apply(
             self._verdict(),
             checkpoint=self._checkpoint(),
-            approval=self._approval(),
             changes=[self._change()],
         )
 
         boundary.gate.execute.assert_called_once()
+        self.assertEqual(result["authorization"]["authorized"], True)
         self.assertEqual(result["transaction"]["status"], "APPROVED")
         self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
 
@@ -130,7 +122,6 @@ class ExecutionAuthorizationTests(unittest.TestCase):
             boundary.authorize(
                 self._verdict(targets=[str(root / "target.txt")]),
                 checkpoint=self._checkpoint(),
-                approval=self._approval(),
                 changes=[self._change()],
             )
 
@@ -141,7 +132,6 @@ class ExecutionAuthorizationTests(unittest.TestCase):
             boundary.authorize(
                 self._verdict(targets=["../target.txt"]),
                 checkpoint=self._checkpoint(),
-                approval=self._approval(),
                 changes=[self._change("../target.txt")],
             )
 
