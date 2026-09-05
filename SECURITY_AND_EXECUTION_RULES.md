@@ -6,11 +6,12 @@ Model output is untrusted input.
 The model may propose plans, edits, commands, diagnoses, or role assignments, but it may not directly mutate the filesystem or execute unrestricted commands.
 
 ## Authority model
-The runtime separates three distinct authorities:
+The runtime separates four distinct authorities:
 
 1. **Workspace authority** — the active project workspace is the default data boundary for project mutation.
 2. **Tool authority** — development executables may live outside the workspace (for example Python, Git, or Node), but an executable's location does not grant arbitrary filesystem authority.
-3. **External resource authority** — files/directories outside the workspace require an explicit resource declaration with a bounded access mode (`read`, `write`, or `read_write`).
+3. **Repository authority** — access to Git metadata is not equivalent to authority to rewrite repository history or remote state.
+4. **External resource authority** — files/directories outside the workspace require an explicit resource declaration with a bounded access mode (`read`, `write`, or `read_write`).
 
 Using a helper executable from `C:\` or another system location is therefore not equivalent to granting the worker access to all of that drive.
 
@@ -62,14 +63,42 @@ TerminalExecutor
       ↓
 TerminalPolicy
       ↓
+GitSafetyPolicy (for Git)
+      ↓
 ProcessSandbox
 ```
 
 `TerminalPolicy` rejects unknown executables, dangerous shell wrappers/operators, forbidden inline interpreter launchers, overlong command shapes, and unauthorized path-like arguments before launch.
 
-`TerminalExecutor` is the composition point between command-shape policy and process/resource enforcement. It does not replace the Execution Gate.
+`GitSafetyPolicy` is a stricter repository-specific boundary. It permits only read-only inspection operations through the terminal and rejects commands that mutate history, working-tree state, refs, remotes, or Git configuration.
 
 A worker boundary with no controlled terminal executor must fail closed rather than silently falling back to raw `subprocess` execution. Explicit test/integration executor adapters remain possible through dependency injection and are not the default production path.
+
+## Git safety boundary
+The terminal Git capability is intentionally inspection-only:
+
+```text
+Allowed:
+  status
+  diff
+  log
+  show
+  branch (inspection)
+  rev-parse (identity queries)
+  ls-files
+
+Rejected:
+  add / commit / push / pull / fetch
+  reset / clean / checkout / switch / restore
+  merge / rebase / cherry-pick / stash
+  config / remote / worktree / submodule / init
+```
+
+The Git policy also rejects repository/configuration overrides such as `-C`, `--git-dir`, `--work-tree`, Git config injection, executable-path overrides, and unapproved pathspec modes. This prevents a terminal Git command from redirecting authority to a different repository or environment.
+
+Git path arguments are workspace-relative where accepted. External-resource declarations do not expand Git repository authority.
+
+Repository mutation remains the responsibility of a future separate task-scoped control plane that can bind mutation to validated targets, checkpoints, and post-mutation verification.
 
 ## Tool execution
 Production worker execution should use the terminal executor above the process sandbox. The composed layers enforce:
@@ -82,6 +111,7 @@ Production worker execution should use the terminal executor above the process s
 - bounded execution time
 - bounded output
 - minimized/sanitized child environment
+- Git repository inspection policy when the Git executable is selected
 
 ## OS-level isolation limitation
 `cwd`, path validation, and process-group isolation are **not** equivalent to an OS-level filesystem sandbox. A child process can still programmatically open unmanaged paths unless the host provides stronger OS enforcement.
@@ -116,6 +146,7 @@ Stop rather than guess when:
 - a suitable OS-level sandbox is required but unavailable
 - suitable model connections are exhausted
 - validation cannot prove a change is safe
+- a Git command would mutate repository state outside the approved control plane
 
 ## Principle
 ```text
