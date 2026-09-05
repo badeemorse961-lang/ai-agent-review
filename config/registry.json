@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "registry_id": "ai-agent",
+  "architecture": {
+    "leader": {
+      "provider": "openrouter",
+      "primary_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "failover_model": "nvidia/nemotron-3-super-120b-a12b:free",
+      "safe_stop_on_exhaustion": true,
+      "primary_pool": [
+        "OR-01", "OR-02", "OR-03", "OR-04", "OR-05",
+        "OR-06", "OR-07", "OR-08", "OR-09", "OR-10", "OR-11"
+      ],
+      "failover_pool": [
+        "OR-01", "OR-02", "OR-03", "OR-04", "OR-05",
+        "OR-06", "OR-07", "OR-08", "OR-09", "OR-10", "OR-11"
+      ]
+    },
+    "workers": {
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "safe_stop_on_required_role_exhaustion": true,
+      "roles": {
+        "coder": ["GROQ-01", "GROQ-02", "GROQ-03", "GROQ-04"],
+        "debugger": ["GROQ-05", "GROQ-06", "GROQ-07"],
+        "tester": ["GROQ-08", "GROQ-09"],
+        "architect": ["GROQ-10", "GROQ-11"],
+        "reviewer": ["GROQ-12", "GROQ-13", "GROQ-14"],
+        "standby": ["GROQ-15"]
+      }
+    }
+  },
+  "connection_sources": {
+    "metadata_file": "connections.json",
+    "role_source": "this registry",
+    "health_source": "runtime",
+    "runtime_state_source": "local runtime state"
+  },
+  "policies": {
+    "connection_ids_must_be_unique": true,
+    "connection_must_belong_to_exactly_one_assignment": true,
+    "leader_pools_must_use_leader_provider": true,
+    "worker_pools_must_use_worker_provider": true,
+    "runtime_state_must_not_be_committed": true,
+    "secrets_must_not_be_committed": true,
+    "pool_sizes_are_not_hardcoded": true
+  }
+}
