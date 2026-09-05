@@ -22,6 +22,10 @@ Independent validation
   ↓
 Internal execution authorization
   ↓
+TerminalPolicy
+  ↓
+Process / Resource Sandbox
+  ↓
 Checkpoint
   ↓
 Guarded apply
@@ -34,6 +38,21 @@ Approve OR Rollback
 ```
 
 Normal project development does not require human confirmation for each file or command. Human approval is reserved for deployments and explicitly configured high-risk actions outside normal project-development authority.
+
+## Terminal execution policy
+The terminal is a constrained execution boundary, not a free-form shell.
+
+Before process launch, `TerminalPolicy` must validate:
+- an explicitly allowlisted executable family;
+- bounded argument count;
+- command-specific forbidden arguments;
+- shell wrappers and shell operators;
+- inline Python/Pytest launch forms such as `-c` and `-m`;
+- path-like arguments against workspace authority or explicit readable external-resource authority.
+
+The policy is intentionally separate from executable-location checks. Passing terminal policy does not grant filesystem access by itself.
+
+The default development policy permits `python` and `pytest` with inline launch modes rejected. Git operations require an explicit narrowed subcommand policy rather than unrestricted Git execution.
 
 ## Path security
 Every filesystem mutation target must resolve inside the explicit active workspace.
@@ -53,7 +72,7 @@ A read-only declaration cannot be used for writes. `read_write` is required for 
 External resources should be used for concrete project needs such as explicitly selected design/assets directories. Unrelated personal data, credentials, unrelated projects, and system locations remain unmanaged and must not be accessed implicitly.
 
 ## Tool execution
-Production worker execution should use the process sandbox layer where available. It enforces:
+Production worker execution should use the terminal policy followed by the process sandbox layer where available. The process sandbox enforces:
 - explicit absolute tool allowlisting when the sandbox is enabled
 - explicit working directory
 - argument arrays
@@ -65,7 +84,7 @@ Production worker execution should use the process sandbox layer where available
 - minimized/sanitized child environment
 
 ## OS-level isolation limitation
-`cwd`, path validation, and process-group isolation are **not** equivalent to an OS-level filesystem sandbox. A child process can still programmatically open unmanaged paths unless the host provides stronger OS enforcement.
+`cwd`, path validation, terminal policy, and process-group isolation are **not** equivalent to an OS-level filesystem sandbox. A child process can still programmatically open unmanaged paths unless the host provides stronger OS enforcement.
 
 The `strict_os_required` mode therefore fails closed until a platform-native filesystem/process sandbox backend is installed and validated. The runtime must not claim full filesystem isolation while only the portable workspace-guarded backend is active.
 
@@ -94,6 +113,7 @@ Stop rather than guess when:
 - workspace boundaries cannot be enforced
 - an external resource is undeclared or has insufficient access
 - an approved tool cannot be identified exactly
+- a terminal command violates policy
 - a suitable OS-level sandbox is required but unavailable
 - suitable model connections are exhausted
 - validation cannot prove a change is safe
