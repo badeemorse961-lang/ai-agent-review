@@ -69,7 +69,7 @@ class ExecutionResult:
         }
 
 
-CheckpointHook = Callable[[ExecutionRequest], Any]
+CheckpointHook = Callable[[ExecutionRequest], Mapping[str, Any]]
 ExecutorHook = Callable[[ExecutionRequest], tuple[int, str, str, bool]]
 
 
@@ -77,11 +77,23 @@ class WorkerExecutionBoundary:
     """Guarded execution boundary for one already-assigned worker task.
 
     The worker may operate freely inside the explicit active workspace, but the
-    boundary must reject declared targets outside that workspace and never allow
-    shell-wrapper execution. A process cwd alone is not treated as a complete
-    isolation guarantee, so the execution request carries explicit target scope
-    and the executor is constrained to non-shell, allowlisted commands.
+    boundary rejects declared targets outside that workspace and rejects shell
+    wrappers or inline interpreter launchers. A process cwd alone is not treated
+    as a complete isolation guarantee: the checkpoint hook must explicitly attest
+    that execution is isolated before the executor is allowed to launch.
     """
+
+    _PATH_LIKE_SUFFIXES = {
+        ".cfg",
+        ".ini",
+        ".json",
+        ".py",
+        ".toml",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
 
     def __init__(
         self,
@@ -139,6 +151,11 @@ class WorkerExecutionBoundary:
             )
 
         checkpoint = self.checkpoint(request)
+        if not isinstance(checkpoint, Mapping) or checkpoint.get("isolated") is not True:
+            raise WorkerExecutionSafetyStop(
+                "Checkpoint must explicitly attest isolated execution"
+            )
+
         returncode, stdout, stderr, timed_out = self.executor(request)
 
         stdout, stdout_truncated = self._bound_output(stdout)
@@ -246,13 +263,42 @@ class WorkerExecutionBoundary:
                 f"Command executable is not allowlisted: {args[0]!r}"
             )
 
-        forbidden = {"shell", "cmd", "/c", "powershell", "pwsh", "bash", "sh"}
+        forbidden = {
+            "shell",
+            "cmd",
+            "/c",
+            "powershell",
+            "pwsh",
+            "bash",
+            "sh",
+        }
+        inline_interpreter_flags = {"-c", "/c", "-m"}
         if any(item.lower() in forbidden for item in args):
             raise WorkerExecutionSafetyStop(
                 "Shell-wrapper arguments are not permitted at the worker boundary"
             )
+        if executable in {"python", "python3", "pytest"} and any(
+            item.lower() in inline_interpreter_flags for item in args[1:]
+        ):
+            raise WorkerExecutionSafetyStop(
+                "Inline interpreter/module launchers are not permitted; execute workspace files instead"
+            )
+
+        for item in args[1:]:
+            if self._looks_like_path_argument(item):
+                self._validate_target(item)
 
         return args
+
+    @classmethod
+    def _looks_like_path_argument(cls, value: str) -> bool:
+        path = Path(value)
+        return (
+            path.is_absolute()
+            or "/" in value
+            or "\\" in value
+            or path.suffix.lower() in cls._PATH_LIKE_SUFFIXES
+        )
 
     def _validate_target(self, target: str) -> str:
         if not isinstance(target, str) or not target.strip():
