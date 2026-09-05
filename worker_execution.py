@@ -58,6 +58,7 @@ class ExecutionResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": SCHEMA_VERSION,
             "returncode": self.returncode,
             "stdout": self.stdout,
             "stderr": self.stderr,
@@ -75,10 +76,11 @@ ExecutorHook = Callable[[ExecutionRequest], tuple[int, str, str, bool]]
 class WorkerExecutionBoundary:
     """Guarded execution boundary for one already-assigned worker task.
 
-    This stage validates the assignment, workspace, target paths, command
-    policy, timeout, and checkpoint requirement before execution. The default
-    executor uses ``shell=False`` and an explicit workspace directory. Provider
-    SDKs and secret loading are intentionally out of scope.
+    The worker may operate freely inside the explicit active workspace, but the
+    boundary must reject declared targets outside that workspace and never allow
+    shell-wrapper execution. A process cwd alone is not treated as a complete
+    isolation guarantee, so the execution request carries explicit target scope
+    and the executor is constrained to non-shell, allowlisted commands.
     """
 
     def __init__(
@@ -102,7 +104,11 @@ class WorkerExecutionBoundary:
         if not isinstance(max_output_chars, int) or max_output_chars < 256:
             raise WorkerExecutionError("max_output_chars must be an integer >= 256")
 
-        normalized = {str(item).strip().lower() for item in allowed_commands if str(item).strip()}
+        normalized = {
+            str(item).strip().lower()
+            for item in allowed_commands
+            if str(item).strip()
+        }
         if not normalized:
             raise WorkerExecutionError("At least one allowed command is required")
 
@@ -133,10 +139,7 @@ class WorkerExecutionBoundary:
             )
 
         checkpoint = self.checkpoint(request)
-        try:
-            returncode, stdout, stderr, timed_out = self.executor(request)
-        except Exception:
-            raise
+        returncode, stdout, stderr, timed_out = self.executor(request)
 
         stdout, stdout_truncated = self._bound_output(stdout)
         stderr, stderr_truncated = self._bound_output(stderr)
@@ -229,9 +232,16 @@ class WorkerExecutionBoundary:
             raise WorkerExecutionSafetyStop("Command arguments must be non-empty strings")
 
         executable = Path(args[0]).name.lower()
+        allowed_names = {Path(item).name.lower() for item in self.allowed_commands}
         if os.name == "nt" and executable.endswith(".exe"):
-            executable = executable[:-4]
-        if executable not in {Path(item).name.lower() for item in self.allowed_commands}:
+            executable_stem = executable[:-4]
+            allowed_names = {
+                name[:-4] if name.endswith(".exe") else name
+                for name in allowed_names
+            }
+            executable = executable_stem
+
+        if executable not in allowed_names:
             raise WorkerExecutionSafetyStop(
                 f"Command executable is not allowlisted: {args[0]!r}"
             )
