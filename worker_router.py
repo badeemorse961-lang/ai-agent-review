@@ -511,6 +511,10 @@ class WorkerRouter:
             self.runtime_failed_connections = set()
             self._save_state()
 
+    def reset_runtime(self) -> None:
+        """Compatibility alias for callers using the legacy method name."""
+        self.reset_runtime_state()
+
 
 def build_synthetic_health(router: WorkerRouter) -> Dict[str, Any]:
     all_workers = sorted(
