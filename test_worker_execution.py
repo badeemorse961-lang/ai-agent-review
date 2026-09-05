@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from process_sandbox import ProcessSandbox, ProcessSandboxSafetyStop
+from process_sandbox import ProcessSandbox
 from sandbox_policy import WorkspaceResourcePolicy
 from terminal_executor import TerminalExecutor
 from terminal_policy import TerminalCommandPolicy, TerminalPolicy
@@ -143,7 +143,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             ),
         )
 
-        with self.assertRaises(ProcessSandboxSafetyStop):
+        with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
                 self._assignment(),
                 self._task(),
