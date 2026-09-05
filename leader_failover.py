@@ -113,9 +113,9 @@ class LeaderFailover:
         return lease.account_id
 
     def reset(self) -> str:
+        """Reset to the first available primary leader and keep it active."""
         self.router.reset_runtime()
         lease = self.router.acquire("__leader_failover_reset__")
-        self.router.release("__leader_failover_reset__")
         return lease.account_id
 
     def snapshot(self) -> dict[str, Any]:
