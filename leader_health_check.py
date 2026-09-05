@@ -134,7 +134,7 @@ def check_connection(
         return {
             "connection_id": connection_id, "provider": "openrouter",
             "tier": tier, "model": model, "status": "TIMEOUT",
-            "http_status": None, "latency_ms": None, ""healthy"": False,
+            "http_status": None, "latency_ms": None, "healthy": False,
             "completion_received": False, "error": "REQUEST_TIMEOUT",
             "checked_at": utc_now(),
         }
