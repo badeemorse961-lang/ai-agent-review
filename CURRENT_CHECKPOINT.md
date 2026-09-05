@@ -5,9 +5,11 @@ Registry-driven router migration is **locally validated through orchestration sm
 
 `agent/registry-router-migration`
 
-Current verified revision:
+Current verified revision before regression:
 
 `6e0557a Add WorkerRouter reset_runtime compatibility alias`
+
+Subsequent documentation and cleanup commits are also present on this branch.
 
 ## Completed in this checkpoint
 
@@ -18,7 +20,7 @@ Current verified revision:
 - Leader health-check configuration is derived from the registry.
 - Groq worker health-check configuration is derived from the registry.
 - Generated profile files are not routing authorities and the generator scripts `leader_profiles.py` and `worker_profiles.py` are retired.
-- Legacy leader discovery artifacts `discover_leader_models.py` and `leader_capabilities.json` remain preserved only as intentional local pending deletions; do not overwrite or discard that local work.
+- Legacy leader discovery utility `discover_leader_models.py` and generated artifact `leader_capabilities.json` are now removed from the working branch because routing is registry-driven and no legitimate dependency was found.
 - Registry-driven router tests exist in `test_registry_routers.py`.
 - Runtime connection resilience policy is documented in `RUNTIME_CONNECTION_RESILIENCE.md`.
 - WorkerRouter provides a compatibility alias `reset_runtime()` for legacy callers while `reset_runtime_state()` remains the underlying implementation.
@@ -75,7 +77,7 @@ The observed health results are operational evidence only; they do not justify d
 
 ## Important synchronization state
 
-Protected local secret files remain outside repository synchronization control and were verified present during this checkpoint:
+Protected local secret files remain outside repository synchronization control and were verified present during the validation checkpoint:
 
 ```text
 groq_keys.txt
@@ -88,18 +90,13 @@ Local generated profile copies remain preserved outside the repository at the pr
 
 ## Local working tree state
 
-The local working tree still contains these intentional staged deletions from the pre-migration cleanup:
+Before the next synchronization, the pre-migration local cleanup contained staged deletions for the obsolete leader discovery artifacts. Those deletions now also exist on the remote working branch, so the next fast-forward should reconcile them without destructive commands.
 
-```text
-D  discover_leader_models.py
-D  leader_capabilities.json
-```
-
-Do not discard, reset, or overwrite them without a deliberate decision after dependency review.
+Do not discard, reset, or overwrite unrelated intentional local work.
 
 ## Promotion status
 
-The registry/router/orchestration migration is now operationally validated through the smoke test, but the branch is **not yet promoted to `main`**.
+The registry/router/orchestration migration is operationally validated through the smoke test, but the branch is **not yet promoted to `main`**.
 
 Before promotion:
 
@@ -117,7 +114,13 @@ merge/promote to main
 
 ## Next exact action
 
-Run the broader repository regression suite on the validated branch, then inspect the complete diff for stale profile dependencies, hardcoded pool-size assumptions, and any remaining runtime-state/schema incompatibilities.
+Run the broader repository regression suite on the synchronized branch, then inspect the complete diff for:
+
+- stale profile dependencies;
+- hardcoded pool-size assumptions;
+- remaining runtime-state/schema incompatibilities;
+- obsolete legacy artifacts;
+- secret-handling regressions.
 
 Do not reintroduce generated profile files as routing sources.
 
