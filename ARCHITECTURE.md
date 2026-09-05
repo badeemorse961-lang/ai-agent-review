@@ -35,7 +35,7 @@ Execution Gate
   ↓
 Checkpoint
   ↓
-Apply
+Guarded Apply
   ↓
 Tests
   ↓
@@ -81,8 +81,17 @@ Each role owns a configurable pool. Pool size is configuration, not architecture
 ## Identity
 Connections use stable IDs such as `OR-01` and `GROQ-01`. IDs are identifiers only; routing must not assume a fixed maximum ID.
 
+## Resource authority
+Runtime access is split into three distinct domains:
+
+1. **Workspace authority** — active project files and normal mutation targets.
+2. **Tool authority** — explicitly approved development executables, which may reside outside the workspace.
+3. **External resource authority** — explicitly declared external files/directories with bounded access mode (`read`, `write`, or `read_write`).
+
+A helper such as `C:\Python312\python.exe` is a tool, not a gateway to the rest of `C:\`. External design/assets folders on another path or drive require explicit resource authorization.
+
 ## Execution authority
-The model proposes. The local agent validates. Internal execution authorization promotes a validated task to the existing execution gate. The gate controls mutation.
+The model proposes. The local agent validates. Independent validation establishes evidence. Internal execution authorization promotes a validated task to the existing execution gate. The gate controls mutation.
 
 Required mutation path:
 1. proposal validation
@@ -93,6 +102,13 @@ Required mutation path:
 6. tests
 7. verification
 8. approve or rollback
+
+## Process containment
+The optional process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
+
+These controls are stronger than a raw subprocess launch, but they are not an OS-level filesystem sandbox. A child process can still programmatically open unmanaged paths unless the host provides stronger OS enforcement.
+
+`strict_os_required` therefore fails closed until a validated platform-native filesystem/process sandbox backend exists.
 
 ## Expansion invariant
 The architecture is N-driven.
@@ -111,3 +127,6 @@ Examples:
 8. Rollback is independently verified.
 9. Local tests determine executable reality.
 10. Expansion preserves the same interfaces and rules.
+11. No worker receives implicit authority over unrelated filesystem data.
+12. External resources require explicit bounded authorization.
+13. Normal development remains autonomous; human confirmation is exceptional rather than per-operation.

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
+from process_sandbox import ProcessSandbox
+
 
 SCHEMA_VERSION = 1
 DEFAULT_TIMEOUT_SECONDS = 120.0
@@ -30,6 +32,8 @@ class ExecutionRequest:
     command: tuple[str, ...]
     targets: tuple[str, ...]
     timeout_seconds: float
+    external_reads: tuple[str, ...] = ()
+    external_writes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +44,8 @@ class ExecutionRequest:
             "command": list(self.command),
             "targets": list(self.targets),
             "timeout_seconds": self.timeout_seconds,
+            "external_reads": list(self.external_reads),
+            "external_writes": list(self.external_writes),
         }
 
 
@@ -81,6 +87,11 @@ class WorkerExecutionBoundary:
     wrappers or inline interpreter launchers. A process cwd alone is not treated
     as a complete isolation guarantee: the checkpoint hook must explicitly attest
     that execution is isolated before the executor is allowed to launch.
+
+    An optional ``ProcessSandbox`` adds explicit tool-path validation, process
+    group isolation, environment minimization, and bounded child-process launch.
+    External resources are passed through to that sandbox as explicit read/write
+    capabilities; they do not become implicit workspace authority.
     """
 
     _PATH_LIKE_SUFFIXES = {
@@ -102,6 +113,7 @@ class WorkerExecutionBoundary:
         allowed_commands: Sequence[str] = DEFAULT_ALLOWED_COMMANDS,
         checkpoint: Optional[CheckpointHook] = None,
         executor: Optional[ExecutorHook] = None,
+        process_sandbox: Optional[ProcessSandbox] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     ) -> None:
@@ -127,8 +139,14 @@ class WorkerExecutionBoundary:
         self.allowed_commands = normalized
         self.checkpoint = checkpoint
         self.executor = executor or self._subprocess_executor
+        self.process_sandbox = process_sandbox
         self.timeout_seconds = float(timeout_seconds)
         self.max_output_chars = max_output_chars
+
+        if self.process_sandbox is not None and self.process_sandbox.policy.workspace_root != self.workspace_root:
+            raise WorkerExecutionSafetyStop(
+                "Process sandbox workspace must match worker workspace"
+            )
 
     def execute(
         self,
@@ -137,12 +155,16 @@ class WorkerExecutionBoundary:
         *,
         command: Sequence[str],
         targets: Iterable[str] = (),
+        external_reads: Iterable[str] = (),
+        external_writes: Iterable[str] = (),
     ) -> ExecutionResult:
         request = self._validate_and_build_request(
             assignment,
             task,
             command=command,
             targets=targets,
+            external_reads=external_reads,
+            external_writes=external_writes,
         )
 
         if self.checkpoint is None:
@@ -183,6 +205,8 @@ class WorkerExecutionBoundary:
         *,
         command: Sequence[str],
         targets: Iterable[str],
+        external_reads: Iterable[str],
+        external_writes: Iterable[str],
     ) -> ExecutionRequest:
         if not isinstance(assignment, Mapping):
             raise WorkerExecutionSafetyStop("Worker assignment must be a mapping")
@@ -227,6 +251,8 @@ class WorkerExecutionBoundary:
         normalized_targets = tuple(
             self._validate_target(target) for target in targets
         )
+        normalized_external_reads = tuple(str(path) for path in external_reads)
+        normalized_external_writes = tuple(str(path) for path in external_writes)
 
         return ExecutionRequest(
             task_id=task_id,
@@ -236,6 +262,8 @@ class WorkerExecutionBoundary:
             command=normalized_command,
             targets=normalized_targets,
             timeout_seconds=self.timeout_seconds,
+            external_reads=normalized_external_reads,
+            external_writes=normalized_external_writes,
         )
 
     def _validate_command(self, command: Sequence[str]) -> tuple[str, ...]:
@@ -330,6 +358,15 @@ class WorkerExecutionBoundary:
         self,
         request: ExecutionRequest,
     ) -> tuple[int, str, str, bool]:
+        if self.process_sandbox is not None:
+            result = self.process_sandbox.run(
+                request.command,
+                target_paths=request.targets,
+                external_reads=request.external_reads,
+                external_writes=request.external_writes,
+            )
+            return result.returncode, result.stdout, result.stderr, result.timed_out
+
         try:
             completed = subprocess.run(
                 list(request.command),
@@ -374,9 +411,12 @@ def execute_worker_task(
     *,
     command: Sequence[str],
     targets: Iterable[str] = (),
+    external_reads: Iterable[str] = (),
+    external_writes: Iterable[str] = (),
     allowed_commands: Sequence[str] = DEFAULT_ALLOWED_COMMANDS,
     checkpoint: Optional[CheckpointHook] = None,
     executor: Optional[ExecutorHook] = None,
+    process_sandbox: Optional[ProcessSandbox] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
 ) -> ExecutionResult:
@@ -385,6 +425,7 @@ def execute_worker_task(
         allowed_commands=allowed_commands,
         checkpoint=checkpoint,
         executor=executor,
+        process_sandbox=process_sandbox,
         timeout_seconds=timeout_seconds,
         max_output_chars=max_output_chars,
     )
@@ -393,6 +434,8 @@ def execute_worker_task(
         task,
         command=command,
         targets=targets,
+        external_reads=external_reads,
+        external_writes=external_writes,
     )
 
 

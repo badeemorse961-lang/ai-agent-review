@@ -1,103 +1,109 @@
 # CURRENT CHECKPOINT
 
-## Status
-Registry-driven router migration has reached a **green local validation checkpoint** on the working branch:
+## Baseline
 
-`agent/registry-router-migration`
+`main` is the authoritative GitHub baseline.
 
-Executable code was locally validated at:
+Latest merged commit:
 
-`97f282eb7c00e8f219f3d4defd40d87fd959b661`
+`c02ac89885f5cc223ebdb19700c760da03212708`
 
-The latest local validation cycle completed successfully after the final compatibility refinement.
+This baseline includes:
 
-## Completed in this checkpoint
+- registry-driven leader/worker routing;
+- runtime connection resilience and lease protection;
+- project-understanding pipeline;
+- context builder;
+- central leader boundary;
+- plan/decomposition;
+- worker dispatch boundary;
+- worker execution boundary;
+- independent validation;
+- autonomous internal execution authorization;
+- existing Execution Gate for checkpoint → apply → tests → verification → approve/rollback.
 
-- LeaderRouter derives provider, models, and leader pools from `config/registry.json`.
-- WorkerRouter derives provider, model, and role pools from `config/registry.json`.
-- Worker runtime failures are tracked separately from external health so a health refresh does not erase runtime failures.
-- LeaderFailover is a compatibility facade over LeaderRouter; there is one authoritative leader runtime.
-- Leader health-check configuration is derived from the registry.
-- Groq worker health-check configuration is derived from the registry.
-- Generated profile files are not routing authorities and the generator scripts `leader_profiles.py` and `worker_profiles.py` are retired.
-- Legacy leader discovery utility `discover_leader_models.py` and generated artifact `leader_capabilities.json` are removed from the working branch because routing is registry-driven and no legitimate dependency was found.
-- Registry-driven router tests exist in `test_registry_routers.py`.
-- Runtime connection resilience policy is documented in `RUNTIME_CONNECTION_RESILIENCE.md`.
-- WorkerRouter provides a compatibility alias `reset_runtime()` for legacy callers while `reset_runtime_state()` remains the underlying implementation.
-- `orchestration_smoke_test.py` uses run-unique task IDs so persisted runtime state from an earlier interrupted run cannot collide with a later smoke run.
-- Calculator regression defects exposed by the full test suite were repaired with minimal changes and source encoding was normalized.
-- Expansion Readiness Audit v2 distinguishes structural fixed-size assumptions from legitimate CLI/test/self-audit constructs.
-- Added regression coverage for the expansion audit and compatibility behavior.
-- Final LeaderFailover compatibility repair removed a dependency on a non-existent `LeaderRouter.active_leases()` API by using the router's authoritative `snapshot()["leases"]` state instead.
+## Autonomous execution contract
 
-## Local validation results at executable checkpoint
-
-Environment:
-
-- Python: `3.12.10`
-- `python -m pytest -q`: `19 passed`
-- `python leader_failover.py`: PASS / READY
-
-The final compatibility regression now passes together with the complete local test suite.
-
-## Expansion readiness audit
-
-Parameterized expansion tests passed for:
-
-`N=1,2,3,4,5,10,11,15,21,31,50,100`
-
-Dynamic primary/failover simulations passed for:
-
-`N=5,11,21,31`
-
-The audit returned:
-
-`EXPANSION READINESS AUDIT PASSED ✅`
-
-It may still emit MEDIUM findings for runtime result metadata such as `$.leader.attempts = 1`. Those are execution observations, not routing configuration or fixed pool capacity.
-
-## Lease collision repair
-
-An earlier orchestration run failed with:
+The normal development path is autonomous. Human approval is not required for each file or command.
 
 ```text
-LeaseError: Task already has a worker lease: SMOKE-CODER-001
+User Goal
+  ↓
+Discovery / Understanding
+  ↓
+Leader / Plan
+  ↓
+Worker Dispatch
+  ↓
+Guarded Worker Execution
+  ↓
+Independent Validation
+  ↓
+Autonomous Internal Execution Authorization
+  ↓
+Execution Gate
+      Checkpoint → Apply → Tests → Verification
+      PASS → APPROVE
+      FAIL → ROLLBACK → VERIFY
 ```
 
-This was reproduced as a stale persisted task-lease collision. The correct fix was **not** to weaken WorkerRouter lease protection. Instead, orchestration smoke task IDs were made run-unique.
+Internal authorization is a machine-checked policy boundary. It is not a human approval prompt.
 
-The fix was then validated by consecutive successful smoke runs without clearing runtime state.
+## Current hardening milestone
 
-## Compatibility review refinement
+Feature branch:
 
-Final review identified one compatibility semantic that needed preservation: the legacy `LeaderFailover.reset()` contract returned the active primary connection after reset. The facade was adjusted so reset clears runtime failures and then keeps the newly acquired primary compatibility lease active rather than immediately releasing it.
+`agent/resource-and-process-boundary`
 
-A regression test verifies:
+Purpose:
 
-```text
-reset()
-→ returns first primary connection
-→ current_connection() matches it
-→ current_model() is primary model
-→ current_tier() == primary
-→ state() == READY
+Add the missing distinction between project workspace authority, tool execution authority, and external resource authority, and add a stronger process-launch boundary without falsely claiming complete OS filesystem isolation.
 
-failover("compatibility_test_failure")
-→ moves to the next available primary connection
-→ remains READY on the primary tier
-```
+## Resource authority
 
-The final compatibility cycle passed with the full suite at 19/19.
+`WorkspaceResourcePolicy` establishes three explicit domains:
 
-## Health variability observation
+1. active project workspace;
+2. explicitly allowlisted development tool executables, which may reside outside the workspace;
+3. explicitly declared external paths with access mode `read`, `write`, or `read_write`.
 
-Repeated OpenRouter health checks showed that individual account/model outcomes can vary between runs. Accounts can fail with `INVALID_RESPONSE` on one run and later succeed, while other accounts can change status between runs.
+A helper executable located on `C:\` is therefore usable as a tool without granting the worker arbitrary access to the rest of `C:\`.
 
-Therefore a health snapshot is time-dependent and must not be treated as permanent account failure. Runtime selection continues to rely on current validated responses, retry/failover behavior, and runtime failure tracking.
+An external design/assets directory on another path or drive requires an explicit bounded resource declaration.
 
-## Important synchronization state
+## Process containment
 
-Protected local secret files remain outside repository synchronization control:
+`ProcessSandbox` adds:
+
+- explicit absolute tool-path allowlisting;
+- explicit workspace `cwd`;
+- argument-array execution;
+- `shell=False`;
+- rejection of shell wrappers and inline interpreter/module launchers;
+- new process group/session;
+- bounded timeout;
+- bounded stdout/stderr;
+- minimized child environment with secret-bearing variables excluded by default.
+
+The sandbox also checks declared workspace targets and declared external reads/writes through `WorkspaceResourcePolicy` before launch.
+
+## OS isolation truthfulness
+
+Portable process containment and path validation are not equivalent to a true OS-level filesystem sandbox.
+
+A child process can still programmatically open unmanaged paths unless the host provides stronger OS enforcement.
+
+Therefore:
+
+`strict_os_required`
+
+must fail closed until a validated platform-native filesystem/process sandbox backend exists.
+
+No repository documentation should claim that `workspace_guarded` provides complete OS-level filesystem isolation.
+
+## Protected local state
+
+These files remain local-only and protected from synchronization cleanup:
 
 ```text
 groq_keys.txt
@@ -106,71 +112,38 @@ groq_keys.backup.txt
 openrouter_keys.backup.txt
 ```
 
-Local generated profile copies remain preserved outside repo synchronization control at the protected local backup location created during branch synchronization. They must not be deleted merely because they are absent from Git.
+Other protected local state includes `.env`, machine credentials, local runtime state, local model stores/caches, and preserved profile backups.
 
-Do not discard, reset, or overwrite unrelated intentional local work.
+Never use destructive repository synchronization that can erase protected local state, including blind `git clean -fd` or `git reset --hard`.
 
-## Promotion status
+## Required test gate for this milestone
 
-Pull request:
+The feature branch must be locally validated only after the complete grouped change set is present.
 
-`#1 — Migrate routing to registry and validate N-driven orchestration`
-
-Current branch state:
-
-- `38` commits ahead of `main`
-- `0` commits behind `main`
-- PR remains open and unmerged
-- No submitted reviews or review threads are currently present
-- No commit status checks are currently reported for the latest head
-
-Current branch head:
-
-`97f282eb7c00e8f219f3d4defd40d87fd959b661`
-
-Required promotion sequence:
+Required checks:
 
 ```text
-local validation green
+python -m compileall -q .
+python -m pytest -q test_sandbox_policy.py
+python -m pytest -q test_process_sandbox.py
+python -m pytest -q test_worker_execution_process_sandbox.py
+python -m pytest -q
+```
+
+The full suite must remain green before promotion.
+
+## Promotion sequence
+
+```text
+complete grouped implementation
     ↓
-complete diff review
+local compile + focused tests + full suite
     ↓
-dependency / architecture review
+diff review
     ↓
 security / secret-boundary review
-    ↓
-PR review
     ↓
 merge to main
 ```
 
-## Architecture review conclusion so far
-
-Executable evidence currently supports these conclusions:
-
-- registry-driven leader and worker routing functions;
-- global worker lease protection remains intact;
-- runtime failover works;
-- orchestration is repeatable with persisted state;
-- expansion readiness coverage passes;
-- full regression passes;
-- LeaderFailover compatibility behavior is preserved without creating a second runtime authority;
-- generated profile/discovery artifacts are no longer routing authorities.
-
-A separate production-hardening milestone remains for `connection_manager.py`: move secret-file location outside permanent repository-relative paths and make key rotation preserve stable connection identity independently of secret-file line order.
-
-## Source of truth
-
-Static routing configuration:
-
-`config/registry.json`
-
-Registry loader/validator:
-
-`config_registry.py`
-
-Runtime health/state:
-
-local runtime data only
-
-Generated profiles must not become a second source of routing truth.
+No local secret files are part of the GitHub promotion path.
