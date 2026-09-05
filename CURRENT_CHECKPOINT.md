@@ -22,7 +22,8 @@ This baseline includes:
 - autonomous internal execution authorization;
 - workspace/tool/external-resource authority separation;
 - process sandbox boundary with explicit tool allowlisting and bounded execution;
-- terminal command policy and policy-first terminal executor;
+- policy-first terminal execution boundary;
+- explicit terminal executable/subcommand allowlisting and bounded command shape;
 - existing Execution Gate for checkpoint → apply → tests → verification → approve/rollback.
 
 ## Autonomous execution contract
@@ -44,9 +45,7 @@ Independent Validation
   ↓
 Autonomous Internal Execution Authorization
   ↓
-Terminal Policy
-  ↓
-Process / Resource Sandbox
+Terminal Policy / Process Sandbox
   ↓
 Execution Gate
       Checkpoint → Apply → Tests → Verification
@@ -68,23 +67,6 @@ A helper executable located on `C:\` is therefore usable as a tool without grant
 
 An external design/assets directory on another path or drive requires an explicit bounded resource declaration.
 
-## Terminal execution policy
-
-`TerminalPolicy` is the command-shape boundary immediately before process execution.
-
-It enforces:
-
-- explicit executable-family allowlisting;
-- global and per-command argument bounds;
-- command-specific forbidden arguments;
-- rejection of shell wrappers/operators;
-- rejection of inline Python/Pytest launch forms such as `-c` and `-m`;
-- validation of path-like command arguments against workspace or explicitly readable external resources.
-
-`TerminalExecutor` composes this policy with `ProcessSandbox`. Terminal policy does not replace process/resource validation or the Execution Gate.
-
-The default policy permits `python` and `pytest` while keeping inline execution disabled. Git is intentionally not unrestricted by default; callers must provide a narrowed subcommand policy when Git execution is needed.
-
 ## Process containment
 
 `ProcessSandbox` adds:
@@ -100,6 +82,19 @@ The default policy permits `python` and `pytest` while keeping inline execution 
 - minimized child environment with secret-bearing variables excluded by default;
 - explicit validation of command path arguments against workspace/external-resource authority;
 - descendant termination on timeout where the host platform supports the implemented process-tree mechanism.
+
+## Terminal execution policy
+
+`TerminalPolicy` now provides an explicit command-shape boundary before process launch:
+
+- unknown executables are rejected;
+- command argument counts are bounded;
+- shell wrappers and shell operators are rejected;
+- inline `-c` and `-m` launch forms are rejected for Python/Pytest;
+- Git subcommands are allowlisted rather than granting unrestricted Git execution;
+- path-like command arguments outside the workspace require explicit readable external-resource authority.
+
+`TerminalExecutor` composes this policy with `ProcessSandbox`. The terminal layer does not replace the Execution Gate.
 
 ## OS isolation truthfulness
 
@@ -132,14 +127,14 @@ Never use destructive repository synchronization that can erase protected local 
 
 ## Validation record
 
-The complete terminal-policy branch was validated on the real Windows development environment:
+The terminal executor policy branch was locally validated on Windows after the complete grouped implementation:
 
 ```text
-python -m compileall -q .                 PASS
-6 terminal-policy tests                   PASS
-3 terminal-executor tests                 PASS
-20 prior sandbox/resource tests            PASS
-115 full-suite tests                       PASS
+python -m compileall -q .                         PASS
+6 terminal-policy tests                           PASS
+3 terminal-executor tests                         PASS
+20 sandbox/resource regression tests              PASS
+115 full-suite tests                              PASS
 ```
 
 ## Promotion sequence
@@ -156,6 +151,6 @@ security / secret-boundary review
 merge to main
 ```
 
-The terminal-policy branch has been merged to `main` as commit `07184e7ed8c5516095d8cc6b2b6fad31e24a438a`.
+The terminal executor policy branch was merged to `main` as commit `07184e7ed8c5516095d8cc6b2b6fad31e24a438a`.
 
 No local secret files are part of the GitHub promotion path.
