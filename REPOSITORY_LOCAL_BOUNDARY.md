@@ -41,6 +41,22 @@ D:\AI-Agent\Sandbox\agent-test\
     repository-controlled files
 ```
 
+## Authority separation
+Runtime access is divided into three domains:
+
+```text
+Workspace authority
+    = active project tree
+
+Tool authority
+    = explicitly approved executables, which may live outside workspace
+
+External resource authority
+    = explicitly declared external paths with read/write mode
+```
+
+An executable installed on `C:\` is not permission to read or modify arbitrary files on `C:\`. A design/assets directory on another drive is usable only when explicitly authorized as an external resource.
+
 ## Key-file preservation rule
 If a local API-key file already exists on the machine, repository synchronization or cleanup MUST NOT delete, overwrite, truncate, rename, or otherwise destroy it merely because the file is absent from Git or absent from the selected repository revision.
 
@@ -58,6 +74,8 @@ The existence of a local key file is protected local state. A sync/update operat
 Synchronization means synchronizing repository-controlled state.
 
 It does not mean deleting every local file absent from Git.
+
+Normal sync procedures must preserve unrelated intentional local work and protected local-only state.
 
 ## Destructive commands
 Normal synchronization must not blindly use:
