@@ -1,13 +1,15 @@
 # CURRENT CHECKPOINT
 
 ## Status
-Registry-driven router migration is **locally validated through repeated orchestration smoke** on the working branch:
+Registry-driven router migration has reached a **green local validation checkpoint** on the working branch:
 
 `agent/registry-router-migration`
 
-Current verified revision:
+Executable code was locally validated at:
 
-`51afefc Make orchestration smoke task IDs run-unique`
+`13df920 Correct expansion audit regression test`
+
+The subsequent branch commits are documentation and compatibility-test refinements; they are pending the next local validation cycle.
 
 ## Completed in this checkpoint
 
@@ -22,68 +24,101 @@ Current verified revision:
 - Registry-driven router tests exist in `test_registry_routers.py`.
 - Runtime connection resilience policy is documented in `RUNTIME_CONNECTION_RESILIENCE.md`.
 - WorkerRouter provides a compatibility alias `reset_runtime()` for legacy callers while `reset_runtime_state()` remains the underlying implementation.
-- `orchestration_smoke_test.py` now uses run-unique task IDs so persisted runtime state from an earlier interrupted run cannot collide with a later smoke run.
-- Calculator regression defects exposed by the full test suite were repaired with minimal changes and its source encoding was normalized.
+- `orchestration_smoke_test.py` uses run-unique task IDs so persisted runtime state from an earlier interrupted run cannot collide with a later smoke run.
+- Calculator regression defects exposed by the full test suite were repaired with minimal changes and source encoding was normalized.
+- Expansion Readiness Audit v2 distinguishes structural fixed-size assumptions from legitimate CLI/test/self-audit constructs.
+- Added regression coverage for the expansion audit and compatibility behavior.
 
-## Local validation results
+## Local validation results at executable checkpoint
 
 Environment:
 
 - Python: `3.12.10`
 - `python -m compileall -q .`: PASS
-- `python -m pytest -q`: `14 passed`
-- `python leader_router.py`: registry synthetic test PASS
-- `python worker_router.py`: registry synthetic test PASS
+- `python -m pytest -q`: `18 passed`
+- `python expansion_readiness_audit.py`: PASS
+- `python config_registry.py`: VALID
+- `python leader_router.py`: PASS
+- `python worker_router.py`: PASS
 - `python orchestration_smoke_test.py`: PASS
 - repeated `python orchestration_smoke_test.py` without deleting runtime state: PASS
 
-Observed repeated orchestration results:
+Observed orchestration runs:
 
 ```text
-Healthy Ultra leaders : 8
-Healthy Super leaders : 10
-Configured Groq workers: 15
+Run 1:
+  Healthy Ultra leaders : 8
+  Healthy Super leaders : 10
+  Configured Groq workers: 15
+  Leader attempts: 1
+  Worker attempts: 1
+  Leader validation: PASS
+  Worker validation: PASS
+  Overall: PASS
 
-Leader: successful; output validation PASSED
-Worker: successful; output validation PASSED
-
-ORCHESTRATION SMOKE TEST PASSED
-Leader -> Worker -> Validation
-Runtime failures -> alternate connection/model
-Project files sent : NO
+Run 2:
+  Healthy Ultra leaders : 8
+  Healthy Super leaders : 10
+  Configured Groq workers: 15
+  Leader attempts: 2
+  Worker attempts: 1
+  Leader validation: PASS
+  Worker validation: PASS
+  Overall: PASS
 ```
 
-The earlier failure:
+The second leader attempt demonstrates live runtime failover while still completing successfully.
+
+## Expansion readiness audit
+
+Parameterized expansion tests passed for:
+
+`N=1,2,3,4,5,10,11,15,21,31,50,100`
+
+Dynamic primary/failover simulations passed for:
+
+`N=5,11,21,31`
+
+The audit returned:
+
+`EXPANSION READINESS AUDIT PASSED ✅`
+
+It may still emit MEDIUM findings for runtime result metadata such as `$.leader.attempts = 1`. Those are execution observations, not routing configuration or fixed pool capacity.
+
+## Lease collision repair
+
+An earlier orchestration run failed with:
 
 ```text
 LeaseError: Task already has a worker lease: SMOKE-CODER-001
 ```
 
-was reproduced as a stale persisted task-lease collision. Removing that state allowed the smoke test to pass, and the subsequent run-unique task-ID fix was then validated by two consecutive successful runs without clearing state.
+This was reproduced as a stale persisted task-lease collision. The correct fix was **not** to weaken WorkerRouter lease protection. Instead, orchestration smoke task IDs were made run-unique.
 
-## Expansion readiness audit
+The fix was then validated by two consecutive successful smoke runs without clearing runtime state.
 
-The parameterized expansion tests continue to pass for:
+## Compatibility review refinement
 
-`N=1,2,3,4,5,10,11,15,21,31,50,100`
+Final review identified one compatibility semantic that needed preservation: the legacy `LeaderFailover.reset()` contract returned the active primary connection after reset. The facade was adjusted so reset clears runtime failures and then keeps the newly acquired primary compatibility lease active rather than immediately releasing it.
 
-and dynamic primary/failover simulations continue to pass for:
+A regression test was added to verify:
 
-`N=5,11,21,31`
+```text
+reset()
+→ returns first primary connection
+→ current_connection() matches it
+→ current_model() is primary model
+→ current_tier() == primary
+→ state() == READY
+```
 
-The audit still reports `REVIEW REQUIRED` because of known false-positive detections in:
-
-- `expansion_readiness_audit.py` self-audit code;
-- `project_state_classifier.py` CLI argument-count logic;
-- literal task IDs / example data in `worker_router.py`.
-
-These findings have not been promoted to architectural defects. The audit rules themselves require refinement so that operational configuration data and legitimate CLI/test constructs are distinguished from structural fixed-pool assumptions.
+This compatibility refinement is on the branch but was not included in the last local test run at `13df920`; it requires the next sync/test cycle.
 
 ## Health variability observation
 
-Repeated OpenRouter health checks showed that individual account/model outcomes can vary between runs. Examples included accounts that failed with `INVALID_RESPONSE` on one run and later succeeded, while other accounts changed status between runs.
+Repeated OpenRouter health checks showed that individual account/model outcomes can vary between runs. Accounts can fail with `INVALID_RESPONSE` on one run and later succeed, while other accounts can change status between runs.
 
-This is evidence that a health snapshot is time-dependent and must not be treated as permanent account failure. Runtime selection should continue to rely on current validated responses, retry/failover behavior, and runtime failure tracking.
+Therefore a health snapshot is time-dependent and must not be treated as permanent account failure. Runtime selection continues to rely on current validated responses, retry/failover behavior, and runtime failure tracking.
 
 ## Important synchronization state
 
@@ -102,40 +137,55 @@ Do not discard, reset, or overwrite unrelated intentional local work.
 
 ## Promotion status
 
-The registry/router/orchestration migration is operationally validated on the synchronized local branch, but it is **not yet promoted to `main`**.
+Pull request:
 
-The branch currently stands:
+`#1 — Migrate routing to registry and validate N-driven orchestration`
 
-- `28` commits ahead of `main`
+Current branch state:
+
+- `36` commits ahead of `main`
 - `0` commits behind `main`
+- PR remains open and unmerged
 
-Before promotion:
+Current branch head after the latest compatibility refinement is tracked by the PR; the local executable checkpoint remains `13df920` until the next sync/validation.
+
+Required promotion sequence:
 
 ```text
-verified smoke
+sync latest branch
     ↓
-expansion audit refinement
+compile
     ↓
-dependency / architecture review
+full regression
     ↓
-update AI_AGENT_HANDOFF.md with final verified checkpoint
+expansion audit
     ↓
-create / review pull request
+router tests
     ↓
-merge/promote to main
+orchestration smoke
+    ↓
+complete diff review
+    ↓
+security / secret-boundary review
+    ↓
+PR review
+    ↓
+merge to main
 ```
 
-## Next exact action
+## Architecture review conclusion so far
 
-Refine `expansion_readiness_audit.py` so its high-severity findings distinguish true structural fixed-size assumptions from legitimate code such as CLI argument counts, self-audit implementation details, and test/example literals. Then rerun the full validation suite and inspect the complete diff for:
+Executable evidence currently supports these conclusions:
 
-- stale profile dependencies;
-- hardcoded pool-size assumptions;
-- remaining runtime-state/schema incompatibilities;
-- obsolete legacy artifacts;
-- secret-handling regressions.
+- registry-driven leader and worker routing functions;
+- global worker lease protection remains intact;
+- runtime failover works;
+- orchestration is repeatable with persisted state;
+- expansion readiness coverage passes;
+- full regression passes at the executable checkpoint;
+- generated profile/discovery artifacts are no longer routing authorities.
 
-Do not reintroduce generated profile files as routing sources.
+A separate production-hardening milestone remains for `connection_manager.py`: move secret-file location outside permanent repository-relative paths and make key rotation preserve stable connection identity independently of secret-file line order.
 
 ## Source of truth
 
