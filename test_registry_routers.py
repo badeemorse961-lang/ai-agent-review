@@ -6,8 +6,9 @@ import unittest
 from pathlib import Path
 
 from config_registry import validate_registry
+from leader_failover import LeaderFailover
 from leader_router import LeaderRouter, LeaderUnavailable
-from worker_router import WorkerRouter, NoWorkerAvailable
+from worker_router import NoWorkerAvailable, WorkerRouter
 
 
 class RegistryDrivenRouterTests(unittest.TestCase):
@@ -26,10 +27,10 @@ class RegistryDrivenRouterTests(unittest.TestCase):
         )
         return path
 
-    def test_leader_router_reads_registry_configuration(self) -> None:
+    def _leader_health(self) -> Path:
         registry = validate_registry()
         leader = registry["architecture"]["leader"]
-        health = self._write(
+        return self._write(
             "leader_health.json",
             {
                 "models": {
@@ -44,11 +45,26 @@ class RegistryDrivenRouterTests(unittest.TestCase):
                 }
             },
         )
-        state = self.root / "leader_state.json"
 
+    def _worker_health(self) -> Path:
+        registry = validate_registry()
+        workers = registry["architecture"]["workers"]
+        all_ids = [
+            worker_id
+            for pool in workers["roles"].values()
+            for worker_id in pool
+        ]
+        return self._write(
+            "worker_health.json",
+            {"healthy": all_ids, "failed": []},
+        )
+
+    def test_leader_router_reads_registry_configuration(self) -> None:
+        registry = validate_registry()
+        leader = registry["architecture"]["leader"]
         router = LeaderRouter(
-            health_file=health,
-            state_file=state,
+            health_file=self._leader_health(),
+            state_file=self.root / "leader_state.json",
         )
 
         self.assertEqual(router.primary_pool, leader["primary_pool"])
@@ -59,20 +75,9 @@ class RegistryDrivenRouterTests(unittest.TestCase):
     def test_worker_router_reads_registry_configuration(self) -> None:
         registry = validate_registry()
         workers = registry["architecture"]["workers"]
-        all_ids = [
-            worker_id
-            for pool in workers["roles"].values()
-            for worker_id in pool
-        ]
-        health = self._write(
-            "worker_health.json",
-            {"healthy": all_ids, "failed": []},
-        )
-        state = self.root / "worker_state.json"
-
         router = WorkerRouter(
-            health_file=health,
-            state_file=state,
+            health_file=self._worker_health(),
+            state_file=self.root / "worker_state.json",
         )
 
         self.assertEqual(router.provider, workers["provider"])
@@ -80,25 +85,8 @@ class RegistryDrivenRouterTests(unittest.TestCase):
         self.assertEqual(router.worker_pools, workers["roles"])
 
     def test_leader_router_fails_over_after_primary_exhaustion(self) -> None:
-        registry = validate_registry()
-        leader = registry["architecture"]["leader"]
-        health = self._write(
-            "leader_health.json",
-            {
-                "models": {
-                    leader["primary_model"]: {
-                        "healthy": list(leader["primary_pool"]),
-                        "failed": [],
-                    },
-                    leader["failover_model"]: {
-                        "healthy": list(leader["failover_pool"]),
-                        "failed": [],
-                    },
-                }
-            },
-        )
         router = LeaderRouter(
-            health_file=health,
+            health_file=self._leader_health(),
             state_file=self.root / "leader_state.json",
         )
 
@@ -112,22 +100,25 @@ class RegistryDrivenRouterTests(unittest.TestCase):
         self.assertEqual(failover.tier, "SUPER")
         self.assertEqual(failover.model, router.failover_model)
 
-    def test_worker_standby_is_used_only_after_role_exhaustion(self) -> None:
-        registry = validate_registry()
-        workers = registry["architecture"]["workers"]
-        health = self._write(
-            "worker_health.json",
-            {
-                "healthy": [
-                    worker_id
-                    for pool in workers["roles"].values()
-                    for worker_id in pool
-                ],
-                "failed": [],
-            },
+    def test_leader_failover_reset_preserves_legacy_active_semantics(self) -> None:
+        manager = LeaderFailover(
+            health_file=self._leader_health(),
+            state_file=self.root / "leader_failover_state.json",
         )
+
+        first = manager.reset()
+
+        self.assertEqual(first, manager.primary_pool["connections"][0])
+        self.assertEqual(manager.current_connection(), first)
+        self.assertEqual(manager.current_model(), manager.primary_model)
+        self.assertEqual(manager.current_tier(), "primary")
+        self.assertEqual(manager.state(), "READY")
+
+        manager.failover("compatibility_test_failure")
+
+    def test_worker_standby_is_used_only_after_role_exhaustion(self) -> None:
         router = WorkerRouter(
-            health_file=health,
+            health_file=self._worker_health(),
             state_file=self.root / "worker_state.json",
         )
 
