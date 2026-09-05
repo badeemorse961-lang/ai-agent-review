@@ -97,7 +97,7 @@ class LeaderFailover:
 
         # Compatibility calls operate on a single synthetic lease so the
         # authoritative router remains responsible for failure bookkeeping.
-        if task_id not in self.router.active_leases():
+        if task_id not in self.router.snapshot()["leases"]:
             try:
                 self.router.acquire(task_id)
             except LeaderUnavailable:
