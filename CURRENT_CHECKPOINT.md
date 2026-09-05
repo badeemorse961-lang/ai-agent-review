@@ -6,7 +6,7 @@
 
 Latest merged commit:
 
-`49d23b796ee7b440ddb005a3acbd8ec3d81ad136`
+`07184e7ed8c5516095d8cc6b2b6fad31e24a438a`
 
 This baseline includes:
 
@@ -22,6 +22,7 @@ This baseline includes:
 - autonomous internal execution authorization;
 - workspace/tool/external-resource authority separation;
 - process sandbox boundary with explicit tool allowlisting and bounded execution;
+- terminal command policy and policy-first terminal executor;
 - existing Execution Gate for checkpoint → apply → tests → verification → approve/rollback.
 
 ## Autonomous execution contract
@@ -43,6 +44,10 @@ Independent Validation
   ↓
 Autonomous Internal Execution Authorization
   ↓
+Terminal Policy
+  ↓
+Process / Resource Sandbox
+  ↓
 Execution Gate
       Checkpoint → Apply → Tests → Verification
       PASS → APPROVE
@@ -62,6 +67,23 @@ Internal authorization is a machine-checked policy boundary. It is not a human a
 A helper executable located on `C:\` is therefore usable as a tool without granting the worker arbitrary access to the rest of `C:\`.
 
 An external design/assets directory on another path or drive requires an explicit bounded resource declaration.
+
+## Terminal execution policy
+
+`TerminalPolicy` is the command-shape boundary immediately before process execution.
+
+It enforces:
+
+- explicit executable-family allowlisting;
+- global and per-command argument bounds;
+- command-specific forbidden arguments;
+- rejection of shell wrappers/operators;
+- rejection of inline Python/Pytest launch forms such as `-c` and `-m`;
+- validation of path-like command arguments against workspace or explicitly readable external resources.
+
+`TerminalExecutor` composes this policy with `ProcessSandbox`. Terminal policy does not replace process/resource validation or the Execution Gate.
+
+The default policy permits `python` and `pytest` while keeping inline execution disabled. Git is intentionally not unrestricted by default; callers must provide a narrowed subcommand policy when Git execution is needed.
 
 ## Process containment
 
@@ -110,14 +132,14 @@ Never use destructive repository synchronization that can erase protected local 
 
 ## Validation record
 
-The resource/process hardening branch was locally validated after the complete grouped implementation:
+The complete terminal-policy branch was validated on the real Windows development environment:
 
 ```text
-python -m compileall -q .       PASS
-6 sandbox-policy tests         PASS
-11 process-sandbox tests        PASS
-3 worker-sandbox tests         PASS
-106 full-suite tests            PASS
+python -m compileall -q .                 PASS
+6 terminal-policy tests                   PASS
+3 terminal-executor tests                 PASS
+20 prior sandbox/resource tests            PASS
+115 full-suite tests                       PASS
 ```
 
 ## Promotion sequence
@@ -134,6 +156,6 @@ security / secret-boundary review
 merge to main
 ```
 
-The hardening branch has been merged to `main` as commit `49d23b796ee7b440ddb005a3acbd8ec3d81ad136`.
+The terminal-policy branch has been merged to `main` as commit `07184e7ed8c5516095d8cc6b2b6fad31e24a438a`.
 
 No local secret files are part of the GitHub promotion path.
