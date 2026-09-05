@@ -83,6 +83,10 @@ def create_session() -> requests.Session:
     return session
 
 
+def smoke_task_id(prefix: str) -> str:
+    return f"{prefix}-{time.time_ns()}"
+
+
 # =============================================================
 # Connection key mapping
 # =============================================================
@@ -566,7 +570,7 @@ def main() -> int:
     print("-" * 70)
 
     leader_router = LeaderRouter()
-    leader_task_id = "SMOKE-LEADER-001"
+    leader_task_id = smoke_task_id("SMOKE-LEADER")
 
     try:
         leader_lease, leader_result, leader_attempts = acquire_leader_until_success(
@@ -605,7 +609,7 @@ def main() -> int:
     print("-" * 70)
 
     worker_router = WorkerRouter()
-    worker_task_id = "SMOKE-CODER-001"
+    worker_task_id = smoke_task_id("SMOKE-CODER")
 
     try:
         worker_lease, worker_result, worker_attempts = acquire_worker_until_success(
