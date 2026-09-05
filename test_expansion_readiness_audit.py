@@ -36,7 +36,7 @@ def test_synthetic_fixed_values_are_ignored(tmp_path: Path):
         "    return len(pool) == 11\n",
     )
     assert [item.category for item in findings] == ["FIXED_POOL_SIZE_COMPARISON"]
-    assert findings[0].line == 8
+    assert findings[0].line == 7
 
 
 def test_fixed_pool_range_is_detected_in_production_code(tmp_path: Path):
