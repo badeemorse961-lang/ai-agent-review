@@ -109,14 +109,22 @@ class ProcessSandbox:
         normalized_command = self._validate_command(command)
         cwd = self.policy.workspace_root
 
-        for target in target_paths:
-            self.policy.validate_workspace_path(target)
-        for path in external_reads:
-            self.policy.validate_external_path(path, access="read")
-        for path in external_writes:
-            self.policy.validate_external_path(path, access="write")
+        try:
+            for target in target_paths:
+                self.policy.validate_workspace_path(target)
+            for path in external_reads:
+                self.policy.validate_external_path(path, access="read")
+            for path in external_writes:
+                self.policy.validate_external_path(path, access="write")
 
-        resolved_executable = self.policy.validate_tool_executable(normalized_command[0])
+            resolved_executable = self.policy.validate_tool_executable(normalized_command[0])
+        except SandboxPolicySafetyStop as exc:
+            raise ProcessSandboxSafetyStop(str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise ProcessSandboxSafetyStop(
+                f"Approved tool does not exist: {normalized_command[0]!r}"
+            ) from exc
+
         normalized_command = (str(resolved_executable), *normalized_command[1:])
         child_env = self._build_environment(env)
         creationflags = 0
