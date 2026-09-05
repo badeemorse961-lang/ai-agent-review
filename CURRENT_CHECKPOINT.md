@@ -6,7 +6,7 @@
 
 Latest merged commit:
 
-`07184e7ed8c5516095d8cc6b2b6fad31e24a438a`
+`e60b6b70dd899d734f4a7afd1ab03bf45b9cc8df`
 
 This baseline includes:
 
@@ -24,6 +24,8 @@ This baseline includes:
 - process sandbox boundary with explicit tool allowlisting and bounded execution;
 - policy-first terminal execution boundary;
 - explicit terminal executable/subcommand allowlisting and bounded command shape;
+- standard Worker → TerminalExecutor → TerminalPolicy → ProcessSandbox execution path;
+- no raw `subprocess` fallback in normal worker production execution;
 - existing Execution Gate for checkpoint → apply → tests → verification → approve/rollback.
 
 ## Autonomous execution contract
@@ -45,7 +47,9 @@ Independent Validation
   ↓
 Autonomous Internal Execution Authorization
   ↓
-Terminal Policy / Process Sandbox
+WorkerExecutionBoundary
+  ↓
+TerminalExecutor → TerminalPolicy → ProcessSandbox
   ↓
 Execution Gate
       Checkpoint → Apply → Tests → Verification
@@ -85,7 +89,7 @@ An external design/assets directory on another path or drive requires an explici
 
 ## Terminal execution policy
 
-`TerminalPolicy` now provides an explicit command-shape boundary before process launch:
+`TerminalPolicy` provides an explicit command-shape boundary before process launch:
 
 - unknown executables are rejected;
 - command argument counts are bounded;
@@ -94,7 +98,23 @@ An external design/assets directory on another path or drive requires an explici
 - Git subcommands are allowlisted rather than granting unrestricted Git execution;
 - path-like command arguments outside the workspace require explicit readable external-resource authority.
 
-`TerminalExecutor` composes this policy with `ProcessSandbox`. The terminal layer does not replace the Execution Gate.
+`TerminalExecutor` is the standard composition point between worker execution and process/resource enforcement. It does not replace the Execution Gate.
+
+## Worker execution rule
+
+Normal worker execution must cross the following controlled path:
+
+```text
+WorkerExecutionBoundary
+        ↓
+TerminalExecutor
+        ↓
+TerminalPolicy
+        ↓
+ProcessSandbox
+```
+
+An explicitly injected executor adapter remains available only for tests or tightly controlled integration adapters. The production default must fail closed rather than silently falling back to raw `subprocess` execution.
 
 ## OS isolation truthfulness
 
@@ -127,14 +147,14 @@ Never use destructive repository synchronization that can erase protected local 
 
 ## Validation record
 
-The terminal executor policy branch was locally validated on Windows after the complete grouped implementation:
+The worker terminal integration branch was locally validated on Windows after the complete grouped implementation at commit `15cf9e537b9e293f85b54e0db8919419f698da91`:
 
 ```text
 python -m compileall -q .                         PASS
-6 terminal-policy tests                           PASS
-3 terminal-executor tests                         PASS
-20 sandbox/resource regression tests              PASS
-115 full-suite tests                              PASS
+13 worker-execution tests                          PASS
+3 worker-process-sandbox tests                    PASS
+9 terminal-policy/executor tests                  PASS
+117 full-suite tests                               PASS
 ```
 
 ## Promotion sequence
@@ -149,8 +169,10 @@ diff review
 security / secret-boundary review
     ↓
 merge to main
+    ↓
+update CURRENT_CHECKPOINT.md
 ```
 
-The terminal executor policy branch was merged to `main` as commit `07184e7ed8c5516095d8cc6b2b6fad31e24a438a`.
+The worker terminal integration branch was merged to `main` as commit `e60b6b70dd899d734f4a7afd1ab03bf45b9cc8df`.
 
 No local secret files are part of the GitHub promotion path.
