@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`b337d5f49300788808a1768dfbb5094172a45fca`
+`e15a2f3d408add695c5fd3452881cfaca1beec9a`
 
-This squash merge promotes pull request `#30`, adding an immutable task-scoped Git mutation transaction attestation primitive with strict versioned serialization, identity binding, and evidence-digest validation.
+This squash merge promotes pull request `#31`, attaching an immutable transaction attestation to every successful authoritative Git mutation result and persisting it through the existing audit record.
 
 Previous promoted milestone:
 
-`6601b64918d240fcfaec9025d94bdb0e3ac82a7d` — PR #28 added real child-process verification of the OS-level workspace mutation lock and CI coverage for the concurrency boundary.
+`b337d5f49300788808a1768dfbb5094172a45fca` — PR #30 added the immutable task-scoped Git mutation transaction attestation primitive with strict versioned serialization, identity binding, and evidence-digest validation.
 
 ## Verified architecture
 
@@ -56,6 +56,10 @@ post-commit HEAD + clean index/worktree verification
 git show --format= --name-only -z <commit>
         ↓
 verify exact committed target set
+        ↓
+construct + bind immutable transaction attestation
+        ↓
+persist successful result + attestation audit record
 ```
 
 Only local `stage` and `commit` operations are exposed. Remote mutation, history rewriting, destructive cleanup, branch switching, merge/rebase/cherry-pick/stash, configuration injection, amendment, signing overrides, and hook bypass are not exposed.
@@ -132,7 +136,7 @@ The verifier requires terminated NUL framing, rejects empty records and duplicat
 
 The authoritative transaction retains this evidence check after commit.
 
-## Transaction attestation
+## Transaction attestation primitive
 
 PR #30 was merged as:
 
@@ -153,6 +157,18 @@ The model is frozen after construction. Versioned deserialization rejects schema
 
 The primitive is inspection-only and does not authorize or perform mutation.
 
+## Transaction attestation integration
+
+PR #31 was merged as:
+
+`e15a2f3d408add695c5fd3452881cfaca1beec9a`
+
+The authoritative `GitMutationExecutor` now derives the staged-evidence and commit-evidence SHA-256 digests only after the existing exact-target and exact-content verifiers succeed. It then constructs a frozen `GitMutationAttestation` bound to the authorized task, worker, canonical workspace, exact targets, object format, and resolved commit identity.
+
+The executor explicitly re-binds the newly created attestation before constructing the successful `GitMutationResult`. The result serializes the attestation as a versioned nested record, and the existing audit persistence path writes that complete result atomically.
+
+No new mutation authority was introduced. The attestation records evidence already proven by the authoritative transaction and can only be trusted by consumers that explicitly re-bind it to their current transaction context.
+
 ## Transaction hardening
 
 The mutation transaction captures pre-mutation `HEAD`, proves it remains stable through final preflight, verifies exact staged target and content evidence before commit, and after commit requires a distinct post-commit `HEAD` that matches the independently resolved commit identity used for exact committed-target inspection.
@@ -160,8 +176,6 @@ The mutation transaction captures pre-mutation `HEAD`, proves it remains stable 
 Staged-index evidence is task-scoped to one NUL-delimited query over the complete authorized target set. Pathname framing and target cardinality are part of the evidence boundary rather than inferred from line parsing.
 
 The workspace lock has executable multi-process evidence for active-owner exclusion and crash-release behavior.
-
-The next integration step is to attach immutable attestation data to `GitMutationResult` only after all existing evidence checks have passed, and to verify that binding before result serialization/audit persistence. This must not grant new mutation authority.
 
 Mutation failure preserves evidence and never performs blind reset/restore/clean recovery.
 
@@ -174,6 +188,18 @@ PR #22 was merged as:
 The repository security audit remains a standard-library-only AST gate for unsafe subprocess paths, shell execution primitives, credential-shaped literals, protected local credential filenames, and production-source parseability. CI runs compilation and the security invariant audit on pull requests and pushes to `main`, and also executes the real cross-process workspace-lock test suite.
 
 ## Validation status
+
+PR #31 was validated on the real Windows working tree at tested head `28a2f457cc07f444ecc4b418ed5ce9cede961900` before squash promotion:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q attestation + mutation integration suite          46 passed, 1 skipped
+python repository_security_audit.py                        PASS
+pytest -q                                                   231 passed, 1 skipped
+
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
 
 PR #30 was validated on the real Windows working tree at tested head `fb357352040506ddbd9345109d6b0d32579e0613` before squash promotion:
 
@@ -234,6 +260,12 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
+PR #31
+Title: Attach immutable transaction attestation to Git mutations
+Merge method: squash
+Merge commit: e15a2f3d408add695c5fd3452881cfaca1beec9a
+Status: MERGED
+
 PR #30
 Title: Add task-scoped Git mutation transaction attestation
 Merge method: squash
@@ -269,4 +301,4 @@ Title: Harden Git commit pathname evidence
 Status: MERGED
 ```
 
-The next engineering milestone is to attach the immutable transaction attestation to the authoritative `GitMutationResult`, populate it only from verified staged/commit evidence, bind it to the exact authorized task context, and persist only the validated attestation. No new mutation authority should be introduced by this integration.
+The next engineering milestone is to make persisted `GitMutationResult` audit records strictly restorable and re-bindable as a whole result, rather than restoring the nested attestation alone. The restoration path must reject schema drift, malformed snapshots, attestation/result field disagreement, and task/worker/workspace/target/commit identity drift without introducing mutation authority.
