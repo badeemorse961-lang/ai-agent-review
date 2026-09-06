@@ -8,6 +8,7 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_FILE = BASE_DIR / "config" / "registry.json"
 CONNECTIONS_FILE = BASE_DIR / "connections.json"
+EXPECTED_ROLE_SOURCE = "config/registry.json"
 
 
 class RegistryError(Exception):
@@ -53,10 +54,58 @@ def load_registry() -> dict[str, Any]:
 
 def load_connections() -> dict[str, Any]:
     data = _load_json(CONNECTIONS_FILE)
+    role_source = data.get("role_source")
+    if role_source != EXPECTED_ROLE_SOURCE:
+        raise RegistryError(
+            "connections.json must declare config/registry.json as the authoritative role source"
+        )
+
     connections = data.get("connections")
     if not isinstance(connections, dict):
         raise RegistryError("connections.json must contain a 'connections' object")
     return data
+
+
+def _validate_connection_metadata(
+    connection_id: str,
+    item: Any,
+) -> None:
+    if not isinstance(item, dict):
+        raise RegistryError(
+            f"Connection metadata must be an object: {connection_id}"
+        )
+    if item.get("connection_id") != connection_id:
+        raise RegistryError(
+            f"Connection metadata ID does not match registry key: {connection_id}"
+        )
+
+    provider = item.get("provider")
+    if not isinstance(provider, str) or not provider.strip():
+        raise RegistryError(
+            f"Connection provider must be a non-empty string: {connection_id}"
+        )
+
+    fingerprint = item.get("key_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(char not in "0123456789abcdefABCDEF" for char in fingerprint)
+    ):
+        raise RegistryError(
+            f"Connection key_fingerprint must be a SHA-256 hex digest: {connection_id}"
+        )
+
+    status = item.get("status")
+    if not isinstance(status, str) or not status.strip():
+        raise RegistryError(
+            f"Connection status must be a non-empty string: {connection_id}"
+        )
+
+    active = item.get("active")
+    if not isinstance(active, bool):
+        raise RegistryError(
+            f"Connection active flag must be boolean: {connection_id}"
+        )
 
 
 def validate_registry() -> dict[str, Any]:
@@ -118,8 +167,17 @@ def validate_registry() -> dict[str, Any]:
     if missing_metadata:
         raise RegistryError(f"Registry references unknown connections: {missing_metadata}")
 
+    unassigned_metadata = sorted(actual_ids - registry_ids)
+    if unassigned_metadata:
+        raise RegistryError(
+            f"Connections are not assigned by the authoritative registry: {unassigned_metadata}"
+        )
+
+    for connection_id in sorted(actual_ids):
+        _validate_connection_metadata(connection_id, connections[connection_id])
+
     for connection_id in leader_ids:
-        provider = connections[connection_id].get("provider")
+        provider = connections[connection_id]["provider"]
         if provider != leader_provider:
             raise RegistryError(
                 f"Leader connection {connection_id} has provider {provider!r}, "
@@ -127,7 +185,7 @@ def validate_registry() -> dict[str, Any]:
             )
 
     for connection_id in worker_ids:
-        provider = connections[connection_id].get("provider")
+        provider = connections[connection_id]["provider"]
         if provider != worker_provider:
             raise RegistryError(
                 f"Worker connection {connection_id} has provider {provider!r}, "
