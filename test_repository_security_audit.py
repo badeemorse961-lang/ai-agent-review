@@ -65,6 +65,38 @@ def test_shell_true_and_os_alias_are_rejected(tmp_path: Path) -> None:
     assert sum(finding.rule == "shell-execution" for finding in findings) == 3
 
 
+def test_process_sandbox_is_the_explicit_subprocess_boundary(tmp_path: Path) -> None:
+    write(tmp_path, ".gitignore", "groq_keys.txt\nopenrouter_keys.txt\ngroq_keys.backup.txt\nopenrouter_keys.backup.txt\n")
+    write(
+        tmp_path,
+        "process_sandbox.py",
+        "import subprocess\nsubprocess.Popen([\"echo\", \"x\"], shell=False)\nsubprocess.run([\"taskkill\"], shell=False)\n",
+    )
+
+    findings = audit_python_execution_boundaries(tmp_path)
+
+    assert findings == []
+
+
+def test_process_sandbox_does_not_allow_shell_true(tmp_path: Path) -> None:
+    write(tmp_path, ".gitignore", "groq_keys.txt\nopenrouter_keys.txt\ngroq_keys.backup.txt\nopenrouter_keys.backup.txt\n")
+    write(
+        tmp_path,
+        "process_sandbox.py",
+        "import subprocess\nsubprocess.Popen([\"echo\"], shell=True)\n",
+    )
+
+    findings = audit_python_execution_boundaries(tmp_path)
+
+    assert findings == [
+        AuditFinding(
+            "shell-execution",
+            "process_sandbox.py",
+            "subprocess call enables shell=True",
+        )
+    ]
+
+
 def test_legacy_project_scanner_git_probe_is_narrowly_allowed(tmp_path: Path) -> None:
     write(tmp_path, ".gitignore", "groq_keys.txt\nopenrouter_keys.txt\ngroq_keys.backup.txt\nopenrouter_keys.backup.txt\n")
     write(
@@ -92,7 +124,7 @@ def test_legacy_project_scanner_exception_rejects_unapproved_command(tmp_path: P
         AuditFinding(
             "subprocess-boundary",
             "project_scanner.py",
-            "direct subprocess.run call is outside ProcessSandbox",
+            "direct subprocess.run call is outside approved execution boundary",
         )
     ]
 
