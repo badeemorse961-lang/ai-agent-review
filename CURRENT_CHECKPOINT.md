@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`f19ad29f03d23a1cde894291de2a725b2937992f`
+`a5a6fe51da7157c8a042e544c1a8ca2cd3b25dd1`
 
-This squash merge promotes pull request `#25`, which hardens staged-index pathname and object evidence with NUL-delimited parsing and exact authorized-target verification.
+This squash merge promotes pull request `#27`, integrating the dedicated OS-level workspace mutation lock and the NUL-delimited staged-index evidence verifier into the authoritative `GitMutationExecutor` transaction.
 
 Previous promoted milestone:
 
-`3c6d0a05b8a8eea2fffecd7fc90a1fa266c300ee` — PR #24 workspace mutation lock hardening.
+`f19ad29f03d23a1cde894291de2a725b2937992f` — staged-index evidence hardening.
 
 ## Verified architecture
 
@@ -20,7 +20,7 @@ The repository includes registry-driven leader/worker routing, runtime connectio
 
 ## Task-scoped Git mutation control plane
 
-The promoted control plane remains:
+The promoted transaction is now:
 
 ```text
 Passed ValidationVerdict
@@ -37,15 +37,25 @@ GitMutationPolicy
         ↓
 ProcessSandbox
         ↓
+OS-level WorkspaceMutationLock
+        ↓
 Git add -- <exact targets>
         ↓
-verify staged target set
+git status --porcelain=v1 -z
         ↓
-verify staged index content == validated FileChange.new_text
+verify exact staged target set
+        ↓
+git ls-files --stage -z -- <exact targets>
+        ↓
+verify stage/path/object-ID evidence against validated content
         ↓
 Git commit -m <bounded single-line message>
         ↓
-verify HEAD + clean index/worktree + exact committed target set
+post-commit HEAD + clean index/worktree verification
+        ↓
+git show --format= --name-only -z <commit>
+        ↓
+verify exact committed target set
 ```
 
 Only local `stage` and `commit` operations are exposed. Remote mutation, history rewriting, destructive cleanup, branch switching, merge/rebase/cherry-pick/stash, configuration injection, amendment, signing overrides, and hook bypass are not exposed.
@@ -58,11 +68,13 @@ PR #24 was merged as:
 
 `3c6d0a05b8a8eea2fffecd7fc90a1fa266c300ee`
 
-The dedicated `WorkspaceMutationLock` now uses an operating-system advisory file lock keyed to the canonical workspace path. Windows uses `msvcrt.locking`; POSIX uses `fcntl.flock` with non-blocking exclusive acquisition.
+The dedicated `WorkspaceMutationLock` uses an operating-system advisory file lock keyed to the canonical workspace path. Windows uses `msvcrt.locking`; POSIX uses `fcntl.flock` with non-blocking exclusive acquisition.
 
 The lock file is persistent and is not treated as an ownership marker. This removes the previous `PID check → stale unlink → recreate` sequence and its check-to-use race. A process crash releases the kernel-managed lock automatically.
 
 The lock is a concurrency boundary only. It grants no authorization, Git, filesystem, process, network, shell, rollback, or credential authority.
+
+PR #27 integrates this lock into the authoritative `GitMutationExecutor` critical section while preserving the executor compatibility adapter surface.
 
 ## Git status evidence parsing hardening
 
@@ -104,11 +116,9 @@ PR #25 was merged as:
 
 The verifier is inspection-only and adds no mutation or authorization authority.
 
+PR #27 now invokes this verifier once against the exact authorized target set and the expected object IDs derived from the validated `FileChange.new_text` content.
+
 ## Git commit pathname evidence hardening
-
-PR #23 was merged as:
-
-`c5c6a37ada46f590a27b5be44c44fec2bc223e97`
 
 Post-commit verification requests NUL-delimited pathname evidence using:
 
@@ -118,9 +128,13 @@ git show --format= --name-only -z <commit>
 
 The verifier requires terminated NUL framing, rejects empty records and duplicates, normalizes Windows separators only, and requires exact authorized-target equality.
 
+The authoritative transaction retains this evidence check after commit.
+
 ## Transaction hardening
 
 The mutation transaction captures pre-mutation `HEAD`, proves it remains stable through final preflight, verifies exact staged target and content evidence before commit, and after commit requires a distinct post-commit `HEAD` that matches the independently resolved commit identity used for exact committed-target inspection.
+
+Staged-index evidence is task-scoped to one NUL-delimited query over the complete authorized target set instead of one line-oriented query per target. Pathname framing and target cardinality are therefore part of the evidence boundary rather than inferred from line parsing.
 
 Mutation failure preserves evidence and never performs blind reset/restore/clean recovery.
 
@@ -134,29 +148,19 @@ The repository security audit remains a standard-library-only AST gate for unsaf
 
 ## Validation status
 
-PR #25 was validated on the real Windows working tree at tested head `04085c2a24190e903f16917b1349cb4d8d975c9a` before its final parser adjustment; after adjustment the user verified:
+PR #27 was validated on the real Windows working tree at tested head `96e63747209c26142fc6e2639b350d853a688b17` before squash promotion:
 
 ```text
-python -m compileall -q .                         PASS
-pytest -q test_git_staged_evidence.py             9 passed
-python repository_security_audit.py               PASS
-pytest -q                                        208 passed, 1 skipped
+python -m compileall -q .                                  PASS
+pytest -q focused mutation/evidence/lock suite               53 passed, 1 skipped
+python repository_security_audit.py                        PASS
+pytest -q                                                   211 passed, 1 skipped
 
-git diff --check                               PASS
-git status --short --branch                      CLEAN
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
 ```
 
-PR #24 was validated on the real Windows working tree at tested head `48fa2b7d1440cea82685b38bef46a41d1188c5cc`:
-
-```text
-python -m compileall -q .                         PASS
-pytest -q test_workspace_mutation_lock.py         5 passed
-python repository_security_audit.py               PASS
-pytest -q                                        199 passed, 1 skipped
-
-git diff --check                               PASS
-git status --short --branch                      CLEAN
-```
+The earlier divergent PR #26 was not promoted. PR #27 was rebuilt from the coherent `main` checkpoint that already contained both `workspace_mutation_lock.py` and `git_staged_evidence.py`.
 
 ## Protected local state
 
@@ -176,6 +180,12 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
+PR #27
+Title: Integrate mutation locking and staged-index evidence
+Merge method: squash
+Merge commit: a5a6fe51da7157c8a042e544c1a8ca2cd3b25dd1
+Status: MERGED
+
 PR #25
 Title: Harden staged-index evidence parsing
 Merge method: squash
@@ -190,9 +200,7 @@ Status: MERGED
 
 PR #23
 Title: Harden Git commit pathname evidence
-Merge method: squash
-Merge commit: c5c6a37ada46f590a27b5be44c44fec2bc223e97
 Status: MERGED
 ```
 
-The next engineering milestone should integrate the dedicated workspace lock and staged-index evidence verifier into the authoritative `GitMutationExecutor` transaction, then exercise the complete concurrency + staging + commit-evidence flow on the real Windows workspace.
+The next engineering milestone should exercise and, where justified, extend the real multi-process transaction path around the promoted lock + staged-index evidence + commit pathname evidence boundaries before adding any new mutation authority.
