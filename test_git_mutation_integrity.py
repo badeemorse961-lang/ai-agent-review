@@ -66,7 +66,7 @@ def test_staged_index_content_must_match_validated_filechange(
 
     with pytest.raises(
         GitMutationVerificationError,
-        match="Staged content differs from validated",
+        match="Staged object ID mismatch",
     ):
         executor._verify_staged_contents([validated], ["calculator.py"])
 

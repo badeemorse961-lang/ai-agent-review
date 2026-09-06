@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -12,6 +9,7 @@ from typing import Any, Mapping, Sequence
 from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
 from git_commit_evidence import GitCommitEvidenceError, verify_exact_target_set
+from git_staged_evidence import GitStagedEvidenceError, verify_exact_staged_targets
 from independent_validation import ValidationVerdict
 from git_mutation_policy import (
     GitMutationPolicy,
@@ -19,6 +17,7 @@ from git_mutation_policy import (
     GitMutationSafetyStop,
 )
 from process_sandbox import ProcessResult, ProcessSandbox, ProcessSandboxSafetyStop
+from workspace_mutation_lock import WorkspaceMutationLock, WorkspaceMutationLockError
 
 
 SCHEMA_VERSION = 2
@@ -82,72 +81,21 @@ class GitMutationResult:
 
 
 class _WorkspaceMutationLock:
-    """Cross-process exclusive lock keyed to one workspace."""
+    """Compatibility adapter over the OS-level workspace mutation lock."""
 
     def __init__(self, workspace_root: Path) -> None:
-        digest = hashlib.sha256(
-            str(workspace_root.resolve()).encode("utf-8")
-        ).hexdigest()[:24]
-        self.path = (
-            Path(tempfile.gettempdir())
-            / f"ai-agent-git-mutation-{digest}.lock"
-        )
-        self._handle: int | None = None
+        self._lock = WorkspaceMutationLock(workspace_root)
+        self.path = self._lock.path
 
     def __enter__(self) -> "_WorkspaceMutationLock":
-        for _ in range(2):
-            try:
-                self._handle = os.open(
-                    self.path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                )
-                os.write(self._handle, str(os.getpid()).encode("ascii"))
-                return self
-            except FileExistsError as exc:
-                if not self._reclaim_stale_lock():
-                    raise GitMutationSafetyStop(
-                        "Another task-scoped Git mutation is already active for this workspace"
-                    ) from exc
-            except OSError as exc:
-                raise GitMutationSafetyStop(
-                    f"Unable to acquire the Git mutation lock: {exc}"
-                ) from exc
-        raise GitMutationSafetyStop("Unable to acquire the Git mutation lock safely")
-
-    def _reclaim_stale_lock(self) -> bool:
         try:
-            raw_pid = self.path.read_text(encoding="ascii").strip()
-        except OSError:
-            return False
-        if not raw_pid.isdigit():
-            return False
-        pid = int(raw_pid)
-        if pid <= 0 or pid == os.getpid():
-            return False
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            try:
-                self.path.unlink()
-                return True
-            except OSError:
-                return False
-        except PermissionError:
-            return False
-        except OSError:
-            return False
-        return False
+            self._lock.__enter__()
+        except WorkspaceMutationLockError as exc:
+            raise GitMutationSafetyStop(str(exc)) from exc
+        return self
 
-    def __exit__(self, *_: object) -> None:
-        if self._handle is not None:
-            try:
-                os.close(self._handle)
-            finally:
-                self._handle = None
-                try:
-                    self.path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+    def __exit__(self, *args: object) -> None:
+        self._lock.__exit__(*args)
 
 
 class GitMutationExecutor:
@@ -439,6 +387,7 @@ class GitMutationExecutor:
             self._normalize_status_path(change.path): change.new_text
             for change in changes
         }
+        expected_object_ids: dict[str, str] = {}
         for target in targets:
             if target not in expected_by_path:
                 raise GitMutationVerificationError(
@@ -447,22 +396,21 @@ class GitMutationExecutor:
             content = expected_by_path[target].encode("utf-8")
             header = f"blob {len(content)}\0".encode("ascii")
             digest = hashlib.sha1 if object_format == "sha1" else hashlib.sha256
-            expected_oid = digest(header + content).hexdigest()
-            result = self._run_internal(
-                [self.git_executable, "ls-files", "--stage", "--", target]
+            expected_object_ids[target] = digest(header + content).hexdigest()
+
+        result = self._run_internal(
+            [self.git_executable, "ls-files", "--stage", "-z", "--", *targets]
+        )
+        self._require_success(result, "Git staged-index inspection")
+        try:
+            verify_exact_staged_targets(
+                result.stdout,
+                targets,
+                object_format=object_format,
+                expected_object_ids=expected_object_ids,
             )
-            self._require_success(result, "Git staged-index inspection")
-            entries = [line for line in result.stdout.splitlines() if line.strip()]
-            if len(entries) != 1:
-                raise GitMutationVerificationError(
-                    f"Staged index evidence is ambiguous for target: {target!r}"
-                )
-            fields = entries[0].split()
-            if len(fields) < 3 or fields[1] != expected_oid:
-                actual = fields[1] if len(fields) > 1 else ""
-                raise GitMutationVerificationError(
-                    f"Staged content differs from validated FileChange.new_text for {target!r}: expected={expected_oid!r} actual={actual!r}"
-                )
+        except GitStagedEvidenceError as exc:
+            raise GitMutationVerificationError(str(exc)) from exc
 
     def policy_path(self, target: str) -> Path:
         candidate = (self.workspace_root / target).resolve(strict=False)
