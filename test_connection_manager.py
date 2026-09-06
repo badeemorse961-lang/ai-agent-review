@@ -10,7 +10,9 @@ from connection_manager import (
     PROVIDER_PREFIXES,
     _legacy_secret_file,
     import_provider,
+    load_registry,
     resolve_secret_file,
+    save_registry,
     secret_file,
 )
 
@@ -33,13 +35,21 @@ class ConnectionManagerTests(unittest.TestCase):
             root = Path(temp_dir)
             legacy = root / "groq_keys.txt"
             with patch("connection_manager.BASE_DIR", root):
-                (legacy).write_text("secret-a\n", encoding="utf-8")
-                with patch.dict(os.environ, {"AI_AGENT_SECRET_DIR": str(root / "missing")}, clear=False):
+                legacy.write_text("secret-a\n", encoding="utf-8")
+                with patch.dict(
+                    os.environ,
+                    {"AI_AGENT_SECRET_DIR": str(root / "missing")},
+                    clear=False,
+                ):
                     os.environ.pop("AI_AGENT_ALLOW_LEGACY_SECRET_PATH", None)
                     with self.assertRaises(FileNotFoundError):
                         resolve_secret_file("groq")
 
-                    with patch.dict(os.environ, {"AI_AGENT_ALLOW_LEGACY_SECRET_PATH": "1"}, clear=False):
+                    with patch.dict(
+                        os.environ,
+                        {"AI_AGENT_ALLOW_LEGACY_SECRET_PATH": "1"},
+                        clear=False,
+                    ):
                         self.assertEqual(resolve_secret_file("groq"), legacy)
 
     def test_unlabeled_keys_preserve_existing_ids_by_fingerprint(self) -> None:
@@ -130,6 +140,28 @@ class ConnectionManagerTests(unittest.TestCase):
             registry["connections"]["GROQ-02"]["provider"],
             "groq",
         )
+
+    def test_load_registry_declares_authoritative_role_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry_path = root / "connections.json"
+            registry_path.write_text(
+                '{"version": 2, "role_source": "roles.json", "connections": {}}',
+                encoding="utf-8",
+            )
+            with patch("connection_manager.REGISTRY_FILE", registry_path):
+                loaded = load_registry()
+
+        self.assertEqual(loaded["role_source"], "config/registry.json")
+
+    def test_save_registry_persists_authoritative_role_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "connections.json"
+            with patch("connection_manager.REGISTRY_FILE", path):
+                save_registry({"version": 3, "connections": {}})
+                saved = path.read_text(encoding="utf-8")
+
+        self.assertIn('"role_source": "config/registry.json"', saved)
 
 
 if __name__ == "__main__":

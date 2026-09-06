@@ -6,21 +6,17 @@
 
 Latest merged implementation baseline:
 
-`e15a2f3d408add695c5fd3452881cfaca1beec9a`
+`f95e47eb3aec39fc68b9e19c79072714d2c504cf`
 
-This squash merge promotes pull request `#31`, attaching an immutable transaction attestation to every successful authoritative Git mutation result and persisting it through the existing audit record.
+This squash merge promotes PR #33, adding an inspection-only live Git evidence rebinding boundary for restored `GitMutationResult` records.
 
-Previous promoted milestone:
-
-`b337d5f49300788808a1768dfbb5094172a45fca` — PR #30 added the immutable task-scoped Git mutation transaction attestation primitive with strict versioned serialization, identity binding, and evidence-digest validation.
+The live rebind contract proves the same canonical workspace, process-sandbox binding, active branch, attested `HEAD`, clean index/worktree, exact committed target set, and matching committed-evidence SHA-256 digest. It performs no mutation, recovery, branch switching, or authorization.
 
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, a separate task-scoped Git mutation control plane, a dedicated Execution Gate process boundary, and task-scoped transaction evidence primitives.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, and live evidence rebinding.
 
-## Task-scoped Git mutation control plane
-
-The promoted transaction is:
+## Git mutation trust chain
 
 ```text
 Passed ValidationVerdict
@@ -41,206 +37,48 @@ OS-level WorkspaceMutationLock
         ↓
 Git add -- <exact targets>
         ↓
-git status --porcelain=v1 -z
+NUL-delimited staged-target/content evidence
         ↓
-verify exact staged target set
+Git commit -m <bounded message>
         ↓
-git ls-files --stage -z -- <exact targets>
+post-commit HEAD + clean index/worktree
         ↓
-verify stage/path/object-ID evidence against validated content
+NUL-delimited committed-target evidence
         ↓
-Git commit -m <bounded single-line message>
+immutable transaction attestation
         ↓
-post-commit HEAD + clean index/worktree verification
+atomic audit persistence
         ↓
-git show --format= --name-only -z <commit>
+strict result restoration
         ↓
-verify exact committed target set
-        ↓
-construct + bind immutable transaction attestation
-        ↓
-persist successful result + attestation audit record
+inspection-only live evidence rebind before later trust
 ```
 
-Only local `stage` and `commit` operations are exposed. Remote mutation, history rewriting, destructive cleanup, branch switching, merge/rebase/cherry-pick/stash, configuration injection, amendment, signing overrides, and hook bypass are not exposed.
+The mutation control plane exposes only local `stage` and `commit`. Remote mutation, destructive cleanup, history rewriting, branch switching, configuration injection, amendment, and hook bypass remain outside its authority.
 
-Every mutation consumes prior independent-validation and internal authorization evidence. It cannot self-authorize.
+## Configuration authority
 
-## Workspace mutation locking
+`config/registry.json` is the authoritative source for leader pools, worker roles, and connection assignment.
 
-PR #24 was merged as:
+`connections.json` is connection metadata only. Its `role_source` marker must be `config/registry.json` and must not reference a legacy role file.
 
-`3c6d0a05b8a8eea2fffecd7fc90a1fa266c300ee`
+The current engineering milestone hardens `config_registry.py` so the declared invariants are machine-checked:
 
-The dedicated `WorkspaceMutationLock` uses an operating-system advisory file lock keyed to the canonical workspace path. Windows uses `msvcrt.locking`; POSIX uses `fcntl.flock` with non-blocking exclusive acquisition.
+- every leader/worker assignment is unique;
+- leader and worker pools are disjoint;
+- every registry connection has corresponding metadata;
+- no metadata connection exists without an authoritative assignment;
+- metadata keys match their embedded connection IDs;
+- provider, status, active flag, and SHA-256 key fingerprint fields have validated shapes;
+- leader and worker providers match their assigned connection metadata.
 
-The lock file is persistent and is not treated as an ownership marker. This removes the previous `PID check → stale unlink → recreate` sequence and its check-to-use race. A process crash releases the kernel-managed lock automatically.
+`connection_manager.py` preserves the authoritative role-source marker when loading or saving connection metadata and does not treat role information as routing authority.
 
-The lock is a concurrency boundary only. It grants no authorization, Git, filesystem, process, network, shell, rollback, or credential authority.
+## Project and safety rules
 
-PR #27 integrates this lock into the authoritative `GitMutationExecutor` critical section while preserving the executor compatibility adapter surface.
+UNKNOWN and unresolved CONFLICT are safety stops. Confirmed breakage means REPAIR. Model output is untrusted. Local tests determine executable reality. Secrets remain outside Git history and normal child environments. Generic terminal Git access remains inspection-only. Normal development is autonomous inside the active workspace; high-risk authority is separated explicitly.
 
-PR #28 adds real child-process verification of exclusion and crash-release behavior, making the concurrency property executable rather than relying only on same-process unit tests.
-
-## Git status evidence parsing hardening
-
-PR #20 was merged as:
-
-`e452094a66c62af7042837d6604a40bac6743ef4`
-
-The Git mutation snapshot path obtains repository status with:
-
-```text
-git status --porcelain=v1 -z
-```
-
-and resolves the active branch independently with:
-
-```text
-git branch --show-current
-```
-
-The parser consumes NUL-delimited records, preserves complex pathnames, and handles rename/copy source paths conservatively. Detached HEAD and malformed or ambiguous evidence fail closed.
-
-## Staged-index evidence hardening
-
-PR #25 was merged as:
-
-`f19ad29f03d23a1cde894291de2a725b2937992f`
-
-`git_staged_evidence.py` defines the staged-index evidence contract for `git ls-files --stage -z`. It validates:
-
-- NUL framing and required stream termination
-- UTF-8 pathname decoding and separator normalization
-- six-digit mode shape
-- SHA-1 or SHA-256 object-ID shape
-- merge stage (`0` only for ordinary staged mutation evidence)
-- duplicate pathname evidence
-- duplicate authorized targets
-- exact staged target-set equality
-- optional exact staged object-ID equality against validated expected content
-
-The verifier is inspection-only and adds no mutation or authorization authority.
-
-PR #27 invokes this verifier once against the exact authorized target set and the expected object IDs derived from the validated `FileChange.new_text` content.
-
-## Git commit pathname evidence hardening
-
-Post-commit verification requests NUL-delimited pathname evidence using:
-
-```text
-git show --format= --name-only -z <commit>
-```
-
-The verifier requires terminated NUL framing, rejects empty records and duplicates, normalizes Windows separators only, and requires exact authorized-target equality.
-
-The authoritative transaction retains this evidence check after commit.
-
-## Transaction attestation primitive
-
-PR #30 was merged as:
-
-`b337d5f49300788808a1768dfbb5094172a45fca`
-
-`git_mutation_attestation.py` defines an immutable `GitMutationAttestation` that binds:
-
-- task identity
-- worker identity
-- canonical workspace identity
-- exact normalized target set
-- commit identity
-- Git object format
-- staged evidence SHA-256 digest
-- commit evidence SHA-256 digest
-
-The model is frozen after construction. Versioned deserialization rejects schema drift, malformed target lists, duplicate targets, malformed hexadecimal evidence, unsupported object formats, and commit/object-format length inconsistencies. `verify_attestation_binding` provides an explicit equality check for later transaction integration.
-
-The primitive is inspection-only and does not authorize or perform mutation.
-
-## Transaction attestation integration
-
-PR #31 was merged as:
-
-`e15a2f3d408add695c5fd3452881cfaca1beec9a`
-
-The authoritative `GitMutationExecutor` now derives the staged-evidence and commit-evidence SHA-256 digests only after the existing exact-target and exact-content verifiers succeed. It then constructs a frozen `GitMutationAttestation` bound to the authorized task, worker, canonical workspace, exact targets, object format, and resolved commit identity.
-
-The executor explicitly re-binds the newly created attestation before constructing the successful `GitMutationResult`. The result serializes the attestation as a versioned nested record, and the existing audit persistence path writes that complete result atomically.
-
-No new mutation authority was introduced. The attestation records evidence already proven by the authoritative transaction and can only be trusted by consumers that explicitly re-bind it to their current transaction context.
-
-## Transaction hardening
-
-The mutation transaction captures pre-mutation `HEAD`, proves it remains stable through final preflight, verifies exact staged target and content evidence before commit, and after commit requires a distinct post-commit `HEAD` that matches the independently resolved commit identity used for exact committed-target inspection.
-
-Staged-index evidence is task-scoped to one NUL-delimited query over the complete authorized target set. Pathname framing and target cardinality are part of the evidence boundary rather than inferred from line parsing.
-
-The workspace lock has executable multi-process evidence for active-owner exclusion and crash-release behavior.
-
-Mutation failure preserves evidence and never performs blind reset/restore/clean recovery.
-
-## Repository security invariant audit
-
-PR #22 was merged as:
-
-`f8db02667a79a8a172ca89a73d488311af5e2bcc`
-
-The repository security audit remains a standard-library-only AST gate for unsafe subprocess paths, shell execution primitives, credential-shaped literals, protected local credential filenames, and production-source parseability. CI runs compilation and the security invariant audit on pull requests and pushes to `main`, and also executes the real cross-process workspace-lock test suite.
-
-## Validation status
-
-PR #31 was validated on the real Windows working tree at tested head `28a2f457cc07f444ecc4b418ed5ce9cede961900` before squash promotion:
-
-```text
-python -m compileall -q .                                  PASS
-pytest -q attestation + mutation integration suite          46 passed, 1 skipped
-python repository_security_audit.py                        PASS
-pytest -q                                                   231 passed, 1 skipped
-
-git diff --check                                            PASS
-git status --short --branch                                 CLEAN
-```
-
-PR #30 was validated on the real Windows working tree at tested head `fb357352040506ddbd9345109d6b0d32579e0613` before squash promotion:
-
-```text
-python -m compileall -q .                                  PASS
-pytest -q test_git_mutation_attestation.py                  14 passed
-python repository_security_audit.py                        PASS
-pytest -q                                                   228 passed, 1 skipped
-
-git diff --check                                            PASS
-git status --short --branch                                 CLEAN
-```
-
-PR #28 was validated on the real Windows working tree at tested head `fa8a424a6c90b66819c91361f8f17cc574d39f42` before squash promotion:
-
-```text
-python -m compileall -q .                                  PASS
-pytest -q test_workspace_mutation_lock.py \
-          test_workspace_mutation_lock_multiprocess.py      8 passed
-python repository_security_audit.py                        PASS
-pytest -q                                                   214 passed, 1 skipped
-
-git diff --check                                            PASS
-git status --short --branch                                 CLEAN
-```
-
-PR #27 was validated on the real Windows working tree at tested head `96e63747209c26142fc6e2639b350d853a688b17` before squash promotion:
-
-```text
-python -m compileall -q .                                  PASS
-pytest -q focused mutation/evidence/lock suite               53 passed, 1 skipped
-python repository_security_audit.py                        PASS
-pytest -q                                                   211 passed, 1 skipped
-
-git diff --check                                            PASS
-git status --short --branch                                 CLEAN
-```
-
-The earlier divergent PR #26 was not promoted. PR #27 was rebuilt from the coherent `main` checkpoint that already contained both `workspace_mutation_lock.py` and `git_staged_evidence.py`.
-
-PR #29 was closed unmerged because its initial GitHub writes accidentally targeted the default branch; its intended content was rebuilt safely as PR #30 with explicit feature-branch writes, and only the accidental `git_mutation_attestation.py` artifact was removed from `main`.
+Never use destructive synchronization such as `git clean -fd` or `git reset --hard`.
 
 ## Protected local state
 
@@ -253,52 +91,55 @@ groq_keys.backup.txt
 openrouter_keys.backup.txt
 ```
 
-Other local `.env`, runtime state, machine credentials, caches, and preserved profile backups remain outside the GitHub promotion path.
+## Previous promoted milestones
 
-Never use destructive synchronization such as blind `git clean -fd` or `git reset --hard`.
+PR #24 — OS-level workspace mutation locking.
 
-## Promotion record
+PR #25 — NUL-delimited staged-index evidence hardening.
+
+PR #27 — authoritative integration of locking and staged evidence.
+
+PR #28 — cross-process lock exclusion/crash-release evidence.
+
+PR #30 — immutable task-scoped transaction attestation primitive.
+
+PR #31 — attestation integration into authoritative Git mutation results.
+
+PR #32 — strict whole-result restoration boundary.
+
+PR #33 — live Git evidence rebinding.
+
+## Validation record
+
+The latest real Windows validation completed on the live-rebind branch before promotion:
 
 ```text
-PR #31
-Title: Attach immutable transaction attestation to Git mutations
-Merge method: squash
-Merge commit: e15a2f3d408add695c5fd3452881cfaca1beec9a
-Status: MERGED
-
-PR #30
-Title: Add task-scoped Git mutation transaction attestation
-Merge method: squash
-Merge commit: b337d5f49300788808a1768dfbb5094172a45fca
-Status: MERGED
-
-PR #28
-Title: Harden workspace mutation lock with cross-process verification
-Merge method: squash
-Merge commit: 6601b64918d240fcfaec9025d94bdb0e3ac82a7d
-Status: MERGED
-
-PR #27
-Title: Integrate mutation locking and staged-index evidence
-Merge method: squash
-Merge commit: a5a6fe51da7157c8a042e544c1a8ca2cd3b25dd1
-Status: MERGED
-
-PR #25
-Title: Harden staged-index evidence parsing
-Merge method: squash
-Merge commit: f19ad29f03d23a1cde894291de2a725b2937992f
-Status: MERGED
-
-PR #24
-Title: Harden workspace mutation locking
-Merge method: squash
-Merge commit: 3c6d0a05b8a8eea2fffecd7fc90a1fa266c300ee
-Status: MERGED
-
-PR #23
-Title: Harden Git commit pathname evidence
-Status: MERGED
+python -m compileall -q .                                  PASS
+focused live-rebind/mutation suites                         62 passed, 1 skipped
+python repository_security_audit.py                        PASS
+pytest -q                                                   247 passed, 1 skipped
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
 ```
 
-The next engineering milestone is to make persisted `GitMutationResult` audit records strictly restorable and re-bindable as a whole result, rather than restoring the nested attestation alone. The restoration path must reject schema drift, malformed snapshots, attestation/result field disagreement, and task/worker/workspace/target/commit identity drift without introducing mutation authority.
+That evidence applies to merged baseline `f95e47eb3aec39fc68b9e19c79072714d2c504cf` plus the promoted live-rebind tests.
+
+## Current milestone
+
+`agent/harden-config-authority`
+
+Goal: make the static routing authority and connection metadata contract machine-validated so stale role sources, unassigned connections, identity mismatches, and malformed connection metadata fail closed before routing decisions are made.
+
+Required promotion sequence:
+
+```text
+complete grouped implementation
+    ↓
+real Windows compile + focused configuration/connection tests + full regression
+    ↓
+security audit + diff review + working-tree verification
+    ↓
+merge to main
+    ↓
+update this checkpoint on main
+```

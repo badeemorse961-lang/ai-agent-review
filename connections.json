@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "role_source": "roles.json",
+  "role_source": "config/registry.json",
   "connections": {
     "GROQ-01": {
       "connection_id": "GROQ-01",
