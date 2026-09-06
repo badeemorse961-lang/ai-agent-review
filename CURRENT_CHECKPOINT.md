@@ -6,21 +6,21 @@
 
 Latest merged implementation baseline:
 
-`6601b64918d240fcfaec9025d94bdb0e3ac82a7d`
+`b337d5f49300788808a1768dfbb5094172a45fca`
 
-This squash merge promotes pull request `#28`, adding real child-process verification of the OS-level workspace mutation lock and CI coverage for the concurrency boundary.
+This squash merge promotes pull request `#30`, adding an immutable task-scoped Git mutation transaction attestation primitive with strict versioned serialization, identity binding, and evidence-digest validation.
 
 Previous promoted milestone:
 
-`a5a6fe51da7157c8a042e544c1a8ca2cd3b25dd1` — PR #27 integrated the dedicated workspace lock and NUL-delimited staged-index evidence verifier into the authoritative `GitMutationExecutor` transaction.
+`6601b64918d240fcfaec9025d94bdb0e3ac82a7d` — PR #28 added real child-process verification of the OS-level workspace mutation lock and CI coverage for the concurrency boundary.
 
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, a separate task-scoped Git mutation control plane, and a dedicated Execution Gate process boundary.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, a separate task-scoped Git mutation control plane, a dedicated Execution Gate process boundary, and task-scoped transaction evidence primitives.
 
 ## Task-scoped Git mutation control plane
 
-The promoted transaction is now:
+The promoted transaction is:
 
 ```text
 Passed ValidationVerdict
@@ -118,7 +118,7 @@ PR #25 was merged as:
 
 The verifier is inspection-only and adds no mutation or authorization authority.
 
-PR #27 now invokes this verifier once against the exact authorized target set and the expected object IDs derived from the validated `FileChange.new_text` content.
+PR #27 invokes this verifier once against the exact authorized target set and the expected object IDs derived from the validated `FileChange.new_text` content.
 
 ## Git commit pathname evidence hardening
 
@@ -132,13 +132,36 @@ The verifier requires terminated NUL framing, rejects empty records and duplicat
 
 The authoritative transaction retains this evidence check after commit.
 
+## Transaction attestation
+
+PR #30 was merged as:
+
+`b337d5f49300788808a1768dfbb5094172a45fca`
+
+`git_mutation_attestation.py` defines an immutable `GitMutationAttestation` that binds:
+
+- task identity
+- worker identity
+- canonical workspace identity
+- exact normalized target set
+- commit identity
+- Git object format
+- staged evidence SHA-256 digest
+- commit evidence SHA-256 digest
+
+The model is frozen after construction. Versioned deserialization rejects schema drift, malformed target lists, duplicate targets, malformed hexadecimal evidence, unsupported object formats, and commit/object-format length inconsistencies. `verify_attestation_binding` provides an explicit equality check for later transaction integration.
+
+The primitive is inspection-only and does not authorize or perform mutation.
+
 ## Transaction hardening
 
 The mutation transaction captures pre-mutation `HEAD`, proves it remains stable through final preflight, verifies exact staged target and content evidence before commit, and after commit requires a distinct post-commit `HEAD` that matches the independently resolved commit identity used for exact committed-target inspection.
 
-Staged-index evidence is task-scoped to one NUL-delimited query over the complete authorized target set instead of one line-oriented query per target. Pathname framing and target cardinality are therefore part of the evidence boundary rather than inferred from line parsing.
+Staged-index evidence is task-scoped to one NUL-delimited query over the complete authorized target set. Pathname framing and target cardinality are part of the evidence boundary rather than inferred from line parsing.
 
-The workspace lock now has executable multi-process evidence for active-owner exclusion and crash-release behavior.
+The workspace lock has executable multi-process evidence for active-owner exclusion and crash-release behavior.
+
+The next integration step is to attach immutable attestation data to `GitMutationResult` only after all existing evidence checks have passed, and to verify that binding before result serialization/audit persistence. This must not grant new mutation authority.
 
 Mutation failure preserves evidence and never performs blind reset/restore/clean recovery.
 
@@ -148,9 +171,21 @@ PR #22 was merged as:
 
 `f8db02667a79a8a172ca89a73d488311af5e2bcc`
 
-The repository security audit remains a standard-library-only AST gate for unsafe subprocess paths, shell execution primitives, credential-shaped literals, protected local credential filenames, and production-source parseability. CI runs compilation and the security invariant audit on pull requests and pushes to `main`, and now also executes the real cross-process workspace-lock test suite.
+The repository security audit remains a standard-library-only AST gate for unsafe subprocess paths, shell execution primitives, credential-shaped literals, protected local credential filenames, and production-source parseability. CI runs compilation and the security invariant audit on pull requests and pushes to `main`, and also executes the real cross-process workspace-lock test suite.
 
 ## Validation status
+
+PR #30 was validated on the real Windows working tree at tested head `fb357352040506ddbd9345109d6b0d32579e0613` before squash promotion:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_git_mutation_attestation.py                  14 passed
+python repository_security_audit.py                        PASS
+pytest -q                                                   228 passed, 1 skipped
+
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
 
 PR #28 was validated on the real Windows working tree at tested head `fa8a424a6c90b66819c91361f8f17cc574d39f42` before squash promotion:
 
@@ -179,6 +214,8 @@ git status --short --branch                                 CLEAN
 
 The earlier divergent PR #26 was not promoted. PR #27 was rebuilt from the coherent `main` checkpoint that already contained both `workspace_mutation_lock.py` and `git_staged_evidence.py`.
 
+PR #29 was closed unmerged because its initial GitHub writes accidentally targeted the default branch; its intended content was rebuilt safely as PR #30 with explicit feature-branch writes, and only the accidental `git_mutation_attestation.py` artifact was removed from `main`.
+
 ## Protected local state
 
 The following remain local-only and must never be deleted, overwritten, truncated, renamed, or cleaned by synchronization:
@@ -197,6 +234,12 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
+PR #30
+Title: Add task-scoped Git mutation transaction attestation
+Merge method: squash
+Merge commit: b337d5f49300788808a1768dfbb5094172a45fca
+Status: MERGED
+
 PR #28
 Title: Harden workspace mutation lock with cross-process verification
 Merge method: squash
@@ -226,4 +269,4 @@ Title: Harden Git commit pathname evidence
 Status: MERGED
 ```
 
-The next engineering milestone should extend the real transaction evidence path itself: capture immutable task-scoped attestation metadata for staging and post-commit evidence, then verify that attestation survives serialization and remains bound to the same task, worker, targets, workspace, and commit identity before any further mutation authority is considered.
+The next engineering milestone is to attach the immutable transaction attestation to the authoritative `GitMutationResult`, populate it only from verified staged/commit evidence, bind it to the exact authorized task context, and persist only the validated attestation. No new mutation authority should be introduced by this integration.
