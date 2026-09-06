@@ -1,23 +1,23 @@
-# Project Rules
+# PROJECT RULES
 
 1. Model output is untrusted input.
-2. Registry configuration is authoritative for routing and pools.
-3. Runtime health/state is local runtime data and must not become static routing truth.
-4. The active project workspace is the default filesystem mutation authority.
-5. Development tools may reside outside the workspace, but tool location does not grant filesystem authority.
-6. External files/directories require explicit bounded authorization (`read`, `write`, or `read_write`).
-7. Independent validation must precede internal execution authorization.
-8. Execution authorization is an internal machine-checked policy decision; normal development must not require human confirmation for each operation.
-9. The Execution Gate remains the mutation authority.
-10. Checkpoints must precede mutation and rollback must be independently verified.
-11. Unknown or unresolved-conflict states are SAFE_STOP conditions.
-12. Portable process containment must not be described as complete OS filesystem isolation.
-13. `strict_os_required` must fail closed until a validated native OS sandbox backend exists.
-14. Secrets and credentials must remain outside source control and must never be exposed in logs.
-15. Terminal Git access is inspection-only; repository/history mutations require a separate explicit control plane.
-16. Git repository/configuration scope overrides must be rejected at the terminal boundary.
-17. Git path arguments must remain within the active workspace when path arguments are accepted by the Git safety policy.
-18. Process stdout/stderr must be secret-redacted before it is returned, logged, or persisted.
+2. All filesystem mutations must stay inside the active workspace unless an explicit external resource declaration authorizes the path.
+3. Human approval is exceptional, not required for every file or command in normal autonomous development.
+4. UNKNOWN and unresolved CONFLICT states must stop autonomous execution.
+5. Confirmed syntax/build/test breakage is REPAIR.
+6. Worker routing and pool membership must be registry-driven and N-configurable.
+7. Connection IDs are stable identifiers, not fixed-capacity indexes.
+8. Secret material must never enter Git history, source configuration, logs, tests, or runtime state intended for persistence.
+9. The normal worker execution path must cross TerminalExecutor, TerminalPolicy, and ProcessSandbox.
+10. Raw subprocess execution is not an allowed production fallback for worker execution.
+11. Git through the generic terminal path is inspection-only.
+12. Git repository/configuration scope overrides are forbidden through terminal execution.
+13. Rollback must be independently verified before being reported successful.
+14. Local test evidence determines executable reality.
+15. Architecture expansion must preserve existing interfaces and safety rules.
+16. External resources require explicit bounded read/write authorization.
+17. Process sandbox containment must not be described as complete OS-level filesystem isolation.
+18. Provider credentials and machine secrets remain local-only and outside repository promotion.
 19. Provider error details must be treated as untrusted output and redacted before persistence.
 20. Secret-pattern redaction is a backstop; credentials must still be excluded from child environments whenever possible.
 21. Redaction coverage must be regression-tested for explicit secrets, common credential forms, failing test output, and ambient secret-bearing environment variables.
@@ -26,3 +26,5 @@
 24. The Git mutation control plane may stage and commit only its exact validated target set; it must not expose remote mutation or history-rewriting authority.
 25. Post-commit verification must prove a clean index/worktree and exact committed target set before reporting success.
 26. Mutation failure must preserve evidence rather than performing blind cleanup, reset, or destructive synchronization.
+27. Git mutation target/content validation must run while holding the workspace-specific mutation lock so the validation-to-staging boundary is not invalidated by a cooperating transaction.
+28. Git mutation success must prove that HEAD advanced from the pre-mutation snapshot and that the resolved post-commit HEAD is the same commit used for exact target-set verification.

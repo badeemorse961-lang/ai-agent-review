@@ -165,11 +165,11 @@ verified mutation result
 
 The control plane permits only local `stage` and `commit` operations. It does not expose push, pull, fetch, reset, clean, checkout, switch, restore, merge, rebase, cherry-pick, stash, tag, remote, worktree, configuration injection, history amendment, or hook bypass flags.
 
-Before staging, it refuses pre-existing staged state, unrelated working-tree changes, content drift from the validated `FileChange.new_text`, invalid target type/encoding, and symlink/junction escapes. Commit messages are bounded to one line and are rejected when the centralized secret redactor identifies credential-like material.
+A workspace-specific mutation lock is acquired before final mutable target validation. Preflight then verifies no pre-existing staged state, no unrelated working-tree changes, and a stable repository `HEAD`. While the lock remains held, target existence/type, symlink/junction containment, UTF-8 decoding, and exact `FileChange.new_text` equality are revalidated immediately before staging.
 
-A workspace-specific mutation lock serializes local mutation transactions. A live or ambiguous lock fails closed.
+Mutation success requires exact staged targets, a changed and internally consistent `HEAD`, a clean post-commit index/worktree, and exact committed target-set verification. The implementation accepts 40-character SHA-1 and 64-character SHA-256 Git object IDs and rejects malformed or inconsistent identity evidence.
 
-A successful Git mutation requires exact staged targets, a clean post-commit index and worktree, a valid new `HEAD`, and exact committed target-set verification. Failure preserves evidence and never performs blind destructive cleanup.
+Credential-like commit messages are rejected by the centralized secret-redaction classifier before they can enter repository history. Mutation failure preserves staged evidence and never performs blind destructive cleanup.
 
 ## Process containment
 The optional process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
@@ -205,3 +205,5 @@ Examples:
 18. Git mutation failure must preserve evidence and must not trigger blind destructive cleanup.
 19. Git mutation cannot commit file content that differs from the validated `FileChange.new_text`.
 20. Credential-like commit messages are rejected before entering repository history.
+21. Final target/content validation occurs while the workspace mutation lock is held immediately before staging.
+22. Successful mutation must prove a stable pre-mutation HEAD and a distinct post-commit HEAD that matches the verified commit object.
