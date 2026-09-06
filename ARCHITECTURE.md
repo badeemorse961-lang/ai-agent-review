@@ -129,7 +129,7 @@ Git access through the terminal is repository-inspection only. `GitSafetyPolicy`
 
 Git repository-scope overrides and configuration injection are also rejected. Git path arguments are stricter than generic terminal path handling and must remain workspace-relative where accepted.
 
-Repository mutation must use a separate task-scoped mutation/control plane with explicit checkpoint, authorization, preflight, and verification semantics; terminal Git access must not silently become that authority.
+Repository mutation uses the separate task-scoped mutation/control plane below; terminal Git access must not silently become that authority.
 
 ## Task-scoped Git mutation control plane
 
@@ -140,7 +140,7 @@ ValidationVerdict (passed=true)
         +
 Isolated checkpoint attestation
         +
-Exact FileChange target set
+Exact FileChange target set/content
         ↓
 ExecutionAuthorizationBoundary
         ↓
@@ -154,6 +154,8 @@ Git add -- <exact targets>
         ↓
 verify staged set == approved set
         ↓
+verify current content == validated FileChange.new_text
+        ↓
 Git commit -m <bounded single-line message>
         ↓
 verify HEAD + clean index/worktree + exact committed set
@@ -161,15 +163,13 @@ verify HEAD + clean index/worktree + exact committed set
 verified mutation result
 ```
 
-The control plane intentionally permits only local `stage` and `commit` operations. It does not expose push, pull, fetch, reset, clean, checkout, switch, restore, merge, rebase, cherry-pick, stash, tag, remote, worktree, configuration injection, history amendment, or hook bypass flags.
+The control plane permits only local `stage` and `commit` operations. It does not expose push, pull, fetch, reset, clean, checkout, switch, restore, merge, rebase, cherry-pick, stash, tag, remote, worktree, configuration injection, history amendment, or hook bypass flags.
 
-Before staging, the executor refuses to proceed when the index already contains staged changes or when the working tree contains changes outside the exact task target set. This prevents unrelated work from being silently absorbed into an autonomous commit.
+Before staging, it refuses pre-existing staged state, unrelated working-tree changes, content drift from the validated `FileChange.new_text`, invalid target type/encoding, and symlink/junction escapes. Commit messages are bounded to one line and are rejected when the centralized secret redactor identifies credential-like material.
 
-A successful Git mutation is not established by the commit return code alone. The post-mutation verifier requires a clean index, a clean working tree, a valid new `HEAD` SHA, and an exact match between the authorized target set and the files recorded by the created commit.
+A workspace-specific mutation lock serializes local mutation transactions. A live or ambiguous lock fails closed.
 
-Mutation failures preserve staged evidence and never perform blind reset/clean operations. Ambiguous repository state is a SAFE_STOP condition rather than something the agent attempts to repair automatically.
-
-Successful mutation metadata is written to ignored `.agent_runtime/git_mutation_state.json`. The audit includes task/worker identity, target set, before/after status evidence, commit SHA, verification state, and a SHA-256 fingerprint of the commit message without persisting the raw message.
+A successful Git mutation requires exact staged targets, a clean post-commit index and worktree, a valid new `HEAD`, and exact committed target-set verification. Failure preserves evidence and never performs blind destructive cleanup.
 
 ## Process containment
 The optional process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
@@ -203,3 +203,5 @@ Examples:
 16. Git mutation control is task-scoped and consumes independent-validation plus internal authorization evidence.
 17. Git mutation must refuse unrelated worktree/index changes and verify exact committed targets before success.
 18. Git mutation failure must preserve evidence and must not trigger blind destructive cleanup.
+19. Git mutation cannot commit file content that differs from the validated `FileChange.new_text`.
+20. Credential-like commit messages are rejected before entering repository history.
