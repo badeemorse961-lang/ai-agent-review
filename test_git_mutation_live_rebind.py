@@ -40,7 +40,7 @@ def make_executor(workspace: Path) -> GitMutationExecutor:
 
 def make_repo(tmp_path: Path) -> Path:
     workspace = tmp_path / "repo"
-    workspace.mkdir()
+    workspace.mkdir(parents=True)
     run_git(workspace, "init")
     run_git(workspace, "switch", "-c", "main")
     run_git(workspace, "config", "user.name", "Agent Test")
@@ -89,6 +89,7 @@ def test_live_rebind_accepts_unchanged_verified_transaction(tmp_path: Path) -> N
     assert evidence.branch == result.after.branch
     assert evidence.head_sha == result.commit_sha
     assert evidence.targets == result.targets
+    assert result.attestation is not None
     assert evidence.commit_evidence_sha256 == result.attestation.commit_evidence_sha256
 
 
@@ -135,7 +136,10 @@ def test_live_rebind_rejects_attested_digest_drift(tmp_path: Path) -> None:
     workspace = make_repo(tmp_path)
     executor, result = execute_attested(workspace)
     assert result.attestation is not None
-    altered = replace(result, attestation=replace(result.attestation, commit_evidence_sha256="f" * 64))
+    altered = replace(
+        result,
+        attestation=replace(result.attestation, commit_evidence_sha256="f" * 64),
+    )
 
     with pytest.raises(GitMutationLiveRebindError, match="not bound"):
         rebind_live_git_mutation_result(
