@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+from groq_worker_health_check import safe_error
 from secret_redaction import REPLACEMENT, SecretRedactor, redact_text
+
+
+class FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
 
 
 def test_redacts_project_provider_key_formats() -> None:
@@ -51,3 +60,21 @@ def test_redacts_nested_values_in_mappings() -> None:
         "message": REPLACEMENT,
         "items": ["api_key=[REDACTED]", "safe"],
     }
+
+
+def test_groq_provider_errors_are_redacted_before_persistence() -> None:
+    secret = "gsk_provider-error-secret-12345"
+    response = FakeResponse(
+        {
+            "error": {
+                "code": "invalid_request",
+                "message": f"authorization failed for {secret}",
+            }
+        }
+    )
+
+    redacted = safe_error(response)
+
+    assert redacted is not None
+    assert secret not in redacted
+    assert "[REDACTED]" in redacted
