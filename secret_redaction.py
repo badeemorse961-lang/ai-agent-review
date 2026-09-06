@@ -10,11 +10,11 @@ REPLACEMENT = "[REDACTED]"
 # High-signal credential forms used by this project and common tooling.
 _PATTERN_RE = re.compile(
     r"(?ix)"
-    r"(?P<bearer>\bBearer\s+)[A-Za-z0-9._~+\-/=]+"
+    r"(?P<bearer_header>\bAuthorization\s*[:=]\s*)?(?P<bearer>Bearer\s+)[A-Za-z0-9._~+\-/=\[\]REDCTED]+"
     r"|(?P<groq>\bgsk_[A-Za-z0-9_-]{8,})"
     r"|(?P<openrouter>\bsk-or-v1-[A-Za-z0-9_-]{8,})"
     r"|(?P<generic>\bsk-[A-Za-z0-9_-]{12,})"
-    r"|(?P<assignment>\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token)\s*[:=]\s*)[^\s,;&]+"
+    r"|(?P<assignment>\b(?:api[_-]?key|access[_-]?token|password|secret|token)\s*[:=]\s*)[^\s,;&]+"
     r"|(?P<query>\b(?:api[_-]?key|access[_-]?token|token|secret|password)=[^\s&]+)"
 )
 
@@ -42,10 +42,11 @@ class SecretRedactor:
 
     def redact_text(self, value: object) -> str:
         text = "" if value is None else str(value)
+        text = _PATTERN_RE.sub(self._replace_match, text)
         for secret in self.secrets:
             if secret:
                 text = text.replace(secret, REPLACEMENT)
-        return _PATTERN_RE.sub(self._replace_match, text)
+        return text
 
     def redact_mapping(self, value: Mapping[object, object]) -> dict[str, object]:
         return {
@@ -65,7 +66,8 @@ class SecretRedactor:
     @staticmethod
     def _replace_match(match: re.Match[str]) -> str:
         if match.group("bearer"):
-            return f"{match.group('bearer')}{REPLACEMENT}"
+            prefix = match.group("bearer_header") or ""
+            return f"{prefix}{match.group('bearer')}{REPLACEMENT}"
         if match.group("assignment"):
             return f"{match.group('assignment')}{REPLACEMENT}"
         if match.group("query"):
