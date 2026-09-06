@@ -107,3 +107,24 @@ def test_parse_status_decodes_unusual_utf8_filename_without_git_quoting() -> Non
     records = GitMutationExecutor._parse_status_records(raw)
 
     assert records == [("?", "?", ("café notes.txt",))]
+
+
+def test_parse_status_rename_uses_destination_then_source() -> None:
+    raw = "R  renamed file.txt\0original file.txt\0"
+    records = GitMutationExecutor._parse_status_records(raw)
+
+    assert records == [("R", " ", ("renamed file.txt", "original file.txt"))]
+
+
+def test_snapshot_uses_nul_separated_status_and_separate_branch_resolution(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    workspace, executor = repo
+    path = workspace / "file → with spaces.txt"
+    path.write_text("content\n", encoding="utf-8")
+
+    snapshot = executor.snapshot()
+
+    assert snapshot.branch
+    assert snapshot.worktree_paths == ("file → with spaces.txt",)
+    assert snapshot.status_lines == ("?? file → with spaces.txt",)
