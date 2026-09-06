@@ -48,14 +48,7 @@ The control plane does not expose push, pull, fetch, reset, clean, checkout, swi
 
 ## Task scoping
 
-Every mutation is bound to:
-
-- a task ID;
-- a worker ID;
-- a passed `ValidationVerdict`;
-- an isolated checkpoint attestation;
-- an exact validated target set;
-- the exact validated `FileChange.new_text` content at mutation time.
+Every mutation is bound to a task ID, worker ID, passed `ValidationVerdict`, isolated checkpoint attestation, an exact validated target set, and the exact validated `FileChange.new_text` content at mutation time.
 
 The target set in independent-validation evidence must equal the target set supplied by `FileChange` records. The Git policy then re-normalizes the paths and requires the generated command to match the validated request exactly.
 
@@ -63,35 +56,19 @@ Before invoking Git, each target is required to resolve to an existing regular U
 
 ## Preflight isolation
 
-Before any Git mutation, the executor captures porcelain status and rejects the transaction when:
-
-- the Git index already contains staged changes;
-- any working-tree change exists outside the exact authorized target set;
-- the repository state cannot be parsed into trustworthy evidence;
-- a validated target's current content no longer matches its validated `new_text`.
-
-This prevents an agent task from silently absorbing unrelated human or another-agent changes or committing content that was not independently validated.
+Before any Git mutation, the executor captures porcelain status and rejects the transaction when the Git index contains staged changes, when working-tree changes exist outside the exact authorized target set, when repository status cannot be parsed into trustworthy evidence, or when a validated target's current content no longer matches its validated `new_text`.
 
 A workspace-specific cross-process lock serializes local Git mutation transactions. A live or ambiguous lock fails closed. Only a lock whose recorded process ID is proven to have exited may be reclaimed automatically.
 
 ## Post-mutation verification
 
-A commit is not considered successful merely because `git commit` returned zero.
+A commit is not considered successful merely because `git commit` returned zero. Verification requires a clean post-commit index and working tree, a valid new `HEAD` SHA, and an exact match between the authorized target set and the files recorded by the created commit.
 
-Verification requires all of the following:
-
-- post-commit Git status reports no staged files;
-- post-commit Git status reports no working-tree files;
-- the new `HEAD` resolves to a valid commit SHA;
-- inspecting that commit shows exactly the authorized target set.
-
-A commit hook can still perform repository-local side effects because hook execution is part of Git's normal commit behavior. The control plane therefore verifies the resulting commit after the fact and treats any target-set mismatch as a verification failure rather than automatically rewriting history or cleaning the repository.
-
-Any ambiguity is a fail-closed verification error. The executor never performs a blind reset or cleanup to manufacture a clean result.
+A commit hook can still perform repository-local side effects. The control plane therefore treats any post-commit target-set mismatch as a verification failure rather than automatically rewriting history or cleaning the repository.
 
 ## Commit-message security
 
-Commit messages become permanent Git history, so the mutation policy rejects messages that the centralized `SecretRedactor` classifies as credential-like material. This covers common bearer credentials, provider-shaped keys, generic `sk-*` forms, and secret-like assignments. The policy allows normal descriptive messages but refuses to write recognizable credential material into repository history.
+Commit messages become permanent Git history, so the mutation policy rejects messages that the centralized `SecretRedactor` classifies as credential-like material. This covers common bearer credentials, provider-shaped keys, generic `sk-*` forms, and secret-like assignments. Normal descriptive messages remain allowed, but recognizable credential material cannot enter repository history.
 
 The successful audit record stores only a SHA-256 fingerprint of the accepted message; the raw message is not copied into local mutation audit state.
 
@@ -109,28 +86,8 @@ The audit record includes task identity, worker identity, target paths, before/a
 
 ## Security non-goals
 
-This control plane does not provide:
-
-- remote push authority;
-- permission to rewrite existing history;
-- OS-level filesystem isolation beyond the existing `ProcessSandbox` guarantees;
-- authority to mutate undeclared external resources;
-- authority to bypass independent validation or the Execution Gate;
-- protection against a malicious Git hook beyond post-commit target verification.
+This control plane does not provide remote push authority, permission to rewrite existing history, OS-level filesystem isolation beyond the existing `ProcessSandbox` guarantees, authority to mutate undeclared external resources, authority to bypass independent validation or the Execution Gate, or protection against a malicious Git hook beyond post-commit target verification.
 
 ## SAFE_STOP conditions
 
-Stop without attempting cleanup when any of these occur:
-
-- validation or authorization evidence is missing or fails;
-- the active workspace does not match the process sandbox;
-- Git is not explicitly allowlisted in the sandbox;
-- a mutation target is missing, non-regular, not valid UTF-8 text, or traverses a symlink/junction;
-- validated file content has drifted from the approved `FileChange.new_text`;
-- preflight discovers unrelated changes or existing staged state;
-- another live/ambiguous mutation lock is present;
-- staged targets differ from the approved target set;
-- commit message contains credential-like material;
-- commit fails, times out, or returns incomplete evidence;
-- post-commit target verification differs from the authorized target set;
-- repository status or commit evidence is truncated/untrustworthy.
+Stop without attempting cleanup when validation/authorization evidence is missing or fails, the workspace/sandbox boundary does not match, Git is not explicitly allowlisted, a target is missing/non-regular/not valid UTF-8 or traverses a symlink/junction, validated file content has drifted, preflight discovers unrelated or staged work, another live/ambiguous lock is present, staged targets differ from the approved set, the commit message contains credential-like material, commit evidence is incomplete, post-commit target verification differs, or repository evidence is truncated/untrustworthy.
