@@ -8,7 +8,9 @@ It checks three invariants:
 2. Protected local credential filenames remain covered by `.gitignore`.
 3. Production Python source does not contain credential-shaped literals for common provider keys or bearer credentials. Test modules may intentionally contain synthetic credential-shaped fixtures for redaction tests and are therefore excluded from this literal scan.
 
-## Narrow legacy Git inspection exception
+## Explicit execution-boundary exceptions
+
+`process_sandbox.py` is the trusted low-level process-launch boundary. Direct `subprocess.Popen` and `subprocess.run` calls in that module are allowed because they implement the sandbox itself. The audit still rejects `shell=True` and forbidden `os.system`/`os.popen` primitives there.
 
 `project_scanner.py` currently contains a legacy read-only Git inspection path predating `ProcessSandbox`. It is not exempt as a module. The audit accepts only four exact Git commands:
 
@@ -17,9 +19,9 @@ It checks three invariants:
 - `git rev-parse --show-toplevel`
 - `git status --porcelain --untracked-files=all`
 
-The exception requires each call to use literal or AST-proven constant arguments, `shell=False`, `check=False`, and a positive explicit timeout. Any other subprocess operation in `project_scanner.py`, including aliases, dynamic commands, missing bounds, or mutation commands, remains a finding.
+The legacy exception requires literal or AST-proven constant arguments, `shell=False`, `check=False`, and a positive explicit timeout. Any other subprocess operation in `project_scanner.py`, including aliases, dynamic commands, missing bounds, or mutation commands, remains a finding.
 
-This is a compatibility guard, not a new authority model. The intended end state is for the scanner's Git inspection to compose directly with the shared `ProcessSandbox` boundary.
+These exceptions do not grant new authority. `process_sandbox.py` remains the execution boundary, while the scanner exception is a compatibility guard until its Git inspection path is composed with the shared sandbox.
 
 The audit is intentionally conservative: a finding fails the gate rather than attempting to infer whether an unrelated subprocess path is safe.
 
