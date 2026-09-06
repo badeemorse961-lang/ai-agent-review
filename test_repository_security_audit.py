@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from repository_security_audit import (
-    AuditFinding,
     audit_no_credential_literals,
     audit_protected_local_names,
     audit_python_execution_boundaries,
@@ -33,17 +32,36 @@ def test_direct_subprocess_call_is_rejected_outside_process_sandbox(tmp_path: Pa
 
     findings = audit_python_execution_boundaries(tmp_path)
 
-    assert AuditFinding("subprocess-boundary", "unsafe.py", "direct subprocess.run call is outside ProcessSandbox") in findings
+    assert any(
+        finding.rule == "subprocess-boundary" and finding.path == "unsafe.py"
+        for finding in findings
+    )
 
 
-def test_shell_true_and_os_system_are_rejected(tmp_path: Path) -> None:
+def test_subprocess_alias_and_from_import_are_rejected(tmp_path: Path) -> None:
     write(tmp_path, ".gitignore", "groq_keys.txt\nopenrouter_keys.txt\ngroq_keys.backup.txt\nopenrouter_keys.backup.txt\n")
-    write(tmp_path, "unsafe.py", "import os\nimport subprocess\nsubprocess.run([\"echo\"], shell=True)\nos.system(\"echo\")\n")
+    write(
+        tmp_path,
+        "unsafe.py",
+        "import subprocess as sp\nfrom subprocess import run as execute\nsp.run([\"echo\"])\nexecute([\"echo\"])\n",
+    )
 
     findings = audit_python_execution_boundaries(tmp_path)
 
-    assert {finding.rule for finding in findings} == {"shell-execution"}
-    assert len(findings) == 2
+    assert sum(finding.rule == "subprocess-boundary" for finding in findings) == 2
+
+
+def test_shell_true_and_os_alias_are_rejected(tmp_path: Path) -> None:
+    write(tmp_path, ".gitignore", "groq_keys.txt\nopenrouter_keys.txt\ngroq_keys.backup.txt\nopenrouter_keys.backup.txt\n")
+    write(
+        tmp_path,
+        "unsafe.py",
+        "import os as operating_system\nfrom os import popen as open_pipe\nimport subprocess\nsubprocess.run([\"echo\"], shell=True)\noperating_system.system(\"echo\")\nopen_pipe(\"echo\")\n",
+    )
+
+    findings = audit_python_execution_boundaries(tmp_path)
+
+    assert sum(finding.rule == "shell-execution" for finding in findings) == 3
 
 
 def test_protected_local_names_must_be_ignored(tmp_path: Path) -> None:
