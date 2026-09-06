@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -116,6 +117,9 @@ def test_control_plane_stages_and_commits_exact_authorized_targets(
     assert result.before.staged_paths == ()
     assert result.after.staged_paths == ()
     assert result.after.worktree_paths == ()
+    assert result.before.head_sha
+    assert result.after.head_sha == result.commit_sha
+    assert result.after.head_sha != result.before.head_sha
 
     audit = json.loads(
         (workspace / ".agent_runtime" / "git_mutation_state.json").read_text(
@@ -124,6 +128,8 @@ def test_control_plane_stages_and_commits_exact_authorized_targets(
     )
     assert audit["task_id"] == "task-1"
     assert audit["targets"] == ["calculator.py"]
+    assert audit["before"]["head_sha"] == result.before.head_sha
+    assert audit["after"]["head_sha"] == result.after.head_sha
     assert "agent: update calculator value" not in json.dumps(audit)
 
     shown = run_git(
@@ -149,6 +155,41 @@ def test_mutation_rejects_content_drift_after_validation(
 
     assert not run_git(workspace, "diff", "--cached", "--name-only").stdout.strip()
     assert "VALUE = attacker" in (workspace / "calculator.py").read_text(encoding="utf-8")
+
+
+def test_content_validation_runs_inside_workspace_lock(
+    repo: tuple[Path, GitMutationExecutor],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, executor = repo
+    change = change_for(workspace)
+    (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
+    events: list[str] = []
+
+    class RecordingLock:
+        def __init__(self, root: Path) -> None:
+            events.append("lock-init")
+
+        def __enter__(self):
+            events.append("lock-enter")
+            return self
+
+        def __exit__(self, *_):
+            events.append("lock-exit")
+
+    monkeypatch.setattr("git_mutation_executor._WorkspaceMutationLock", RecordingLock)
+
+    original = executor._validate_change_contents
+
+    def record_contents(changes):
+        events.append("content-validation")
+        return original(changes)
+
+    monkeypatch.setattr(executor, "_validate_change_contents", record_contents)
+    execute_authorized(executor, change)
+
+    assert events.index("lock-enter") < events.index("content-validation")
+    assert events.index("content-validation") < events.index("lock-exit")
 
 
 def test_mutation_requires_passed_independent_validation(
@@ -363,18 +404,51 @@ def test_snapshot_parses_branch_and_scoped_status(
     assert snapshot.branch in {"main", "master"}
     assert snapshot.staged_paths == ()
     assert snapshot.worktree_paths == ("calculator.py",)
+    assert len(snapshot.head_sha) in {40, 64}
+
+
+def test_verification_rejects_non_advanced_head(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    _, executor = repo
+    sha = "0123456789abcdef" * 2 + "01234567"
+    fake = GitRepositorySnapshot("main", (), (), (), head_sha=sha)
+    with pytest.raises(GitMutationVerificationError):
+        executor._verify_post_commit(
+            fake,
+            sha,
+            ("calculator.py",),
+            fake,
+        )
+
+
+def test_verification_requires_consistent_resolved_head(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    _, executor = repo
+    before_sha = "0" * 40
+    after_sha = "1" * 40
+    fake_before = GitRepositorySnapshot("main", (), (), (), head_sha=before_sha)
+    fake_after = GitRepositorySnapshot("main", (), (), (), head_sha=after_sha)
+    with pytest.raises(GitMutationVerificationError):
+        executor._verify_post_commit(
+            fake_after,
+            "2" * 40,
+            ("calculator.py",),
+            fake_before,
+        )
 
 
 def test_verification_failure_is_fail_closed(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
     _, executor = repo
-    fake_before = GitRepositorySnapshot("main", (), (), ())
-    fake_after = GitRepositorySnapshot("main", (), (), ("unexpected.py",))
+    fake_before = GitRepositorySnapshot("main", (), (), (), head_sha="0" * 40)
+    fake_after = GitRepositorySnapshot("main", (), (), ("unexpected.py",), head_sha="1" * 40)
     with pytest.raises(GitMutationVerificationError):
         executor._verify_post_commit(
             fake_after,
-            "0123456789abcdef",
+            "1" * 40,
             ("calculator.py",),
             fake_before,
         )
