@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Mapping
 
 from git_mutation_attestation import (
-    GitMutationAttestation,
     GitMutationAttestationError,
     attestation_from_dict,
     verify_attestation_binding,
@@ -164,12 +164,9 @@ def verify_restored_attestation(result: GitMutationResult) -> None:
             result.attestation,
             task_id=result.task_id,
             worker_id=result.worker_id,
-            workspace=result.attestation_workspace,
+            workspace=Path(result.attestation.workspace),
             targets=result.targets,
             commit_sha=result.commit_sha or "",
         )
-    except AttributeError:
-        # Kept unreachable for current GitMutationAttestation; see the explicit workspace check below.
-        raise GitMutationResultRestoreError("Attestation workspace binding could not be verified")
     except (GitMutationAttestationError, ValueError) as exc:
         raise GitMutationResultRestoreError(str(exc)) from exc
