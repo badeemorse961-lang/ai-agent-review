@@ -42,19 +42,7 @@ class GitMutationRequest:
 
 
 class GitMutationPolicy:
-    """Allow only narrow local repository mutations bound to validated targets.
-
-    The normal terminal Git path remains inspection-only. This policy is used by
-    a dedicated mutation control plane and therefore does not widen ordinary
-    terminal authority. Supported operations are only:
-
-    * ``stage`` — stage exactly the supplied task targets using ``git add --``;
-    * ``commit`` — commit the already-validated/staged target set with one
-      bounded, single-line ``-m`` message.
-
-    Remote state changes, history rewriting, cleanup, ref movement, repository
-    configuration changes, and scope overrides remain forbidden.
-    """
+    """Allow only narrow local repository mutations bound to validated targets."""
 
     _ALLOWED_OPERATIONS = frozenset({"stage", "commit"})
     _FORBIDDEN_TOKENS = frozenset(
@@ -65,7 +53,6 @@ class GitMutationPolicy:
             "--exec-path",
             "--git-dir",
             "--work-tree",
-            "-c",
             "-C",
             "--no-verify",
             "--amend",
@@ -125,7 +112,7 @@ class GitMutationPolicy:
             worker_id=worker,
             operation=op,
             targets=normalized_targets,
-            commit_message=commit_message,
+            commit_message=commit_message.strip(),
         )
 
     def command(self, request: GitMutationRequest) -> tuple[str, ...]:
@@ -159,7 +146,10 @@ class GitMutationPolicy:
 
         if any(token.lower() in self._FORBIDDEN_TOKENS for token in args[1:]):
             raise GitMutationSafetyStop("Forbidden Git mutation option detected")
-        if any(token.startswith("--config=") or token.startswith("--git-dir=") for token in args[1:]):
+        if any(
+            token.lower().startswith(("--config=", "--git-dir=", "--work-tree="))
+            for token in args[1:]
+        ):
             raise GitMutationSafetyStop("Git repository/configuration override is forbidden")
 
         expected = self.command(request)
@@ -179,13 +169,18 @@ class GitMutationPolicy:
         for raw in targets:
             if not isinstance(raw, str) or not raw.strip():
                 raise GitMutationSafetyStop("Git mutation targets must be non-empty strings")
-            path = Path(raw)
+
+            raw_text = raw.strip()
+            raw_parts = [part for part in raw_text.replace("\\", "/").split("/") if part]
+            if any(part in {".", ".."} for part in raw_parts):
+                raise GitMutationSafetyStop(f"Unsafe Git mutation target: {raw!r}")
+
+            path = Path(raw_text)
             if path.is_absolute() or path.drive or path.root:
                 raise GitMutationSafetyStop(
                     f"Git mutation target must be workspace-relative: {raw!r}"
                 )
-            if any(part in {"", ".", ".."} for part in path.parts):
-                raise GitMutationSafetyStop(f"Unsafe Git mutation target: {raw!r}")
+
             candidate = (workspace_root / path).resolve(strict=False)
             try:
                 candidate.relative_to(workspace_root)
@@ -193,6 +188,7 @@ class GitMutationPolicy:
                 raise GitMutationSafetyStop(
                     f"Git mutation target escapes workspace: {raw!r}"
                 ) from exc
+
             canonical = candidate.relative_to(workspace_root).as_posix()
             if canonical in seen:
                 raise GitMutationSafetyStop(
@@ -229,12 +225,12 @@ class GitMutationPolicy:
     def _validate_commit_message(self, message: str) -> None:
         if not isinstance(message, str) or not message.strip():
             raise GitMutationSafetyStop("Commit message must be a non-empty string")
-        if len(message) > self.max_commit_message_chars:
+        cleaned = message.strip()
+        if len(cleaned) > self.max_commit_message_chars:
             raise GitMutationSafetyStop("Commit message exceeds the policy limit")
         if "\n" in message or "\r" in message:
             raise GitMutationSafetyStop("Commit message must be single-line")
-        lowered = message.lower()
-        if any(token in lowered for token in ("\x00", "\x1b")):
+        if any(ord(char) < 32 and char not in "\t" for char in message):
             raise GitMutationSafetyStop("Commit message contains control characters")
 
     @staticmethod
