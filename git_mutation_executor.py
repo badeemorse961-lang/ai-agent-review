@@ -91,21 +91,48 @@ class _WorkspaceMutationLock:
         self._handle: int | None = None
 
     def __enter__(self) -> "_WorkspaceMutationLock":
+        for _ in range(2):
+            try:
+                self._handle = os.open(
+                    self.path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                )
+                os.write(self._handle, str(os.getpid()).encode("ascii"))
+                return self
+            except FileExistsError as exc:
+                if not self._reclaim_stale_lock():
+                    raise GitMutationSafetyStop(
+                        "Another task-scoped Git mutation is already active for this workspace"
+                    ) from exc
+            except OSError as exc:
+                raise GitMutationSafetyStop(
+                    f"Unable to acquire the Git mutation lock: {exc}"
+                ) from exc
+        raise GitMutationSafetyStop("Unable to acquire the Git mutation lock safely")
+
+    def _reclaim_stale_lock(self) -> bool:
         try:
-            self._handle = os.open(
-                self.path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-            )
-            os.write(self._handle, str(os.getpid()).encode("ascii"))
-        except FileExistsError as exc:
-            raise GitMutationSafetyStop(
-                "Another task-scoped Git mutation is already active for this workspace"
-            ) from exc
-        except OSError as exc:
-            raise GitMutationSafetyStop(
-                f"Unable to acquire the Git mutation lock: {exc}"
-            ) from exc
-        return self
+            raw_pid = self.path.read_text(encoding="ascii").strip()
+        except OSError:
+            return False
+        if not raw_pid.isdigit():
+            return False
+        pid = int(raw_pid)
+        if pid <= 0 or pid == os.getpid():
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            try:
+                self.path.unlink()
+                return True
+            except OSError:
+                return False
+        except PermissionError:
+            return False
+        except OSError:
+            return False
+        return False
 
     def __exit__(self, *_: object) -> None:
         if self._handle is not None:
@@ -172,7 +199,9 @@ class GitMutationExecutor:
         )
         targets = authorization.changed_targets
         if not targets:
-            raise GitMutationSafetyStop("Authorized Git mutation requires at least one target")
+            raise GitMutationSafetyStop(
+                "Authorized Git mutation requires at least one target"
+            )
 
         stage_request = self.policy.validate_request(
             task_id=authorization.task_id,
@@ -288,7 +317,9 @@ class GitMutationExecutor:
                 f"Preflight found unrelated working-tree changes: {sorted(unexpected)}"
             )
         if not set(before.worktree_paths).issubset(expected):
-            raise GitMutationSafetyStop("Working-tree state cannot be proven task-scoped")
+            raise GitMutationSafetyStop(
+                "Working-tree state cannot be proven task-scoped"
+            )
 
     def _run_policy_command(self, request: GitMutationRequest) -> ProcessResult:
         command = self.policy.command(request)
