@@ -53,6 +53,33 @@ def test_process_runner_fails_closed_when_pytest_is_unavailable(
         )
 
 
+def test_process_runner_forwards_only_explicit_agent_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_TEST_MARKER", "agent-visible")
+    monkeypatch.setenv("GROQ_API_KEY", "must-not-be-inherited")
+
+    (tmp_path / "test_environment.py").write_text(
+        "import os\n\n"
+        "def test_environment():\n"
+        "    assert os.getenv('AGENT_TEST_MARKER') == 'agent-visible'\n"
+        "    assert os.getenv('GROQ_API_KEY') is None\n",
+        encoding="utf-8",
+    )
+
+    runner = ExecutionGateProcessRunner(
+        tmp_path,
+        timeout_seconds=10,
+    )
+    result = runner.run(("-q",))
+
+    assert result.returncode == 0
+    assert result.timed_out is False
+    assert "must-not-be-inherited" not in result.stdout
+    assert "must-not-be-inherited" not in result.stderr
+
+
 def test_execution_gate_run_tests_delegates_to_process_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
