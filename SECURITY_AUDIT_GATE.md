@@ -4,9 +4,9 @@ This gate is a repository-local safety net for the execution and mutation bounda
 
 It checks three invariants:
 
-1. Production Python code does not invoke `subprocess` execution/mutation APIs outside the `ProcessSandbox` implementation, and does not enable `shell=True` or use `os.system`/`os.popen`.
+1. Production Python code does not invoke `subprocess` execution/mutation APIs outside the `ProcessSandbox` implementation, and does not enable `shell=True` or use `os.system`/`os.popen`. Import aliases and `from ... import ...` aliases are analyzed as well.
 2. Protected local credential filenames remain covered by `.gitignore`.
-3. Python source files do not contain credential-shaped literals for common provider keys or bearer credentials.
+3. Production Python source does not contain credential-shaped literals for common provider keys or bearer credentials. Test modules may intentionally contain synthetic credential-shaped fixtures for redaction tests and are therefore excluded from this literal scan.
 
 The audit is intentionally conservative: a finding fails the gate rather than attempting to infer whether a direct execution path is safe.
 
