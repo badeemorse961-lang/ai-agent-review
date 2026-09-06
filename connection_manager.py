@@ -9,6 +9,7 @@ from typing import Iterable
 
 BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_FILE = BASE_DIR / "connections.json"
+ROLE_SOURCE = "config/registry.json"
 SECRET_DIR_ENV = "AI_AGENT_SECRET_DIR"
 LEGACY_SECRET_FALLBACK_ENV = "AI_AGENT_ALLOW_LEGACY_SECRET_PATH"
 DEFAULT_SECRET_DIR = Path(
@@ -69,7 +70,7 @@ def resolve_secret_file(provider: str) -> Path:
 
 def load_registry() -> dict:
     if not REGISTRY_FILE.exists():
-        return {"version": 2, "connections": {}}
+        return {"version": 2, "role_source": ROLE_SOURCE, "connections": {}}
 
     data = json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -77,10 +78,14 @@ def load_registry() -> dict:
     connections = data.get("connections")
     if not isinstance(connections, dict):
         raise ValueError("Connection registry must contain an object named 'connections'")
+    data["role_source"] = ROLE_SOURCE
     return data
 
 
 def save_registry(data: dict) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("Connection registry root must be an object")
+    data["role_source"] = ROLE_SOURCE
     REGISTRY_FILE.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -238,12 +243,6 @@ def main() -> int:
         )
 
     registry["version"] = max(int(registry.get("version", 1)), 3)
-    registry["secret_source"] = {
-        "mode": "external",
-        "directory_env": SECRET_DIR_ENV,
-        "legacy_repo_fallback": LEGACY_SECRET_FALLBACK_ENV,
-    }
-
     save_registry(registry)
 
     counts = {
@@ -256,6 +255,7 @@ def main() -> int:
     print(f"Groq connections       : {counts['groq']}")
     print(f"OpenRouter connections : {counts['openrouter']}")
     print(f"Registry               : {REGISTRY_FILE.name}")
+    print("Role source            : config/registry.json")
     print("Raw secrets printed    : NO")
 
     return 0
