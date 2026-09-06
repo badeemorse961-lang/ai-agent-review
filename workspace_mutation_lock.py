@@ -30,6 +30,7 @@ class WorkspaceMutationLock:
         self._handle = None
 
     def __enter__(self) -> "WorkspaceMutationLock":
+        handle = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             handle = self.path.open("a+b")
@@ -39,11 +40,23 @@ class WorkspaceMutationLock:
             handle.seek(0)
             self._acquire(handle)
             self._handle = handle
-            self._write_owner_pid(handle)
+            try:
+                self._write_owner_pid(handle)
+            except WorkspaceMutationLockError:
+                self._handle = None
+                self._release(handle)
+                handle.close()
+                handle = None
+                raise
             return self
         except WorkspaceMutationLockError:
             raise
         except OSError as exc:
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
             raise WorkspaceMutationLockError(
                 f"Unable to initialize the workspace mutation lock: {exc}"
             ) from exc
@@ -89,27 +102,32 @@ class WorkspaceMutationLock:
                 f"Unable to record workspace mutation lock ownership: {exc}"
             ) from exc
 
+    @staticmethod
+    def _release(handle) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            return
+
+        import fcntl
+
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+
     def __exit__(self, *_: object) -> None:
         handle = self._handle
         self._handle = None
         if handle is None:
             return
         try:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                try:
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
-            else:
-                import fcntl
-
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
+            self._release(handle)
         finally:
             try:
                 handle.close()
