@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`653b2b842e5f4c734b3390b1baec31c70f6ff3d7`
+`e452094a66c62af7042837d6604a40bac6743ef4`
 
-This squash merge promotes pull request `#19`, which hardens Execution Gate test-process execution by routing gate-owned pytest execution through the established ProcessSandbox boundary without expanding mutation authority.
+This squash merge promotes pull request `#20`, which hardens Git repository-state evidence parsing by using NUL-delimited porcelain status records and independent branch resolution without expanding mutation authority.
 
 Previous promoted milestone:
 
-`a5a61d7fcb36efe177c4f779204e4b87b8281c22` — PR #18 transaction hardening.
+`653b2b842e5f4c734b3390b1baec31c70f6ff3d7` — PR #19 Execution Gate process-boundary hardening.
 
 ## Verified architecture
 
@@ -119,27 +119,44 @@ The boundary explicitly:
 
 No filesystem, Git, remote, or shell mutation authority was added.
 
+## Git status evidence parsing hardening
+
+PR #20 was merged as:
+
+`e452094a66c62af7042837d6604a40bac6743ef4`
+
+The Git mutation snapshot path now obtains repository status with:
+
+```text
+git status --porcelain=v1 -z
+```
+
+and resolves the active branch independently with:
+
+```text
+git branch --show-current
+```
+
+The parser consumes NUL-delimited records instead of line-oriented human-readable status output. Filenames containing spaces, literal `->` sequences, quotes, or unusual UTF-8 characters therefore remain exact evidence rather than being reconstructed from textual separators. Rename/copy records preserve both the destination and source pathnames conservatively, so an unexpected path cannot disappear through ambiguous parsing.
+
+Detached HEAD has no proven active branch identity and fails closed. Malformed NUL-separated records, missing rename/copy source pathnames, empty pathnames, unsupported status codes, or untrustworthy status evidence stop the mutation transaction rather than attempting recovery.
+
 ## Validation status
 
-PR #19 was validated on the real Windows working tree at tested head `0a0d53dd04d160d2ec47bac124e2c1e806576841` before merge:
+PR #20 was validated on the real Windows working tree at tested head `226684785952a12d675d73ce3b050e4afa1cbedc` before merge:
 
 ```text
 python -m compileall -q .                         PASS
-pytest -q test_execution_gate_process_boundary.py 6 passed
-pytest -q test_process_output_redaction.py        3 passed
-pytest -q                                        164 passed, 1 skipped
-python orchestration_smoke_test.py                PASSED
+pytest -q test_git_mutation_integrity.py         6 passed
+pytest -q test_git_mutation_executor.py         16 passed, 1 skipped
+pytest -q test_git_mutation_policy.py             7 passed
+pytest -q                                        168 passed, 1 skipped
+
 git diff --check                               PASS
 git status --short --branch                      CLEAN
 ```
 
-The orchestration smoke proved both external phases locally:
-
-```text
-Leader output validation PASSED
-Worker output validation PASSED
-ORCHESTRATION SMOKE TEST PASSED
-```
+The first Windows validation attempt exposed a fixture-only portability defect: the test attempted to create `file -> with spaces.txt`, but `>` is forbidden in Windows filenames. The fixture was corrected to the Windows-safe `file → with spaces.txt` while the parser unit test retained literal ASCII `->` coverage. The corrected full suite passed 168 tests with 1 expected skip.
 
 ## Protected local state
 
@@ -159,11 +176,12 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
-PR #19
-Title: Harden Execution Gate with shared process boundary
+PR #20
+Title: Harden Git mutation status evidence parsing
 Merge method: squash
-Merge commit: 653b2b842e5f4c734b3390b1baec31c70f6ff3d7
+Merge commit: e452094a66c62af7042837d6604a40bac6743ef4
+Tested head: 226684785952a12d675d73ce3b050e4afa1cbedc
 Status: MERGED
 ```
 
-The next engineering milestone should build on the established ProcessSandbox and mutation boundaries rather than bypassing them.
+The next engineering milestone should build on the established ProcessSandbox, repository-evidence, and mutation boundaries rather than bypassing them.
