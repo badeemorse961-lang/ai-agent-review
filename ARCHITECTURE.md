@@ -129,7 +129,47 @@ Git access through the terminal is repository-inspection only. `GitSafetyPolicy`
 
 Git repository-scope overrides and configuration injection are also rejected. Git path arguments are stricter than generic terminal path handling and must remain workspace-relative where accepted.
 
-Repository mutation must use a separate task-scoped mutation/control plane with explicit checkpoint and verification semantics; terminal Git access must not silently become that authority.
+Repository mutation must use a separate task-scoped mutation/control plane with explicit checkpoint, authorization, preflight, and verification semantics; terminal Git access must not silently become that authority.
+
+## Task-scoped Git mutation control plane
+
+`GitMutationExecutor` is the only explicit repository-mutation facade introduced for local autonomous development. It is deliberately separate from the generic terminal path.
+
+```text
+ValidationVerdict (passed=true)
+        +
+Isolated checkpoint attestation
+        +
+Exact FileChange target set
+        ↓
+ExecutionAuthorizationBoundary
+        ↓
+GitMutationExecutor
+        ↓
+GitMutationPolicy
+        ↓
+ProcessSandbox
+        ↓
+Git add -- <exact targets>
+        ↓
+verify staged set == approved set
+        ↓
+Git commit -m <bounded single-line message>
+        ↓
+verify HEAD + clean index/worktree + exact committed set
+        ↓
+verified mutation result
+```
+
+The control plane intentionally permits only local `stage` and `commit` operations. It does not expose push, pull, fetch, reset, clean, checkout, switch, restore, merge, rebase, cherry-pick, stash, tag, remote, worktree, configuration injection, history amendment, or hook bypass flags.
+
+Before staging, the executor refuses to proceed when the index already contains staged changes or when the working tree contains changes outside the exact task target set. This prevents unrelated work from being silently absorbed into an autonomous commit.
+
+A successful Git mutation is not established by the commit return code alone. The post-mutation verifier requires a clean index, a clean working tree, a valid new `HEAD` SHA, and an exact match between the authorized target set and the files recorded by the created commit.
+
+Mutation failures preserve staged evidence and never perform blind reset/clean operations. Ambiguous repository state is a SAFE_STOP condition rather than something the agent attempts to repair automatically.
+
+Successful mutation metadata is written to ignored `.agent_runtime/git_mutation_state.json`. The audit includes task/worker identity, target set, before/after status evidence, commit SHA, verification state, and a SHA-256 fingerprint of the commit message without persisting the raw message.
 
 ## Process containment
 The optional process sandbox adds explicit tool-path validation, shell-free execution, process-group/session isolation, timeout and output bounds, and child-environment minimization.
@@ -160,3 +200,6 @@ Examples:
 13. Normal development remains autonomous; human confirmation is exceptional rather than per-operation.
 14. Standard worker process execution crosses the TerminalExecutor and TerminalPolicy boundaries before ProcessSandbox launch.
 15. Git terminal access cannot grant repository mutation authority; mutating Git operations require a separate explicit control plane.
+16. Git mutation control is task-scoped and consumes independent-validation plus internal authorization evidence.
+17. Git mutation must refuse unrelated worktree/index changes and verify exact committed targets before success.
+18. Git mutation failure must preserve evidence and must not trigger blind destructive cleanup.
