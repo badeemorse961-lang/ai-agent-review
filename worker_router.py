@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -208,7 +209,21 @@ class WorkerRouter:
         self.worker_pools = pools
         self._load_health(read_json(self.health_file))
 
+    def _configured_worker_ids(self) -> Set[str]:
+        return {
+            worker_id
+            for pool in self.worker_pools.values()
+            for worker_id in pool
+        }
+
     def _load_health(self, health: Dict[str, Any]) -> None:
+        expected_ids = self._configured_worker_ids()
+        declared_provider = health.get("provider")
+        if declared_provider is not None and declared_provider != self.provider:
+            raise ConfigurationError(
+                "Worker health provider does not match the authoritative registry"
+            )
+
         healthy: Set[str] = set()
         failed: Set[str] = set()
         good = {"HEALTHY", "READY", "VALID", "OK", "AVAILABLE"}
@@ -216,23 +231,27 @@ class WorkerRouter:
         results = health.get("results")
         if isinstance(results, dict):
             for worker_id, item in results.items():
-                if not isinstance(worker_id, str):
+                if worker_id not in expected_ids or not isinstance(item, (dict, str)):
                     continue
                 if isinstance(item, dict):
+                    item_provider = item.get("provider")
+                    item_model = item.get("model")
+                    if item_provider is not None and item_provider != self.provider:
+                        continue
+                    if item_model is not None and item_model != self.model:
+                        continue
                     status = str(item.get("status", "")).upper()
-                elif isinstance(item, str):
-                    status = item.upper()
                 else:
-                    continue
+                    status = item.upper()
                 (healthy if status in good else failed).add(worker_id)
 
         healthy_list = health.get("healthy")
         if isinstance(healthy_list, list):
-            healthy.update(item for item in healthy_list if isinstance(item, str))
+            healthy.update(item for item in healthy_list if item in expected_ids)
 
         failed_list = health.get("failed")
         if isinstance(failed_list, list):
-            failed.update(item for item in failed_list if isinstance(item, str))
+            failed.update(item for item in failed_list if item in expected_ids)
 
         workers = health.get("workers")
         if isinstance(workers, list):
@@ -240,7 +259,13 @@ class WorkerRouter:
                 if not isinstance(item, dict):
                     continue
                 worker_id = item.get("id")
-                if not isinstance(worker_id, str):
+                if worker_id not in expected_ids:
+                    continue
+                item_provider = item.get("provider")
+                item_model = item.get("model")
+                if item_provider is not None and item_provider != self.provider:
+                    continue
+                if item_model is not None and item_model != self.model:
                     continue
                 status = str(item.get("status", "")).upper()
                 if status in good:
@@ -274,7 +299,9 @@ class WorkerRouter:
         runtime_failed = payload.get("runtime_failed_connections")
         if isinstance(runtime_failed, list):
             self.runtime_failed_connections = {
-                worker_id for worker_id in runtime_failed if isinstance(worker_id, str)
+                worker_id
+                for worker_id in runtime_failed
+                if worker_id in self._configured_worker_ids()
             }
         else:
             legacy_runtime = payload.get("runtime_failed_workers")
@@ -282,7 +309,7 @@ class WorkerRouter:
                 self.runtime_failed_connections = {
                     worker_id
                     for worker_id in legacy_runtime
-                    if isinstance(worker_id, str)
+                    if worker_id in self._configured_worker_ids()
                 }
 
         leases = payload.get("leases")
@@ -291,15 +318,26 @@ class WorkerRouter:
                 if not isinstance(task_id, str) or not isinstance(data, dict):
                     continue
                 try:
-                    lease = WorkerLease(
-                        worker_id=str(data["worker_id"]),
-                        role=str(data["role"]),
-                        task_id=str(data["task_id"]),
-                        leased_at=float(data["leased_at"]),
-                        standby=bool(data.get("standby", False)),
-                    )
+                    leased_at = float(data["leased_at"])
                 except (KeyError, TypeError, ValueError):
                     continue
+                if not math.isfinite(leased_at) or leased_at < 0:
+                    continue
+                worker_id = data.get("worker_id")
+                role = data.get("role")
+                saved_task_id = data.get("task_id")
+                standby = data.get("standby", False)
+                if not isinstance(worker_id, str) or not isinstance(role, str):
+                    continue
+                if not isinstance(saved_task_id, str) or not isinstance(standby, bool):
+                    continue
+                lease = WorkerLease(
+                    worker_id=worker_id,
+                    role=role,
+                    task_id=saved_task_id,
+                    leased_at=leased_at,
+                    standby=standby,
+                )
                 if lease.task_id == task_id:
                     self.leases[task_id] = lease
 
@@ -311,9 +349,7 @@ class WorkerRouter:
             self.active_standby_worker = active_worker
 
     def _normalize_state(self) -> None:
-        all_configured = {
-            worker_id for pool in self.worker_pools.values() for worker_id in pool
-        }
+        all_configured = self._configured_worker_ids()
         self.runtime_failed_connections &= all_configured
 
         valid: Dict[str, WorkerLease] = {}
@@ -324,6 +360,18 @@ class WorkerRouter:
             if lease.worker_id in used_workers:
                 continue
             if task_id != lease.task_id:
+                continue
+            if lease.standby:
+                if lease.role not in REQUIRED_ROLES:
+                    continue
+                if lease.worker_id not in self.worker_pools.get(STANDBY_ROLE, []):
+                    continue
+            else:
+                if lease.role not in REQUIRED_ROLES:
+                    continue
+                if lease.worker_id not in self.worker_pools.get(lease.role, []):
+                    continue
+            if not math.isfinite(lease.leased_at) or lease.leased_at < 0:
                 continue
             valid[task_id] = lease
             used_workers.add(lease.worker_id)
@@ -336,12 +384,15 @@ class WorkerRouter:
                     for lease in self.leases.values()
                     if lease.worker_id == self.active_standby_worker
                     and lease.standby
+                    and lease.role == self.active_standby_for
                 ),
                 None,
             )
             if matching is None:
                 self.active_standby_worker = None
                 self.active_standby_for = None
+        elif self.active_standby_for is not None:
+            self.active_standby_for = None
 
     def _save_state(self) -> None:
         atomic_write_json(
@@ -435,9 +486,7 @@ class WorkerRouter:
 
     def mark_failed(self, worker_id: str) -> None:
         with self._lock:
-            configured = {
-                item for pool in self.worker_pools.values() for item in pool
-            }
+            configured = self._configured_worker_ids()
             if worker_id not in configured:
                 raise ConfigurationError(f"Unknown worker connection: {worker_id}")
             self.runtime_failed_connections.add(worker_id)
@@ -446,9 +495,7 @@ class WorkerRouter:
 
     def mark_healthy(self, worker_id: str) -> None:
         with self._lock:
-            configured = {
-                item for pool in self.worker_pools.values() for item in pool
-            }
+            configured = self._configured_worker_ids()
             if worker_id not in configured:
                 raise ConfigurationError(f"Unknown worker connection: {worker_id}")
             self.runtime_failed_connections.discard(worker_id)
