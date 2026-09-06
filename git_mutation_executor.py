@@ -392,7 +392,7 @@ class GitMutationExecutor:
             )
 
         expected_by_path = {
-            self.policy._normalize_targets([change.path], self.workspace_root)[0]: change.new_text
+            Path(change.path).as_posix().replace("\\", "/"): change.new_text
             for change in changes
         }
         for target in targets:
