@@ -6,7 +6,7 @@
 
 Latest merged commit:
 
-`e60b6b70dd899d734f4a7afd1ab03bf45b9cc8df`
+`b44914f12802ff18f36da22a4f0c5b504a91151c`
 
 This baseline includes:
 
@@ -26,6 +26,10 @@ This baseline includes:
 - explicit terminal executable/subcommand allowlisting and bounded command shape;
 - standard Worker → TerminalExecutor → TerminalPolicy → ProcessSandbox execution path;
 - no raw `subprocess` fallback in normal worker production execution;
+- dedicated GitSafetyPolicy boundary for terminal Git access;
+- inspection-only Git terminal capability;
+- rejection of repository/history mutation and repository/configuration scope overrides;
+- Git path traversal protection within the active workspace;
 - existing Execution Gate for checkpoint → apply → tests → verification → approve/rollback.
 
 ## Autonomous execution contract
@@ -49,7 +53,11 @@ Autonomous Internal Execution Authorization
   ↓
 WorkerExecutionBoundary
   ↓
-TerminalExecutor → TerminalPolicy → ProcessSandbox
+TerminalExecutor → TerminalPolicy
+                    ↓
+             GitSafetyPolicy (Git)
+                    ↓
+              ProcessSandbox
   ↓
 Execution Gate
       Checkpoint → Apply → Tests → Verification
@@ -95,10 +103,41 @@ An external design/assets directory on another path or drive requires an explici
 - command argument counts are bounded;
 - shell wrappers and shell operators are rejected;
 - inline `-c` and `-m` launch forms are rejected for Python/Pytest;
-- Git subcommands are allowlisted rather than granting unrestricted Git execution;
-- path-like command arguments outside the workspace require explicit readable external-resource authority.
+- Git commands are delegated to the dedicated GitSafetyPolicy;
+- path-like command arguments outside the workspace require explicit readable external-resource authority for generic terminal commands.
 
 `TerminalExecutor` is the standard composition point between worker execution and process/resource enforcement. It does not replace the Execution Gate.
+
+## Git safety boundary
+
+Terminal Git access is intentionally inspection-only.
+
+Allowed Git operations are narrowly scoped to repository inspection such as:
+
+```text
+status
+diff
+log
+show
+branch (inspection)
+rev-parse (identity queries)
+ls-files
+```
+
+Repository/history mutations and authority-expanding operations are rejected, including:
+
+```text
+add / commit / push / pull / fetch
+reset / clean / checkout / switch / restore
+merge / rebase / cherry-pick / stash
+config / remote / worktree / submodule / init / tag
+```
+
+Git repository/configuration scope overrides such as `-C`, `--git-dir`, `--work-tree`, and config injection are rejected.
+
+Accepted Git path arguments must remain workspace-relative; absolute paths and traversal that resolves outside the active workspace are rejected.
+
+Repository mutation remains the responsibility of a separate future task-scoped control plane with explicit checkpoint and verification semantics. Terminal Git access must not silently become repository mutation authority.
 
 ## Worker execution rule
 
@@ -110,6 +149,8 @@ WorkerExecutionBoundary
 TerminalExecutor
         ↓
 TerminalPolicy
+        ↓
+GitSafetyPolicy (when command is Git)
         ↓
 ProcessSandbox
 ```
@@ -147,15 +188,26 @@ Never use destructive repository synchronization that can erase protected local 
 
 ## Validation record
 
-The worker terminal integration branch was locally validated on Windows after the complete grouped implementation at commit `15cf9e537b9e293f85b54e0db8919419f698da91`:
+The worker terminal integration and Git safety changes were locally validated on Windows after the complete grouped implementation.
+
+Worker terminal integration head before merge:
+
+`15cf9e537b9e293f85b54e0db8919419f698da91`
+
+Git safety head before merge:
+
+`ae60ed841c62299d87b3d46b0e48f6493721df3c`
+
+Validated results for the Git safety milestone:
 
 ```text
 python -m compileall -q .                         PASS
-13 worker-execution tests                          PASS
-3 worker-process-sandbox tests                    PASS
-9 terminal-policy/executor tests                  PASS
-117 full-suite tests                               PASS
+7 Git safety tests                                PASS
+10 terminal policy/executor tests                 PASS
+125 full-suite tests                              PASS
 ```
+
+Working tree was clean during the validation gate.
 
 ## Promotion sequence
 
@@ -174,5 +226,7 @@ update CURRENT_CHECKPOINT.md
 ```
 
 The worker terminal integration branch was merged to `main` as commit `e60b6b70dd899d734f4a7afd1ab03bf45b9cc8df`.
+
+The Git safety boundary branch was merged to `main` as commit `b44914f12802ff18f36da22a4f0c5b504a91151c`.
 
 No local secret files are part of the GitHub promotion path.
