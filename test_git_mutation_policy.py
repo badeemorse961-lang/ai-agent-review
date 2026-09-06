@@ -4,10 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from git_mutation_policy import (
-    GitMutationPolicy,
-    GitMutationSafetyStop,
-)
+from git_mutation_policy import GitMutationPolicy, GitMutationSafetyStop
 
 
 @pytest.fixture()
@@ -65,6 +62,25 @@ def test_commit_request_requires_bounded_single_line_message(git_workspace: Path
             commit_message="line one\nline two",
             workspace_root=git_workspace,
         )
+
+
+def test_commit_message_cannot_contain_credential_like_material(git_workspace: Path) -> None:
+    policy = GitMutationPolicy()
+
+    for message in (
+        "agent: api_key=super-secret-value",
+        "agent: Authorization: Bearer abcdefghijklmnop",
+        "agent: sk-or-v1-12345678901234567890",
+    ):
+        with pytest.raises(GitMutationSafetyStop):
+            policy.validate_request(
+                task_id="task-1",
+                worker_id="worker-1",
+                operation="commit",
+                targets=["calculator.py"],
+                commit_message=message,
+                workspace_root=git_workspace,
+            )
 
 
 def test_absolute_and_traversal_targets_are_rejected(git_workspace: Path) -> None:
