@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`e452094a66c62af7042837d6604a40bac6743ef4`
+`f8db02667a79a8a172ca89a73d488311af5e2bcc`
 
-This squash merge promotes pull request `#20`, which hardens Git repository-state evidence parsing by using NUL-delimited porcelain status records and independent branch resolution without expanding mutation authority.
+This squash merge promotes pull request `#22`, which adds a repository security invariant audit gate covering unsafe direct process execution primitives, shell execution, protected local credential filenames, and credential-shaped literals.
 
 Previous promoted milestone:
 
-`653b2b842e5f4c734b3390b1baec31c70f6ff3d7` — PR #19 Execution Gate process-boundary hardening.
+`e452094a66c62af7042837d6604a40bac6743ef4` — PR #20 Git status evidence parsing hardening.
 
 ## Verified architecture
 
@@ -141,22 +141,39 @@ The parser consumes NUL-delimited records instead of line-oriented human-readabl
 
 Detached HEAD has no proven active branch identity and fails closed. Malformed NUL-separated records, missing rename/copy source pathnames, empty pathnames, unsupported status codes, or untrustworthy status evidence stop the mutation transaction rather than attempting recovery.
 
+## Repository security invariant audit
+
+PR #22 was merged as:
+
+`f8db02667a79a8a172ca89a73d488311af5e2bcc`
+
+The repository now contains a standard-library-only AST audit and CI gate that checks:
+
+- direct, aliased, and imported subprocess execution paths outside approved execution boundaries
+- `shell=True`, `os.system`, and `os.popen` primitives
+- credential-shaped literals in production Python source
+- continued `.gitignore` coverage for protected local credential filenames
+- parseability of production Python source
+
+The audit treats `process_sandbox.py` as the explicit low-level process-launch boundary while continuing to reject shell execution there. The legacy Git inspection code in `project_scanner.py` is not blanket-exempted; only four exact read-only Git commands are accepted, and only when arguments are literal/AST-proven constants with `shell=False`, `check=False`, and a positive explicit timeout. Other subprocess operations remain findings.
+
+The audit is inspection-only and fail-closed. It adds no execution, Git mutation, network, or credential authority. CI runs both Python compilation and the security invariant audit on pull requests and pushes to `main`.
+
 ## Validation status
 
-PR #20 was validated on the real Windows working tree at tested head `226684785952a12d675d73ce3b050e4afa1cbedc` before merge:
+PR #22 was validated on the real Windows working tree at tested head `611c94b55ccfdd7ef86dad3685b17fe21c89dfb5` before the rebased promotion:
 
 ```text
 python -m compileall -q .                         PASS
-pytest -q test_git_mutation_integrity.py         6 passed
-pytest -q test_git_mutation_executor.py         16 passed, 1 skipped
-pytest -q test_git_mutation_policy.py             7 passed
-pytest -q                                        168 passed, 1 skipped
+python repository_security_audit.py               PASS
+pytest -q test_repository_security_audit.py      12 passed
+pytest -q                                        180 passed, 1 skipped
 
 git diff --check                               PASS
 git status --short --branch                      CLEAN
 ```
 
-The first Windows validation attempt exposed a fixture-only portability defect: the test attempted to create `file -> with spaces.txt`, but `>` is forbidden in Windows filenames. The fixture was corrected to the Windows-safe `file → with spaces.txt` while the parser unit test retained literal ASCII `->` coverage. The corrected full suite passed 168 tests with 1 expected skip.
+The rebased promotion branch contained only the four intended security-audit files and was created directly from the current GitHub `main` tip before merge.
 
 ## Protected local state
 
@@ -176,12 +193,16 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
-PR #20
-Title: Harden Git mutation status evidence parsing
+PR #22
+Title: Add repository security invariant audit gate (rebased)
 Merge method: squash
-Merge commit: e452094a66c62af7042837d6604a40bac6743ef4
-Tested head: 226684785952a12d675d73ce3b050e4afa1cbedc
+Merge commit: f8db02667a79a8a172ca89a73d488311af5e2bcc
+Tested head: 611c94b55ccfdd7ef86dad3685b17fe21c89dfb5
 Status: MERGED
+
+Previous PR #21
+Status: CLOSED WITHOUT MERGE
+Reason: superseded by PR #22 after safe rebase onto current main
 ```
 
-The next engineering milestone should build on the established ProcessSandbox, repository-evidence, and mutation boundaries rather than bypassing them.
+The next engineering milestone should build on the established ProcessSandbox, repository-security, repository-evidence, and mutation boundaries rather than bypassing them.
