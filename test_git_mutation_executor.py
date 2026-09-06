@@ -7,14 +7,17 @@ from pathlib import Path
 
 import pytest
 
+from execution_authorization import ExecutionAuthorizationSafetyStop
 from execution_gate import FileChange
 from git_mutation_executor import (
     GitMutationExecutor,
     GitMutationExecutorError,
+    GitMutationVerificationError,
+    GitRepositorySnapshot,
 )
 from git_mutation_policy import GitMutationSafetyStop
 from independent_validation import ValidationVerdict
-from process_sandbox import ProcessSandbox
+from process_sandbox import ProcessSandbox, ProcessResult
 from sandbox_policy import WorkspaceResourcePolicy
 
 
@@ -29,10 +32,15 @@ def run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def authorized_evidence(target: str) -> ValidationVerdict:
+def authorized_evidence(
+    target: str,
+    *,
+    task_id: str = "task-1",
+    worker_id: str = "worker-1",
+) -> ValidationVerdict:
     return ValidationVerdict(
-        task_id="task-1",
-        worker_id="worker-1",
+        task_id=task_id,
+        worker_id=worker_id,
         passed=True,
         reasons=(),
         evidence={"changed_targets": [target], "validated": True},
@@ -78,13 +86,11 @@ def execute_authorized(
     task_id: str = "task-1",
     worker_id: str = "worker-1",
     commit_message: str = "agent: update calculator value",
-) -> object:
-    verdict = ValidationVerdict(
+):
+    verdict = authorized_evidence(
+        change.path,
         task_id=task_id,
         worker_id=worker_id,
-        passed=True,
-        reasons=(),
-        evidence={"changed_targets": [change.path], "validated": True},
     )
     return executor.execute(
         verdict=verdict,
@@ -145,7 +151,7 @@ def test_mutation_requires_passed_independent_validation(
         reasons=("validator failed",),
         evidence={"changed_targets": [change.path]},
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ExecutionAuthorizationSafetyStop):
         executor.execute(
             verdict=verdict,
             checkpoint={"isolated": True},
@@ -153,7 +159,11 @@ def test_mutation_requires_passed_independent_validation(
             commit_message="agent: blocked",
         )
 
-    assert run_git(workspace, "status", "--porcelain=v1").stdout.strip() == "M  " + "" if False else " M calculator.py"
+    assert " M calculator.py" in run_git(
+        workspace,
+        "status",
+        "--porcelain=v1",
+    ).stdout
 
 
 def test_mutation_requires_isolated_checkpoint(
@@ -163,7 +173,7 @@ def test_mutation_requires_isolated_checkpoint(
     change = change_for(workspace)
     (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ExecutionAuthorizationSafetyStop):
         executor.execute(
             verdict=authorized_evidence("calculator.py"),
             checkpoint={"isolated": False},
@@ -219,22 +229,16 @@ def test_target_escape_is_rejected_before_git_invocation(
         new_text="new\n",
     )
 
-    with pytest.raises((GitMutationSafetyStop, ValueError)):
+    with pytest.raises((GitMutationSafetyStop, ExecutionAuthorizationSafetyStop)):
         executor.execute(
-            verdict=ValidationVerdict(
-                task_id="task-4",
-                worker_id="worker-4",
-                passed=True,
-                reasons=(),
-                evidence={"changed_targets": ["../outside.py"]},
-            ),
+            verdict=authorized_evidence("../outside.py", task_id="task-4", worker_id="worker-4"),
             checkpoint={"isolated": True},
             changes=[change],
             commit_message="agent: blocked",
         )
 
 
-def test_commit_validation_failure_preserves_staged_evidence(
+def test_commit_failure_preserves_staged_evidence(
     repo: tuple[Path, GitMutationExecutor],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -246,8 +250,6 @@ def test_commit_validation_failure_preserves_staged_evidence(
 
     def fail_commit(request):
         if request.operation == "commit":
-            from process_sandbox import ProcessResult
-
             return ProcessResult(
                 returncode=1,
                 stdout="",
@@ -288,3 +290,25 @@ def test_executor_requires_allowlisted_git_tool(tmp_path: Path) -> None:
 
     with pytest.raises(GitMutationSafetyStop):
         GitMutationExecutor(workspace, process_sandbox=sandbox)
+
+
+def test_snapshot_parses_branch_and_scoped_status(repo: tuple[Path, GitMutationExecutor]) -> None:
+    workspace, executor = repo
+    (workspace / "calculator.py").write_text("VALUE = 9\n", encoding="utf-8")
+    snapshot = executor.snapshot()
+    assert snapshot.branch in {"main", "master"}
+    assert snapshot.staged_paths == ()
+    assert snapshot.worktree_paths == ("calculator.py",)
+
+
+def test_verification_failure_is_fail_closed(repo: tuple[Path, GitMutationExecutor]) -> None:
+    workspace, executor = repo
+    fake_before = GitRepositorySnapshot("main", (), (), ())
+    fake_after = GitRepositorySnapshot("main", (), (), ("unexpected.py",))
+    with pytest.raises(GitMutationVerificationError):
+        executor._verify_post_commit(
+            fake_after,
+            "0123456789abcdef",
+            ("calculator.py",),
+            fake_before,
+        )
