@@ -38,6 +38,7 @@ class GitRepositorySnapshot:
     status_lines: tuple[str, ...]
     staged_paths: tuple[str, ...]
     worktree_paths: tuple[str, ...]
+    head_sha: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -45,6 +46,7 @@ class GitRepositorySnapshot:
             "status_lines": list(self.status_lines),
             "staged_paths": list(self.staged_paths),
             "worktree_paths": list(self.worktree_paths),
+            "head_sha": self.head_sha,
         }
 
 
@@ -156,8 +158,9 @@ class GitMutationExecutor:
     not available.
 
     The public transaction path requires independent-validation and internal
-    authorization evidence, then checks that each FileChange target still
-    contains exactly its validated ``new_text`` before any staging occurs.
+    authorization evidence. File target/type/content validation runs while
+    holding the workspace mutation lock so the validation-to-staging boundary
+    cannot be invalidated by a cooperating task between checks.
     """
 
     def __init__(
@@ -202,8 +205,6 @@ class GitMutationExecutor:
             raise GitMutationSafetyStop(
                 "Authorized Git mutation requires at least one target"
             )
-        self._validate_target_files(targets)
-        self._validate_change_contents(changes)
 
         stage_request = self.policy.validate_request(
             task_id=authorization.task_id,
@@ -224,6 +225,12 @@ class GitMutationExecutor:
         with _WorkspaceMutationLock(self.workspace_root):
             before = self.snapshot()
             self._preflight(before, stage_request.targets)
+            self._validate_target_files(stage_request.targets)
+            self._validate_change_contents(changes)
+            if before.head_sha != self._resolve_head_sha():
+                raise GitMutationSafetyStop(
+                    "Repository HEAD changed during preflight; mutation scope is no longer stable"
+                )
 
             self._run_policy_command(stage_request)
             staged = self.snapshot()
@@ -305,6 +312,7 @@ class GitMutationExecutor:
             status_lines=lines,
             staged_paths=tuple(sorted(set(staged_paths))),
             worktree_paths=tuple(sorted(set(worktree_paths))),
+            head_sha=self._resolve_head_sha(),
         )
 
     def _preflight(self, before: GitRepositorySnapshot, targets: Sequence[str]) -> None:
@@ -414,7 +422,7 @@ class GitMutationExecutor:
         )
         self._require_success(result, "Git HEAD resolution")
         sha = result.stdout.strip()
-        if len(sha) < 7 or any(
+        if len(sha) not in {40, 64} or any(
             char not in "0123456789abcdefABCDEF" for char in sha
         ):
             raise GitMutationVerificationError(
@@ -440,6 +448,14 @@ class GitMutationExecutor:
         if before.staged_paths:
             raise GitMutationVerificationError(
                 "Preflight staged state unexpectedly changed"
+            )
+        if not before.head_sha or after.head_sha == before.head_sha:
+            raise GitMutationVerificationError(
+                "Post-commit HEAD did not advance from the pre-mutation repository state"
+            )
+        if after.head_sha != commit_sha:
+            raise GitMutationVerificationError(
+                "Resolved HEAD does not match the post-commit repository snapshot"
             )
 
         show = self._run_internal(
