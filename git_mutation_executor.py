@@ -202,6 +202,7 @@ class GitMutationExecutor:
             raise GitMutationSafetyStop(
                 "Authorized Git mutation requires at least one target"
             )
+        self._validate_target_files(targets)
 
         stage_request = self.policy.validate_request(
             task_id=authorization.task_id,
@@ -320,6 +321,32 @@ class GitMutationExecutor:
             raise GitMutationSafetyStop(
                 "Working-tree state cannot be proven task-scoped"
             )
+
+    def _validate_target_files(self, targets: Sequence[str]) -> None:
+        for target in targets:
+            candidate = (self.workspace_root / target).resolve(strict=False)
+            try:
+                candidate.relative_to(self.workspace_root)
+            except ValueError as exc:
+                raise GitMutationSafetyStop(
+                    f"Git mutation target escapes active workspace: {target!r}"
+                ) from exc
+            relative = candidate.relative_to(self.workspace_root)
+            current = self.workspace_root
+            for part in relative.parts:
+                current = current / part
+                if current.is_symlink():
+                    raise GitMutationSafetyStop(
+                        f"Git mutation target contains a symlink/junction: {target!r}"
+                    )
+            if not candidate.exists():
+                raise GitMutationSafetyStop(
+                    f"Git mutation target does not exist: {target!r}"
+                )
+            if not candidate.is_file():
+                raise GitMutationSafetyStop(
+                    f"Git mutation target is not a regular file: {target!r}"
+                )
 
     def _run_policy_command(self, request: GitMutationRequest) -> ProcessResult:
         command = self.policy.command(request)
