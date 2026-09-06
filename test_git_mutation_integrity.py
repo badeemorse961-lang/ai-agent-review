@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from execution_gate import FileChange
-from git_mutation_executor import GitMutationExecutor
+from git_mutation_executor import GitMutationExecutor, GitMutationVerificationError
 from process_sandbox import ProcessSandbox
 from sandbox_policy import WorkspaceResourcePolicy
 
@@ -64,7 +64,10 @@ def test_staged_index_content_must_match_validated_filechange(
     (workspace / "calculator.py").write_text(actual_staged, encoding="utf-8")
     run_git(workspace, "add", "--", "calculator.py")
 
-    with pytest.raises(Exception, match="Staged content differs from validated"):
+    with pytest.raises(
+        GitMutationVerificationError,
+        match="Staged content differs from validated",
+    ):
         executor._verify_staged_contents([validated], ["calculator.py"])
 
     staged = run_git(
