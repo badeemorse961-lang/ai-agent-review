@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,17 @@ def test_lock_is_exclusive_across_processes(tmp_path: Path) -> None:
         child.join(10)
         assert child.exitcode == 0
         assert queue.get(timeout=2) == "blocked"
+
+
+def test_reuses_existing_lock_file_without_pid_reclamation(tmp_path: Path) -> None:
+    first = WorkspaceMutationLock(tmp_path)
+    first.path.parent.mkdir(parents=True, exist_ok=True)
+    first.path.write_text(str(os.getpid() + 1000000), encoding="ascii")
+
+    with first:
+        assert first.path.read_text(encoding="ascii") == str(os.getpid())
+
+    assert first.path.exists()
 
 
 def test_lock_path_is_workspace_specific(tmp_path: Path) -> None:
