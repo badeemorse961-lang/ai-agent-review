@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Sequence
@@ -36,6 +37,23 @@ class ExecutionGateProcessRunner:
         )
         self.pytest_executable = pytest_path
 
+    @staticmethod
+    def _agent_environment() -> dict[str, str]:
+        """Pass only explicit AGENT_* variables into gate-owned tests.
+
+        ProcessSandbox treats AGENT_* values as explicit request-scoped
+        environment and registers each value for exact output redaction. No
+        general host environment inheritance is performed here.
+        """
+        return {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper().startswith("AGENT_")
+        }
+
     def run(self, args: Sequence[str] = ()) -> ProcessResult:
         command = (str(self.pytest_executable), *tuple(args))
-        return self.sandbox.run(command)
+        return self.sandbox.run(
+            command,
+            env=self._agent_environment(),
+        )
