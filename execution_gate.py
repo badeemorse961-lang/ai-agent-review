@@ -3,18 +3,21 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from execution_gate_process_runner import (
+    ExecutionGateProcessRunner,
+)
+from process_sandbox import ProcessSandboxSafetyStop
 from secret_redaction import SecretRedactor, redact_text
 
 
 # ============================================================================
-# EXECUTION GATE v5
+# EXECUTION GATE v6
 #
 # Model proposal
 #      ↓
@@ -24,7 +27,7 @@ from secret_redaction import SecretRedactor, redact_text
 #      ↓
 # Apply
 #      ↓
-# Tests
+# Shared Process Boundary → Tests
 #      ↓
 # ┌───────────────┐
 # │ PASS          │ → APPROVED
@@ -385,8 +388,6 @@ class ExecutionGate:
         self._set_state("TESTING")
 
         command = [
-            PYTHON_EXE,
-            "-m",
             "pytest",
             "-q",
         ]
@@ -396,67 +397,31 @@ class ExecutionGate:
         start = time.perf_counter()
 
         try:
-            completed = subprocess.run(
-                command,
-                cwd=self.workspace_root,
-                shell=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=TEST_TIMEOUT_SECONDS,
-                check=False,
+            runner = ExecutionGateProcessRunner(
+                self.workspace_root,
+                timeout_seconds=TEST_TIMEOUT_SECONDS,
+                max_output_chars=20_000,
             )
+            completed = runner.run(("-q",))
 
-        except subprocess.TimeoutExpired as exc:
-            duration_ms = (time.perf_counter() - start) * 1000.0
-
-            stdout = (
-                exc.stdout.decode(
-                    "utf-8",
-                    errors="replace",
-                )
-                if isinstance(exc.stdout, bytes)
-                else (exc.stdout or "")
-            )
-
-            stderr = (
-                exc.stderr.decode(
-                    "utf-8",
-                    errors="replace",
-                )
-                if isinstance(exc.stderr, bytes)
-                else (exc.stderr or "")
-            )
-
-            result = TestResult(
-                passed=False,
-                return_code=None,
-                stdout=redactor.redact_text(stdout)[-4000:],
-                stderr=redactor.redact_text(
-                    (stderr + "\nTEST TIMEOUT").strip()
-                )[-4000:],
-                duration_ms=duration_ms,
-                command=safe_command,
-            )
-
-            self.state["last_test"] = result.to_dict()
-            self._set_state(final_state)
-
-            return result
-
-        except OSError as exc:
+        except ProcessSandboxSafetyStop as exc:
             raise TestExecutionError(
-                f"Failed to execute test command: {redact_text(exc)}"
+                f"Failed to execute sandboxed test command: {redact_text(exc)}"
             ) from exc
 
         duration_ms = (time.perf_counter() - start) * 1000.0
 
+        safe_stdout = redactor.redact_text(completed.stdout or "")[-4000:]
+        safe_stderr = redactor.redact_text(completed.stderr or "")
+
+        if completed.timed_out:
+            safe_stderr = f"{safe_stderr}\nTEST TIMEOUT".strip()
+
         result = TestResult(
-            passed=(completed.returncode == 0),
+            passed=(completed.returncode == 0 and not completed.timed_out),
             return_code=completed.returncode,
-            stdout=redactor.redact_text(completed.stdout or "")[-4000:],
-            stderr=redactor.redact_text(completed.stderr or "")[-4000:],
+            stdout=safe_stdout,
+            stderr=safe_stderr[-4000:],
             duration_ms=duration_ms,
             command=safe_command,
         )
@@ -1032,7 +997,7 @@ def synthetic_test() -> int:
         json.dumps(
             {
                 "status": "PASS",
-                "version": "v5",
+                "version": "v6",
                 "tests": {
                     "valid_change": result_1,
                     "invalid_proposal": result_2,
