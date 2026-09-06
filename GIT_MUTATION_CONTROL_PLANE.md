@@ -28,7 +28,7 @@ Git add -- <validated targets>
     ↓
 verify staged target set
     ↓
-verify current file content == validated FileChange.new_text
+verify staged index content == validated FileChange.new_text
     ↓
 Git commit -m <bounded message>
     ↓
@@ -62,6 +62,12 @@ After the lock is acquired, the executor captures porcelain status and validates
 
 The executor also confirms that `HEAD` is unchanged across this final preflight sequence. A concurrent repository mutation therefore becomes `SAFE_STOP` instead of being silently combined with the authorized transaction.
 
+## Staged-content integrity
+
+After `git add`, checking the staged file names alone is insufficient because an index entry could theoretically differ from the validated working-tree content. The executor resolves the repository object format, computes the expected Git blob object ID from the validated `FileChange.new_text`, and compares that object ID with the exact staged index entry reported by `git ls-files --stage -- <target>`.
+
+Ambiguous stage entries, unsupported object formats, missing validated content, or any staged object-ID mismatch are verification failures and stop before commit. This check protects the commit boundary even when the working tree still appears task-scoped.
+
 ## Post-mutation verification
 
 A commit is not considered successful merely because `git commit` returned zero. Verification requires a clean post-commit index and working tree, a valid new `HEAD` SHA, and an exact match between the authorized target set and the files recorded by the created commit.
@@ -94,4 +100,4 @@ This control plane does not provide remote push authority, permission to rewrite
 
 ## SAFE_STOP conditions
 
-Stop without attempting cleanup when validation/authorization evidence is missing or fails, the workspace/sandbox boundary does not match, Git is not explicitly allowlisted, a target is missing/non-regular/not valid UTF-8 or traverses a symlink/junction, validated file content has drifted, `HEAD` changes during final preflight, preflight discovers unrelated or staged work, another live/ambiguous lock is present, staged targets differ from the approved set, the commit message contains credential-like material, commit evidence is incomplete, post-commit `HEAD` does not advance consistently, post-commit target verification differs, or repository evidence is truncated/untrustworthy.
+Stop without attempting cleanup when validation/authorization evidence is missing or fails, the workspace/sandbox boundary does not match, Git is not explicitly allowlisted, a target is missing/non-regular/not valid UTF-8 or traverses a symlink/junction, validated file content has drifted, `HEAD` changes during final preflight, preflight discovers unrelated or staged work, another live/ambiguous lock is present, staged targets differ from the approved set, staged index content differs from the validated `FileChange.new_text`, the commit message contains credential-like material, commit evidence is incomplete, post-commit `HEAD` does not advance consistently, post-commit target verification differs, or repository evidence is truncated/untrustworthy.
