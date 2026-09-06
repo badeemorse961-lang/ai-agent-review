@@ -66,10 +66,7 @@ def _literal_bool_keyword(node: ast.Call, name: str, expected: bool) -> bool:
     return False
 
 
-def _constant_command(node: ast.Call) -> tuple[str, ...] | None:
-    if not node.args:
-        return None
-    value = node.args[0]
+def _constant_sequence(value: ast.AST) -> tuple[str, ...] | None:
     if not isinstance(value, (ast.List, ast.Tuple)):
         return None
     parts: list[str] = []
@@ -80,10 +77,40 @@ def _constant_command(node: ast.Call) -> tuple[str, ...] | None:
     return tuple(parts)
 
 
-def _is_legacy_read_only_git_call(path: Path, node: ast.Call) -> bool:
+def _defined_constant_commands(tree: ast.AST) -> dict[str, tuple[str, ...]]:
+    commands: dict[str, tuple[str, ...]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        value = _constant_sequence(node.value)
+        if value is None:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                commands[target.id] = value
+    return commands
+
+
+def _constant_command(node: ast.Call, defined_commands: dict[str, tuple[str, ...]]) -> tuple[str, ...] | None:
+    if not node.args:
+        return None
+    value = node.args[0]
+    direct = _constant_sequence(value)
+    if direct is not None:
+        return direct
+    if isinstance(value, ast.Name):
+        return defined_commands.get(value.id)
+    return None
+
+
+def _is_legacy_read_only_git_call(
+    path: Path,
+    node: ast.Call,
+    defined_commands: dict[str, tuple[str, ...]],
+) -> bool:
     if path.name != LEGACY_READ_ONLY_GIT_PATH:
         return False
-    command = _constant_command(node)
+    command = _constant_command(node, defined_commands)
     if command not in LEGACY_READ_ONLY_GIT_CALLS:
         return False
     if not _literal_bool_keyword(node, "shell", False):
@@ -132,6 +159,7 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
             continue
 
         subprocess_modules, os_modules, subprocess_functions, os_functions = _import_aliases(tree)
+        defined_commands = _defined_constant_commands(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -140,7 +168,7 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
                 owner = node.func.value.id
                 method = node.func.attr
                 if owner in subprocess_modules and method in FORBIDDEN_SUBPROCESS_APIS:
-                    if not _is_legacy_read_only_git_call(path, node):
+                    if not _is_legacy_read_only_git_call(path, node, defined_commands):
                         findings.append(
                             AuditFinding(
                                 "subprocess-boundary",
