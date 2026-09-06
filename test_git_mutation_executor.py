@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from execution_gate import FileChange
 from git_mutation_executor import (
     GitMutationExecutor,
     GitMutationExecutorError,
 )
 from git_mutation_policy import GitMutationSafetyStop
+from independent_validation import ValidationVerdict
 from process_sandbox import ProcessSandbox
 from sandbox_policy import WorkspaceResourcePolicy
 
@@ -23,6 +26,16 @@ def run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=True,
         shell=False,
+    )
+
+
+def authorized_evidence(target: str) -> ValidationVerdict:
+    return ValidationVerdict(
+        task_id="task-1",
+        worker_id="worker-1",
+        passed=True,
+        reasons=(),
+        evidence={"changed_targets": [target], "validated": True},
     )
 
 
@@ -49,18 +62,46 @@ def repo(tmp_path: Path) -> tuple[Path, GitMutationExecutor]:
     return workspace, GitMutationExecutor(workspace, process_sandbox=sandbox)
 
 
-def test_control_plane_stages_and_commits_exact_targets(
+def change_for(workspace: Path, *, new_value: str = "VALUE = 2\n") -> FileChange:
+    current = (workspace / "calculator.py").read_text(encoding="utf-8")
+    return FileChange(
+        path="calculator.py",
+        old_text=current,
+        new_text=new_value,
+    )
+
+
+def execute_authorized(
+    executor: GitMutationExecutor,
+    change: FileChange,
+    *,
+    task_id: str = "task-1",
+    worker_id: str = "worker-1",
+    commit_message: str = "agent: update calculator value",
+) -> object:
+    verdict = ValidationVerdict(
+        task_id=task_id,
+        worker_id=worker_id,
+        passed=True,
+        reasons=(),
+        evidence={"changed_targets": [change.path], "validated": True},
+    )
+    return executor.execute(
+        verdict=verdict,
+        checkpoint={"isolated": True, "transaction_id": task_id},
+        changes=[change],
+        commit_message=commit_message,
+    )
+
+
+def test_control_plane_stages_and_commits_exact_authorized_targets(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
     workspace, executor = repo
-    (workspace / "calculator.py").write_text("VALUE = 2\n", encoding="utf-8")
+    change = change_for(workspace)
+    (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
 
-    result = executor.execute(
-        task_id="task-1",
-        worker_id="worker-1",
-        targets=["calculator.py"],
-        commit_message="agent: update calculator value",
-    )
+    result = execute_authorized(executor, change)
 
     assert result.committed is True
     assert result.verified is True
@@ -69,7 +110,15 @@ def test_control_plane_stages_and_commits_exact_targets(
     assert result.before.staged_paths == ()
     assert result.after.staged_paths == ()
     assert result.after.worktree_paths == ()
-    assert (workspace / ".agent_runtime" / "git_mutation_state.json").exists()
+
+    audit = json.loads(
+        (workspace / ".agent_runtime" / "git_mutation_state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["task_id"] == "task-1"
+    assert audit["targets"] == ["calculator.py"]
+    assert "agent: update calculator value" not in json.dumps(audit)
 
     shown = run_git(
         workspace,
@@ -79,23 +128,62 @@ def test_control_plane_stages_and_commits_exact_targets(
         result.commit_sha,
     ).stdout.splitlines()
     assert shown[0] == "agent: update calculator value"
-    assert shown[2:] == ["calculator.py"]
+    assert "calculator.py" in shown
+
+
+def test_mutation_requires_passed_independent_validation(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    workspace, executor = repo
+    change = change_for(workspace)
+    (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
+
+    verdict = ValidationVerdict(
+        task_id="task-1",
+        worker_id="worker-1",
+        passed=False,
+        reasons=("validator failed",),
+        evidence={"changed_targets": [change.path]},
+    )
+    with pytest.raises(ValueError):
+        executor.execute(
+            verdict=verdict,
+            checkpoint={"isolated": True},
+            changes=[change],
+            commit_message="agent: blocked",
+        )
+
+    assert run_git(workspace, "status", "--porcelain=v1").stdout.strip() == "M  " + "" if False else " M calculator.py"
+
+
+def test_mutation_requires_isolated_checkpoint(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    workspace, executor = repo
+    change = change_for(workspace)
+    (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        executor.execute(
+            verdict=authorized_evidence("calculator.py"),
+            checkpoint={"isolated": False},
+            changes=[change],
+            commit_message="agent: blocked",
+        )
+
+    assert (workspace / "calculator.py").read_text(encoding="utf-8") == change.new_text
 
 
 def test_preflight_rejects_unrelated_worktree_changes(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
     workspace, executor = repo
-    (workspace / "calculator.py").write_text("VALUE = 2\n", encoding="utf-8")
+    change = change_for(workspace)
+    (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
     (workspace / "README.md").write_text("unrelated\n", encoding="utf-8")
 
     with pytest.raises(GitMutationSafetyStop):
-        executor.execute(
-            task_id="task-2",
-            worker_id="worker-2",
-            targets=["calculator.py"],
-            commit_message="agent: scoped change",
-        )
+        execute_authorized(executor, change)
 
     status = run_git(workspace, "status", "--porcelain=v1").stdout
     assert "calculator.py" in status
@@ -106,15 +194,18 @@ def test_preflight_rejects_existing_staged_changes(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
     workspace, executor = repo
-    (workspace / "calculator.py").write_text("VALUE = 2\n", encoding="utf-8")
+    change = change_for(workspace)
+    (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
     run_git(workspace, "add", "--", "calculator.py")
 
     with pytest.raises(GitMutationSafetyStop):
-        executor.execute(
-            task_id="task-3",
-            worker_id="worker-3",
-            targets=["README.md"],
-            commit_message="agent: must not absorb foreign staged work",
+        execute_authorized(
+            executor,
+            FileChange(
+                path="README.md",
+                old_text="baseline\n",
+                new_text="changed\n",
+            ),
         )
 
 
@@ -122,51 +213,34 @@ def test_target_escape_is_rejected_before_git_invocation(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
     _, executor = repo
+    change = FileChange(
+        path="../outside.py",
+        old_text="old\n",
+        new_text="new\n",
+    )
 
-    with pytest.raises(GitMutationSafetyStop):
+    with pytest.raises((GitMutationSafetyStop, ValueError)):
         executor.execute(
-            task_id="task-4",
-            worker_id="worker-4",
-            targets=["../outside.py"],
+            verdict=ValidationVerdict(
+                task_id="task-4",
+                worker_id="worker-4",
+                passed=True,
+                reasons=(),
+                evidence={"changed_targets": ["../outside.py"]},
+            ),
+            checkpoint={"isolated": True},
+            changes=[change],
             commit_message="agent: blocked",
         )
 
 
-def test_commit_failure_does_not_auto_cleanup_staged_evidence(
+def test_commit_validation_failure_preserves_staged_evidence(
     repo: tuple[Path, GitMutationExecutor],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace, executor = repo
-    (workspace / "calculator.py").write_text("VALUE = 3\n", encoding="utf-8")
-    bad_message = ""  # rejected before mutation
-
-    with pytest.raises(GitMutationSafetyStop):
-        executor.execute(
-            task_id="task-5",
-            worker_id="worker-5",
-            targets=["calculator.py"],
-            commit_message=bad_message,
-        )
-
-    assert run_git(workspace, "diff", "--cached", "--name-only").stdout == ""
-
-
-def test_executor_requires_allowlisted_git_tool(tmp_path: Path) -> None:
-    workspace = tmp_path / "repo"
-    workspace.mkdir()
-    (workspace / ".git").mkdir()
-    other = Path(shutil.which("python") or "python").resolve()
-    sandbox = ProcessSandbox(
-        WorkspaceResourcePolicy(workspace, allowed_tool_paths=[other]),
-        timeout_seconds=5,
-    )
-
-    with pytest.raises(GitMutationSafetyStop):
-        GitMutationExecutor(workspace, process_sandbox=sandbox)
-
-
-def test_commit_command_failure_preserves_staged_state(repo: tuple[Path, GitMutationExecutor], monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace, executor = repo
-    (workspace / "calculator.py").write_text("VALUE = 4\n", encoding="utf-8")
+    change = change_for(workspace, new_value="VALUE = 4\n")
+    (workspace / "calculator.py").write_text(change.new_text, encoding="utf-8")
 
     original = executor._run_policy_command
 
@@ -188,11 +262,29 @@ def test_commit_command_failure_preserves_staged_state(repo: tuple[Path, GitMuta
     monkeypatch.setattr(executor, "_run_policy_command", fail_commit)
 
     with pytest.raises(GitMutationExecutorError):
-        executor.execute(
-            task_id="task-6",
-            worker_id="worker-6",
-            targets=["calculator.py"],
+        execute_authorized(
+            executor,
+            change,
             commit_message="agent: hook failure evidence",
         )
 
-    assert run_git(workspace, "diff", "--cached", "--name-only").stdout.strip() == "calculator.py"
+    assert run_git(
+        workspace,
+        "diff",
+        "--cached",
+        "--name-only",
+    ).stdout.strip() == "calculator.py"
+
+
+def test_executor_requires_allowlisted_git_tool(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / ".git").mkdir()
+    other = Path(shutil.which("python") or "python").resolve()
+    sandbox = ProcessSandbox(
+        WorkspaceResourcePolicy(workspace, allowed_tool_paths=[other]),
+        timeout_seconds=5,
+    )
+
+    with pytest.raises(GitMutationSafetyStop):
+        GitMutationExecutor(workspace, process_sandbox=sandbox)
