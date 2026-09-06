@@ -1,1 +1,0 @@
-The strict result restoration boundary is implemented on the feature branch. Validation should be performed locally on Windows before promotion.
