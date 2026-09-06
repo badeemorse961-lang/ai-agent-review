@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -17,7 +17,6 @@ from process_sandbox import ProcessResult, ProcessSandbox, ProcessSandboxSafetyS
 
 
 SCHEMA_VERSION = 1
-MAX_STATUS_CHARS = 20_000
 
 
 class GitMutationExecutorError(RuntimeError):
@@ -79,29 +78,46 @@ class _WorkspaceMutationLock:
     """Cross-process exclusive lock keyed to one workspace."""
 
     def __init__(self, workspace_root: Path) -> None:
-        digest = hashlib.sha256(str(workspace_root.resolve()).encode("utf-8")).hexdigest()[:24]
-        self.path = Path(tempfile.gettempdir()) / f"ai-agent-git-mutation-{digest}.lock"
+        digest = hashlib.sha256(
+            str(workspace_root.resolve()).encode("utf-8")
+        ).hexdigest()[:24]
+        self.path = (
+            Path(tempfile.gettempdir())
+            / f"ai-agent-git-mutation-{digest}.lock"
+        )
         self._handle: int | None = None
 
     def __enter__(self) -> "_WorkspaceMutationLock":
         try:
-            self._handle = self.path.open("x", encoding="utf-8").fileno()
+            self._handle = os.open(
+                self.path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+            os.write(self._handle, str(os.getpid()).encode("ascii"))
         except FileExistsError as exc:
             raise GitMutationSafetyStop(
                 "Another task-scoped Git mutation is already active for this workspace"
+            ) from exc
+        except OSError as exc:
+            raise GitMutationSafetyStop(
+                f"Unable to acquire the Git mutation lock: {exc}"
             ) from exc
         return self
 
     def __exit__(self, *_: object) -> None:
         if self._handle is not None:
             try:
-                Path(self.path).unlink(missing_ok=True)
+                os.close(self._handle)
             finally:
                 self._handle = None
+                try:
+                    self.path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 class GitMutationExecutor:
-    """Perform only local Git mutations that are bound to one validated task.
+    """Perform only local Git mutations bound to one validated task.
 
     This is intentionally separate from TerminalExecutor/GitSafetyPolicy.
     Ordinary terminal Git access remains inspection-only. This control plane
@@ -125,10 +141,13 @@ class GitMutationExecutor:
             )
         self.process_sandbox = process_sandbox
         self.policy = policy or GitMutationPolicy()
+        self.git_executable = self._resolve_git_executable()
         self.audit_path = (
             audit_path.resolve()
             if audit_path is not None
-            else self.workspace_root / ".agent_runtime" / "git_mutation_state.json"
+            else self.workspace_root
+            / ".agent_runtime"
+            / "git_mutation_state.json"
         )
 
     def execute(
@@ -164,15 +183,25 @@ class GitMutationExecutor:
             self._verify_staged_targets(staged, stage_request.targets)
 
             try:
-                self._run_policy_command(commit_request)
+                commit_process = self._run_policy_command(commit_request)
             except (ProcessSandboxSafetyStop, GitMutationSafetyStop) as exc:
                 raise GitMutationExecutorError(
-                    "Git commit did not complete; staged task changes were left untouched for manual evidence-preserving recovery"
+                    "Git commit did not complete; staged task changes were left untouched for evidence-preserving recovery"
                 ) from exc
+
+            if commit_process.returncode != 0 or commit_process.timed_out:
+                raise GitMutationExecutorError(
+                    "Git commit failed; staged task changes were left untouched for evidence-preserving recovery"
+                )
 
             after = self.snapshot()
             commit_sha = self._resolve_head_sha()
-            self._verify_post_commit(after, commit_sha, commit_request.targets, before)
+            self._verify_post_commit(
+                after,
+                commit_sha,
+                commit_request.targets,
+                before,
+            )
 
             result = GitMutationResult(
                 task_id=stage_request.task_id,
@@ -192,7 +221,10 @@ class GitMutationExecutor:
             return result
 
     def snapshot(self) -> GitRepositorySnapshot:
-        status_result = self._run_internal(["git", "status", "--porcelain=v1", "--branch"])
+        status_result = self._run_internal(
+            [self.git_executable, "status", "--porcelain=v1", "--branch"]
+        )
+        self._require_success(status_result, "Git status")
         branch = self._parse_branch(status_result.stdout)
         lines = tuple(
             line
@@ -211,9 +243,9 @@ class GitMutationExecutor:
             path_text = line[3:]
             if " -> " in path_text:
                 old_path, new_path = path_text.split(" -> ", 1)
-                paths = (old_path, new_path)
+                paths = (self._normalize_status_path(old_path), self._normalize_status_path(new_path))
             else:
-                paths = (path_text,)
+                paths = (self._normalize_status_path(path_text),)
             if index_code != " ":
                 staged_paths.extend(paths)
             if worktree_code != " ":
@@ -246,13 +278,18 @@ class GitMutationExecutor:
             request=request,
             workspace_root=self.workspace_root,
         )
-        return self.process_sandbox.run(
-            validated,
+        executable_command = (self.git_executable, *validated[1:])
+        result = self.process_sandbox.run(
+            executable_command,
             target_paths=request.targets,
         )
+        return result
 
     def _run_internal(self, command: Sequence[str]) -> ProcessResult:
-        return self.process_sandbox.run(command)
+        if not command:
+            raise GitMutationVerificationError("Internal Git command is empty")
+        executable_command = (self.git_executable, *tuple(command[1:]))
+        return self.process_sandbox.run(executable_command)
 
     def _verify_staged_targets(
         self,
@@ -267,12 +304,15 @@ class GitMutationExecutor:
             )
 
     def _resolve_head_sha(self) -> str:
-        result = self._run_internal(["git", "rev-parse", "HEAD"])
-        if result.returncode != 0 or result.timed_out or result.truncated:
-            raise GitMutationVerificationError("Unable to resolve the post-commit HEAD")
+        result = self._run_internal([self.git_executable, "rev-parse", "HEAD"])
+        self._require_success(result, "Git HEAD resolution")
         sha = result.stdout.strip()
-        if len(sha) < 7 or any(char not in "0123456789abcdefABCDEF" for char in sha):
-            raise GitMutationVerificationError("Post-commit HEAD is not a valid Git SHA")
+        if len(sha) < 7 or any(
+            char not in "0123456789abcdefABCDEF" for char in sha
+        ):
+            raise GitMutationVerificationError(
+                "Post-commit HEAD is not a valid Git SHA"
+            )
         return sha
 
     def _verify_post_commit(
@@ -291,15 +331,16 @@ class GitMutationExecutor:
                 "Post-commit working tree is not clean; mutation verification is incomplete"
             )
         if before.staged_paths:
-            raise GitMutationVerificationError("Preflight staged state unexpectedly changed")
+            raise GitMutationVerificationError(
+                "Preflight staged state unexpectedly changed"
+            )
 
         show = self._run_internal(
-            ["git", "show", "--format=", "--name-only", commit_sha]
+            [self.git_executable, "show", "--format=", "--name-only", commit_sha]
         )
-        if show.returncode != 0 or show.timed_out or show.truncated:
-            raise GitMutationVerificationError("Unable to inspect the created commit")
+        self._require_success(show, "Git commit inspection")
         touched = {
-            line.strip().replace("\\", "/")
+            self._normalize_status_path(line)
             for line in show.stdout.splitlines()
             if line.strip()
         }
@@ -311,13 +352,30 @@ class GitMutationExecutor:
 
     def _persist_audit(self, result: GitMutationResult) -> None:
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
-        payload: Mapping[str, Any] = result.to_dict()
         temp = self.audit_path.with_suffix(".tmp")
         temp.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
+            json.dumps(result.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
         temp.replace(self.audit_path)
+
+    def _resolve_git_executable(self) -> str:
+        candidates = []
+        for path in self.process_sandbox.policy.allowed_tool_paths:
+            name = path.name.lower()
+            if name.endswith(".exe"):
+                name = name[:-4]
+            if name == "git":
+                candidates.append(path)
+        if not candidates:
+            raise GitMutationSafetyStop(
+                "The process sandbox has no explicitly allowlisted Git executable"
+            )
+        return str(sorted(candidates, key=str)[0])
+
+    @staticmethod
+    def _normalize_status_path(value: str) -> str:
+        return value.strip().replace("\\", "/")
 
     @staticmethod
     def _parse_branch(status_output: str) -> str:
@@ -327,7 +385,16 @@ class GitMutationExecutor:
                 if "..." in value:
                     value = value.split("...", 1)[0]
                 return value
-        raise GitMutationVerificationError("Git status did not report the active branch")
+        raise GitMutationVerificationError(
+            "Git status did not report the active branch"
+        )
+
+    @staticmethod
+    def _require_success(result: ProcessResult, operation: str) -> None:
+        if result.returncode != 0 or result.timed_out or result.truncated:
+            raise GitMutationVerificationError(
+                f"{operation} did not produce trustworthy evidence"
+            )
 
 
 def mutate_repository(
