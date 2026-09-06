@@ -6,19 +6,19 @@
 
 Latest merged implementation baseline:
 
-`a5a61d7fcb36efe177c4f779204e4b87b8281c22`
+`653b2b842e5f4c734b3390b1baec31c70f6ff3d7`
 
-This squash merge promotes pull request `#18`, which hardens the task-scoped Git mutation transaction without expanding mutation authority.
+This squash merge promotes pull request `#19`, which hardens Execution Gate test-process execution by routing gate-owned pytest execution through the established ProcessSandbox boundary without expanding mutation authority.
 
-Previous promoted mutation baseline:
+Previous promoted milestone:
 
-`efe47c8e5a58bbb0c17d21b9474662f1bfa72654` — PR #17.
+`a5a61d7fcb36efe177c4f779204e4b87b8281c22` — PR #18 transaction hardening.
 
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, and a separate task-scoped Git mutation control plane.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, a separate task-scoped Git mutation control plane, and a dedicated Execution Gate process boundary.
 
-The normal worker process path is:
+The normal worker process path remains:
 
 ```text
 WorkerExecutionBoundary
@@ -36,9 +36,25 @@ SecretRedactor
 Execution Gate
 ```
 
+Gate-owned test execution is now:
+
+```text
+ExecutionGate
+  ↓
+ExecutionGateProcessRunner
+  ↓
+WorkspaceResourcePolicy
+  ↓
+ProcessSandbox
+  ↓
+pytest
+```
+
+The gate runner resolves an absolute pytest executable, allowlists that executable for the active workspace, executes shell-free with process-group containment and bounded timeout/output, and registers only explicit `AGENT_*` environment values for exact redaction. Ambient provider credentials remain excluded.
+
 ## Task-scoped Git mutation control plane
 
-The promoted control plane is:
+The promoted control plane remains:
 
 ```text
 Passed ValidationVerdict
@@ -82,20 +98,47 @@ Only structurally valid 40-character SHA-1 and 64-character SHA-256 Git object I
 
 Mutation failure preserves evidence and never performs blind reset/restore/clean recovery.
 
+## Execution Gate process boundary hardening
+
+PR #19 was merged as:
+
+`653b2b842e5f4c734b3390b1baec31c70f6ff3d7`
+
+The prior direct `subprocess.run()` pytest path was removed. Gate test execution now uses the same process/resource containment model used by the rest of the execution stack.
+
+The boundary explicitly:
+
+- allowlists the resolved absolute pytest executable
+- uses the active workspace as `cwd`
+- forbids shell wrappers and interpreter inline launch shortcuts through the shared sandbox
+- inherits process-group containment
+- inherits timeout and output bounds
+- inherits centralized secret redaction
+- forwards only explicit `AGENT_*` environment variables requested by the gate test process
+- fails closed when pytest cannot be resolved or launched
+
+No filesystem, Git, remote, or shell mutation authority was added.
+
 ## Validation status
 
-PR #18 was validated on the real Windows working tree at the tested branch head before merge:
+PR #19 was validated on the real Windows working tree at tested head `0a0d53dd04d160d2ec47bac124e2c1e806576841` before merge:
 
 ```text
 python -m compileall -q .                         PASS
-focused mutation/security suite                  42 passed, 1 skipped
-full regression suite                             158 passed, 1 skipped
-git diff --check                                  PASS
-python config_registry.py                         VALID
-python leader_router.py                           REGISTRY TEST PASSED
-python worker_router.py                           REGISTRY TEST PASSED
+pytest -q test_execution_gate_process_boundary.py 6 passed
+pytest -q test_process_output_redaction.py        3 passed
+pytest -q                                        164 passed, 1 skipped
 python orchestration_smoke_test.py                PASSED
+git diff --check                               PASS
 git status --short --branch                      CLEAN
+```
+
+The orchestration smoke proved both external phases locally:
+
+```text
+Leader output validation PASSED
+Worker output validation PASSED
+ORCHESTRATION SMOKE TEST PASSED
 ```
 
 ## Protected local state
@@ -116,11 +159,11 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
-PR #18
-Title: Harden task-scoped Git mutation transaction evidence
+PR #19
+Title: Harden Execution Gate with shared process boundary
 Merge method: squash
-Merge commit: a5a61d7fcb36efe177c4f779204e4b87b8281c22
+Merge commit: 653b2b842e5f4c734b3390b1baec31c70f6ff3d7
 Status: MERGED
 ```
 
-The next engineering milestone should build on this hardened mutation boundary rather than widening generic terminal Git authority.
+The next engineering milestone should build on the established ProcessSandbox and mutation boundaries rather than bypassing them.
