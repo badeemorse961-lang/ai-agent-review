@@ -155,9 +155,9 @@ class GitMutationExecutor:
     the exact staged target set. Remote operations and history rewriting are
     not available.
 
-    The public transaction path additionally requires the repository's existing
-    independent-validation and internal authorization evidence. A caller cannot
-    turn the Git mutation layer into an independent source of authority.
+    The public transaction path requires independent-validation and internal
+    authorization evidence, then checks that each FileChange target still
+    contains exactly its validated ``new_text`` before any staging occurs.
     """
 
     def __init__(
@@ -203,6 +203,7 @@ class GitMutationExecutor:
                 "Authorized Git mutation requires at least one target"
             )
         self._validate_target_files(targets)
+        self._validate_change_contents(changes)
 
         stage_request = self.policy.validate_request(
             task_id=authorization.task_id,
@@ -347,6 +348,34 @@ class GitMutationExecutor:
                 raise GitMutationSafetyStop(
                     f"Git mutation target is not a regular file: {target!r}"
                 )
+
+    def _validate_change_contents(self, changes: Sequence[FileChange]) -> None:
+        for change in changes:
+            if not isinstance(change, FileChange):
+                raise GitMutationSafetyStop(
+                    "Git mutation content validation requires FileChange records"
+                )
+            target = self.policy_path(change.path)
+            try:
+                current = target.read_text(encoding="utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise GitMutationSafetyStop(
+                    f"Git mutation target is not valid UTF-8 text: {change.path!r}"
+                ) from exc
+            if current != change.new_text:
+                raise GitMutationSafetyStop(
+                    f"Validated mutation content no longer matches target: {change.path!r}"
+                )
+
+    def policy_path(self, target: str) -> Path:
+        candidate = (self.workspace_root / target).resolve(strict=False)
+        try:
+            candidate.relative_to(self.workspace_root)
+        except ValueError as exc:
+            raise GitMutationSafetyStop(
+                f"Git mutation target escapes active workspace: {target!r}"
+            ) from exc
+        return candidate
 
     def _run_policy_command(self, request: GitMutationRequest) -> ProcessResult:
         command = self.policy.command(request)
