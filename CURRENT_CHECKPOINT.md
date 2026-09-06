@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`f323c26934d8e719d2b721b215486ec6ce42d047`
+`3e74f3417d81c517a159d182c4496e908a5b0999`
 
-This squash merge promotes PR #34, making the static configuration registry authority machine-checkable and separating connection metadata from routing authority.
+This squash merge promotes PR #36, hardening the runtime health and persisted lease-state boundary so routing remains subordinate to `config/registry.json`.
 
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, and machine-validated configuration authority.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, machine-validated configuration authority, and registry-bound runtime health/lease state.
 
 ## Git mutation trust chain
 
@@ -60,7 +60,7 @@ The mutation control plane exposes only local `stage` and `commit`. Remote mutat
 
 `connections.json` is connection metadata only. Its role-source marker is aligned to `config/registry.json` and is not used as routing authority.
 
-`config_registry.py` now fails closed when:
+`config_registry.py` fails closed when:
 
 - leader or worker assignments are duplicated or overlap;
 - a registry connection has no matching metadata;
@@ -73,11 +73,9 @@ The mutation control plane exposes only local `stage` and `commit`. Remote mutat
 
 Legacy role/profile structures are no longer routing authorities. Compatibility names may remain in routers, but routing decisions are driven by `config/registry.json`.
 
-## Runtime health/state boundary — next milestone
+## Runtime health/state boundary
 
-The next substantive gap is to make runtime health and persisted lease state strictly subordinate to the authoritative registry.
-
-The target contract is:
+The runtime health/state boundary is now promoted and tested.
 
 ```text
 Authoritative registry
@@ -91,9 +89,11 @@ validated effective availability
 LeaderRouter / WorkerRouter
 ```
 
-Health/state input is observation data, not configuration truth. Unknown connection IDs, wrong-provider observations, malformed state, stale leases, and state that cannot be safely reconciled with the registry must be ignored or fail closed according to the component contract rather than expanding routing authority.
+Health/state input remains observation data, not configuration truth. Unknown connection IDs are ignored; wrong-provider health observations are rejected or ignored according to the component contract; model/tier mismatches do not become valid routing state; malformed and non-finite lease state is discarded; leader leases must match configured tier, model, provider, account, and task identity; worker leases must match configured role membership and standby semantics.
 
-This milestone must preserve N-driven pools, stable connection IDs, safe-stop behavior on required-role exhaustion, and local-only runtime state.
+The implementation preserves shared leader accounts across the configured primary/failover pools: a connection may legitimately appear in both tiers, while each persisted lease must still bind to the tier/model actually recorded for that lease.
+
+N-driven pools, stable connection IDs, safe-stop behavior on required-role exhaustion, and local-only runtime state remain intact.
 
 ## Project and safety rules
 
@@ -132,6 +132,8 @@ PR #33 — live Git evidence rebinding.
 
 PR #34 — machine-validated configuration registry authority.
 
+PR #36 — runtime health and lease state authority hardening.
+
 ## Validation record
 
 PR #33 was validated on the real Windows working tree before promotion:
@@ -151,6 +153,17 @@ PR #34 was validated on the real Windows working tree before promotion:
 python -m compileall -q .                                  PASS
 pytest -q test_config_registry.py test_connection_manager.py 13 passed
 pytest -q                                                   251 passed, 1 skipped
+python repository_security_audit.py                        PASS
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
+
+PR #36 was validated on the real Windows working tree before promotion:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_registry_routers.py                          13 passed
+pytest -q                                                   258 passed, 1 skipped
 python repository_security_audit.py                        PASS
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
