@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`a5a6fe51da7157c8a042e544c1a8ca2cd3b25dd1`
+`6601b64918d240fcfaec9025d94bdb0e3ac82a7d`
 
-This squash merge promotes pull request `#27`, integrating the dedicated OS-level workspace mutation lock and the NUL-delimited staged-index evidence verifier into the authoritative `GitMutationExecutor` transaction.
+This squash merge promotes pull request `#28`, adding real child-process verification of the OS-level workspace mutation lock and CI coverage for the concurrency boundary.
 
 Previous promoted milestone:
 
-`f19ad29f03d23a1cde894291de2a725b2937992f` — staged-index evidence hardening.
+`a5a6fe51da7157c8a042e544c1a8ca2cd3b25dd1` — PR #27 integrated the dedicated workspace lock and NUL-delimited staged-index evidence verifier into the authoritative `GitMutationExecutor` transaction.
 
 ## Verified architecture
 
@@ -76,6 +76,8 @@ The lock is a concurrency boundary only. It grants no authorization, Git, filesy
 
 PR #27 integrates this lock into the authoritative `GitMutationExecutor` critical section while preserving the executor compatibility adapter surface.
 
+PR #28 adds real child-process verification of exclusion and crash-release behavior, making the concurrency property executable rather than relying only on same-process unit tests.
+
 ## Git status evidence parsing hardening
 
 PR #20 was merged as:
@@ -136,6 +138,8 @@ The mutation transaction captures pre-mutation `HEAD`, proves it remains stable 
 
 Staged-index evidence is task-scoped to one NUL-delimited query over the complete authorized target set instead of one line-oriented query per target. Pathname framing and target cardinality are therefore part of the evidence boundary rather than inferred from line parsing.
 
+The workspace lock now has executable multi-process evidence for active-owner exclusion and crash-release behavior.
+
 Mutation failure preserves evidence and never performs blind reset/restore/clean recovery.
 
 ## Repository security invariant audit
@@ -144,9 +148,22 @@ PR #22 was merged as:
 
 `f8db02667a79a8a172ca89a73d488311af5e2bcc`
 
-The repository security audit remains a standard-library-only AST gate for unsafe subprocess paths, shell execution primitives, credential-shaped literals, protected local credential filenames, and production-source parseability. CI runs compilation and the security invariant audit on pull requests and pushes to `main`.
+The repository security audit remains a standard-library-only AST gate for unsafe subprocess paths, shell execution primitives, credential-shaped literals, protected local credential filenames, and production-source parseability. CI runs compilation and the security invariant audit on pull requests and pushes to `main`, and now also executes the real cross-process workspace-lock test suite.
 
 ## Validation status
+
+PR #28 was validated on the real Windows working tree at tested head `fa8a424a6c90b66819c91361f8f17cc574d39f42` before squash promotion:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_workspace_mutation_lock.py \
+          test_workspace_mutation_lock_multiprocess.py      8 passed
+python repository_security_audit.py                        PASS
+pytest -q                                                   214 passed, 1 skipped
+
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
 
 PR #27 was validated on the real Windows working tree at tested head `96e63747209c26142fc6e2639b350d853a688b17` before squash promotion:
 
@@ -180,6 +197,12 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
+PR #28
+Title: Harden workspace mutation lock with cross-process verification
+Merge method: squash
+Merge commit: 6601b64918d240fcfaec9025d94bdb0e3ac82a7d
+Status: MERGED
+
 PR #27
 Title: Integrate mutation locking and staged-index evidence
 Merge method: squash
@@ -203,4 +226,4 @@ Title: Harden Git commit pathname evidence
 Status: MERGED
 ```
 
-The next engineering milestone should exercise and, where justified, extend the real multi-process transaction path around the promoted lock + staged-index evidence + commit pathname evidence boundaries before adding any new mutation authority.
+The next engineering milestone should extend the real transaction evidence path itself: capture immutable task-scoped attestation metadata for staging and post-commit evidence, then verify that attestation survives serialization and remains bound to the same task, worker, targets, workspace, and commit identity before any further mutation authority is considered.
