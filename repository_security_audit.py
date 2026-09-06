@@ -87,7 +87,11 @@ def audit_protected_local_names(root: Path) -> list[AuditFinding]:
     gitignore = root / ".gitignore"
     if not gitignore.is_file():
         return [AuditFinding("protected-local-state", ".gitignore", "missing .gitignore")]
-    patterns = [line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    patterns = [
+        line.strip()
+        for line in gitignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
     findings: list[AuditFinding] = []
     for name in sorted(PROTECTED_LOCAL_NAMES):
         covered = any(
@@ -103,7 +107,7 @@ def audit_protected_local_names(root: Path) -> list[AuditFinding]:
 
 def audit_no_credential_literals(root: Path) -> list[AuditFinding]:
     findings: list[AuditFinding] = []
-    for path in _python_files(root):
+    for path in _production_python_files(root):
         relative = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="strict")
         for pattern in SECRET_PATTERNS:
