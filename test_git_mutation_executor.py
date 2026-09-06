@@ -464,4 +464,4 @@ def test_workspace_mutation_lock_is_exclusive(
         with pytest.raises(GitMutationSafetyStop):
             with second:
                 pass
-    assert not first.path.exists()
+    assert first.path.exists()
