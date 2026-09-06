@@ -85,7 +85,7 @@ Allowed:
   diff
   log
   show
-  branch (inspection)
+  branch
   rev-parse (identity queries)
   ls-files
 
@@ -93,14 +93,84 @@ Rejected:
   add / commit / push / pull / fetch
   reset / clean / checkout / switch / restore
   merge / rebase / cherry-pick / stash
-  config / remote / worktree / submodule / init
+  config / remote / worktree / submodule / init / tag
 ```
 
 The Git policy also rejects repository/configuration overrides such as `-C`, `--git-dir`, `--work-tree`, Git config injection, executable-path overrides, and unapproved pathspec modes. This prevents a terminal Git command from redirecting authority to a different repository or environment.
 
 Git path arguments are workspace-relative where accepted. External-resource declarations do not expand Git repository authority.
 
-Repository mutation remains the responsibility of a future separate task-scoped control plane that can bind mutation to validated targets, checkpoints, and post-mutation verification.
+## Task-scoped repository mutation control plane
+Repository mutation is separate from terminal Git inspection and requires a dedicated control plane.
+
+The mutation path is:
+
+```text
+Passed ValidationVerdict
+      +
+Isolated checkpoint attestation
+      +
+Exact FileChange target set/content
+      ↓
+ExecutionAuthorizationBoundary
+      ↓
+GitMutationExecutor
+      ↓
+GitMutationPolicy
+      ↓
+ProcessSandbox
+      ↓
+Git add -- <exact targets>
+      ↓
+verify staged set == approved set
+      ↓
+verify current content == validated FileChange.new_text
+      ↓
+Git commit -m <bounded single-line message>
+      ↓
+verify HEAD + clean index/worktree + exact committed set
+```
+
+The mutation control plane exposes only local staging and local commit. It does not expose remote push/pull/fetch, history rewriting, reset/clean, branch switching, merge/rebase/cherry-pick/stash, remote/worktree/configuration mutation, hook-bypass options, or amendment operations.
+
+The control plane must consume independent-validation and internal authorization evidence. It cannot self-authorize a task merely because a caller supplies target paths.
+
+## Git mutation preflight
+Before any local repository mutation:
+
+- the active workspace must be the same workspace enforced by the process sandbox;
+- Git must be explicitly allowlisted as a tool executable;
+- the Git index must contain no pre-existing staged changes;
+- every working-tree change must belong to the exact authorized target set;
+- every target must still contain exactly the validated `FileChange.new_text`;
+- repository status evidence must be complete and parseable.
+
+A mismatch is a `SAFE_STOP` condition. The agent must not absorb unrelated human or another-agent changes or post-validation content drift into its commit.
+
+## Git mutation verification
+A successful `git commit` return code is insufficient proof.
+
+Success requires:
+
+- the post-commit index is clean;
+- the post-commit working tree is clean;
+- `HEAD` resolves to a valid commit SHA;
+- the created commit touches exactly the authorized target set.
+
+Any mismatch or truncated/untrustworthy Git evidence is a verification failure.
+
+## Git mutation commit-message security
+Commit messages are permanent Git history. The mutation policy therefore passes commit messages through the centralized redaction classifier and rejects any message that contains credential-like material rather than writing it into repository history.
+
+## Git mutation failure handling
+On staging or commit failure, the mutation control plane preserves staged evidence. It does not run blind `git reset`, `git restore`, `git clean`, or destructive synchronization to manufacture a clean state.
+
+Recovery must remain under an explicit higher-level rollback policy with evidence preservation.
+
+## Audit state
+Successful Git mutation transactions may write ignored local runtime state under `.agent_runtime/`.
+
+Audit records may contain task/worker identity, target paths, before/after status evidence, commit SHA, verification state, and one-way fingerprints of bounded metadata. Raw credentials and unnecessary secret-bearing text must not be persisted.
 
 ## Tool execution
 Production worker execution should use the terminal executor above the process sandbox. The composed layers enforce:
@@ -108,7 +178,7 @@ Production worker execution should use the terminal executor above the process s
 - explicit working directory
 - argument arrays
 - `shell=False`
-- rejection of shell wrappers and inline interpreter/module launchers
+- rejection of shell wrappers and inline interpreter/module launchers for Python/Pytest
 - process-group/session isolation
 - bounded execution time
 - bounded output
@@ -160,7 +230,10 @@ Stop rather than guess when:
 - a suitable OS-level sandbox is required but unavailable
 - suitable model connections are exhausted
 - validation cannot prove a change is safe
+- Git preflight discovers unrelated worktree/index changes or post-validation content drift
+- a Git mutation commit fails or produces ambiguous evidence
 - a Git command would mutate repository state outside the approved control plane
+- a commit message contains credential-like material
 - a secret-bearing output cannot be confidently redacted
 
 ## Principle

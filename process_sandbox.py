@@ -196,12 +196,22 @@ class ProcessSandbox:
         args = tuple(str(item) for item in command)
         if not args or any(not item.strip() for item in args):
             raise ProcessSandboxSafetyStop("Command and arguments must be non-empty")
-        if any(
-            item.lower()
-            in {"cmd", "/c", "powershell", "pwsh", "bash", "sh", "-c", "-m"}
-            for item in args
+
+        executable_name = Path(args[0]).name.lower()
+        if executable_name.endswith(".exe"):
+            executable_name = executable_name[:-4]
+
+        shell_wrappers = {"cmd", "/c", "powershell", "pwsh", "bash", "sh"}
+        if any(item.lower() in shell_wrappers for item in args):
+            raise ProcessSandboxSafetyStop("Shell wrappers are forbidden")
+
+        inline_flags = {"-c", "-m"}
+        if executable_name in {"python", "python3", "pytest"} and any(
+            item.lower() in inline_flags for item in args[1:]
         ):
-            raise ProcessSandboxSafetyStop("Shell wrappers and inline launchers are forbidden")
+            raise ProcessSandboxSafetyStop(
+                "Inline interpreter/module launchers are forbidden for Python/Pytest"
+            )
         return args
 
     def _validate_command_paths(self, args: Sequence[str]) -> None:

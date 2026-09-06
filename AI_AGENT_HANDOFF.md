@@ -7,31 +7,15 @@
 
 ## 1. Mission
 
-Build a professional autonomous AI software-engineering agent.
+Build a professional autonomous AI software-engineering agent whose decisions are grounded in project evidence and whose mutation authority is explicitly controlled.
 
-The system must be able to:
+The system must be able to understand a project, classify state, derive requirements and gaps, build context, plan and decompose work, delegate specialized workers, validate model output, mutate only through guarded boundaries, run tests, independently verify results, approve or rollback safely, preserve architectural memory, and stop safely when evidence is insufficient.
 
-1. understand a software project and its documentation;
-2. classify the actual project state;
-3. derive requirements and gaps;
-4. build sufficient context;
-5. use a central leader to plan and decompose work;
-6. delegate work to specialized workers;
-7. validate model output locally;
-8. mutate files only through guarded execution;
-9. run tests;
-10. independently verify results;
-11. approve or rollback changes;
-12. preserve architectural memory and continue across AI sessions;
-13. stop safely when evidence is insufficient or risk is too high.
-
-The goal is **not** merely an AI that edits files. The goal is a controlled autonomous software-engineering system whose decisions are grounded in project evidence.
+The goal is **not** merely an AI that edits files. The goal is a controlled autonomous software-engineering system with explicit authority separation.
 
 ## 2. Fundamental Authority Model
 
 The model is a proposal/reasoning engine, not unrestricted execution authority.
-
-Use this truth model:
 
 ```text
 Authoritative Specification
@@ -82,17 +66,21 @@ Specialist Workers
   ↓
 Independent Validation
   ↓
+Internal Execution Authorization
+  ↓
+Worker Execution Boundary
+  ↓
+TerminalExecutor → TerminalPolicy
+  ↓
+ProcessSandbox → SecretRedactor
+  ↓
 Execution Gate
   ↓
-Checkpoint
-  ↓
-Guarded Apply
-  ↓
-Tests
-  ↓
-Verification
+Checkpoint → Guarded Apply → Tests → Verification
   ├─ APPROVE
   └─ ROLLBACK → VERIFY
+  ↓
+Task-scoped Git mutation control plane when repository mutation is explicitly required
 ```
 
 Separation of concerns is mandatory: understanding, planning, delegation, execution, validation, verification, and approval must not collapse into one uncontrolled component.
@@ -114,291 +102,89 @@ UNKNOWN and unresolved CONFLICT are safety stops.
 
 ## 5. No Invented Scope
 
-Never:
-
-- invent requirements;
-- invent missing behavior;
-- perform unrelated refactors;
-- modify unrelated files;
-- broaden scope without evidence;
-- replace a validated architecture only because another design looks attractive;
-- remove safety controls to make tests pass.
+Never invent requirements, missing behavior, unrelated refactors, unrelated-file changes, broad scope without evidence, or replacements of validated architecture merely because another design looks attractive.
 
 Prefer the smallest justified change.
 
-## 6. Gap / Compliance Principle
+## 6. Leadership and Workers
 
-Completion percentage is UI information only. It is not project truth.
+Leadership uses an N-driven OpenRouter pool. Worker routing uses registry-defined roles and pools. Connection IDs such as `OR-01` and `GROQ-01` are stable identifiers only and are not fixed capacity limits.
 
-```text
-What should exist
-      VS
-What actually exists
-      ↓
-Gap / Compliance
-```
+The authoritative static routing configuration is `config/registry.json`, loaded and validated by `config_registry.py`.
 
-## 7. Leadership
+Generated profiles such as `leader_profiles.json` and `worker_profiles.json` are derived local artifacts, not routing authorities.
 
-Provider: **OpenRouter**
+## 7. Execution and Resource Authority
 
-Primary model:
-`nvidia/nemotron-3-ultra-550b-a55b:free`
+The active workspace is the default filesystem mutation authority. Development tools may be located outside the workspace, but tool location is not filesystem authority. External paths require explicit bounded resource declarations.
 
-Failover model:
-`nvidia/nemotron-3-super-120b-a12b:free`
-
-Current leadership identities:
-`OR-01` through `OR-11`
-
-The implementation is N-driven. The number 11 is configuration, not architecture. The routing implementation must not contain a fixed maximum account count.
-
-Primary and failover currently use the same OpenRouter account identity pool; the tier/model changes, not the account identity namespace.
-
-## 8. Workers
-
-Provider: **Groq**
-
-Model:
-`openai/gpt-oss-120b`
-
-Current conceptual roles:
-
-- coder
-- debugger
-- tester
-- architect
-- reviewer
-- standby
-
-Current configured allocation:
+The standard worker process path is:
 
 ```text
-coder     → GROQ-01..GROQ-04
-debugger  → GROQ-05..GROQ-07
-tester    → GROQ-08..GROQ-09
-architect → GROQ-10..GROQ-11
-reviewer  → GROQ-12..GROQ-14
-standby   → GROQ-15
+WorkerExecutionBoundary
+        ↓
+TerminalExecutor
+        ↓
+TerminalPolicy
+        ↓
+GitSafetyPolicy for Git inspection
+        ↓
+ProcessSandbox
+        ↓
+SecretRedactor
 ```
 
-These counts are configuration values, not structural limits.
+Portable process containment must not be described as complete OS filesystem isolation. `strict_os_required` fails closed until a validated native backend exists.
 
-Worker routing must derive pool membership from authoritative configuration and must not depend on a fixed maximum ID.
+## 8. Git Safety and Mutation Authority
 
-## 9. Stable Connection Identity
+Normal terminal Git access is inspection-only through `GitSafetyPolicy`. Repository mutation is separate.
 
-Connection IDs such as `OR-01` and `GROQ-01` are stable identifiers.
-
-IDs are identifiers only. They are not collection indexes and must not be treated as a fixed capacity.
-
-Future expansion such as:
+The task-scoped Git mutation control plane is:
 
 ```text
-11 → 21 → 31 → 50 → N
+Passed ValidationVerdict
+        +
+Isolated checkpoint
+        +
+Exact FileChange targets/content
+        ↓
+ExecutionAuthorizationBoundary
+        ↓
+GitMutationExecutor
+        ↓
+GitMutationPolicy
+        ↓
+ProcessSandbox
+        ↓
+Git add -- <exact targets>
+        ↓
+verify staged set
+        ↓
+verify current content == validated FileChange.new_text
+        ↓
+Git commit -m <bounded message>
+        ↓
+verify HEAD + clean index/worktree + exact committed set
 ```
 
-must be configuration expansion, not routing-architecture rewrite.
+Only local `stage` and `commit` are exposed by this control plane. No push, pull, fetch, reset, clean, branch switching, merge, rebase, cherry-pick, stash, tag, remote, worktree, configuration injection, amendment, or hook bypass is available.
 
-A future secret/key rotation mechanism must preserve stable connection identity. Do not make line position in a secrets file the identity of an account.
+Every repository mutation is bound to task identity, worker identity, passed independent validation, isolated checkpoint evidence, exact targets, and validated target content. Unrelated staged/worktree changes, content drift, invalid targets, symlink escapes, live/ambiguous mutation locks, or untrustworthy Git evidence are SAFE_STOP conditions.
 
-## 10. Authoritative Configuration
+Commit messages are bounded single-line history and are rejected when the centralized secret-redaction policy classifies them as credential-like material.
 
-The intended single source of static routing configuration is:
+Mutation failures preserve evidence and never trigger blind reset/clean/delete synchronization.
 
-```text
-config/registry.json
-```
+## 9. Secret and Log Safety
 
-The validator/loader is:
+Raw credentials must never become logs, diagnostics, process results, or persisted runtime state.
 
-```text
-config_registry.py
-```
+The centralized `SecretRedactor` provides exact-value replacement plus pattern detection for common credentials. `ProcessSandbox`, `ExecutionGate`, and provider health persistence cross the redaction boundary before output becomes observable or persistent.
 
-The registry defines provider/model/pool/role configuration.
+Credential-bearing ambient environment variables are excluded from child processes by default; explicitly approved `AGENT_*` values are registered for invocation-scoped exact redaction.
 
-Do not create a second authoritative configuration through generated profile files or duplicated hardcoded constants.
-
-Current registry validation is successful.
-
-Expected current counts:
-
-```text
-Leader provider  : openrouter
-Primary accounts : 11
-Failover accounts: 11
-Worker provider  : groq
-Worker roles     : 6
-Worker accounts  : 15
-Result           : VALID
-```
-
-## 11. Generated Profiles
-
-These are derived artifacts, not authorities:
-
-```text
-leader_profiles.json
-worker_profiles.json
-```
-
-They have been removed from Git tracking and must not be restored as routing configuration sources.
-
-Any component that still requires these files should be migrated to the registry or explicitly classified as obsolete compatibility tooling.
-
-## 12. Legacy Leader Discovery
-
-These legacy artifacts are obsolete and have been removed:
-
-```text
-discover_leader_models.py
-leader_capabilities.json
-```
-
-Do not restore them unless actual dependency evidence establishes a new requirement.
-
-## 13. Execution Authority
-
-Model output is untrusted input.
-
-Required mutation path:
-
-```text
-Model Proposal
-      ↓
-Local Validation
-      ↓
-Execution Gate
-      ↓
-Checkpoint
-      ↓
-Guarded Apply
-      ↓
-Tests
-      ↓
-Independent Verification
-      ↓
-Approve / Rollback
-```
-
-The Execution Gate must continue to enforce workspace/path safety, mutation validation, checkpointing, test execution, rollback, and rollback verification.
-
-## 14. Proven Execution-Gate Tests
-
-Previously validated scenarios:
-
-```text
-TEST1 valid proposal
-→ APPROVED
-
-TEST2 invalid proposal
-→ REJECTED
-
-TEST3 path escape
-→ REJECTED
-
-TEST4 failing test
-→ ROLLED_BACK
-→ rollback = true
-→ post-rollback tests = PASS
-→ VERIFIED_AFTER_ROLLBACK
-
-TEST5 workspace isolation
-→ PASS
-```
-
-Known future hardening areas:
-
-- terminal executor policy/allowlist;
-- active workspace enforcement;
-- Git safety;
-- log redaction.
-
-Do not weaken the existing safety model while improving these areas.
-
-## 15. Proven Routing / Integration Tests
-
-### Leader failover
-
-Model-aware synthetic failover passed across the current leadership pool:
-
-```text
-Ultra OR-01 → OR-11
-Super OR-01 → OR-11
-then SAFE_STOP
-```
-
-An earlier bug caused by shadowing the failover method was fixed.
-
-### Worker Router
-
-Registry-driven synthetic validation passed:
-
-- normal acquisition;
-- global uniqueness;
-- same-task double-acquire rejection;
-- release;
-- failure fallback;
-- standby;
-- persistence.
-
-### Orchestration smoke
-
-The smoke test is registry/router driven and uses run-unique task IDs to avoid collisions with persisted state from prior interrupted runs.
-
-Latest local validation completed twice consecutively without clearing runtime state:
-
-```text
-Run 1 → PASS
-Run 2 → PASS
-```
-
-The leader path successfully exercised runtime failover on one of the observed runs (2 attempts) and succeeded after validation.
-
-### Project Scanner
-
-Synthetic validation passed.
-
-### Project State Classifier
-
-Version 4 passed 11/11 synthetic cases, including BUILD, CONTINUE, MAINTAIN, REPAIR, CONFLICT, UNKNOWN, README-only BUILD, syntax REPAIR, build-failure REPAIR, REPAIR autostart, and UNKNOWN/CONFLICT autostart prevention.
-
-### Expansion readiness
-
-Expansion readiness v2 distinguishes true structural fixed-size assumptions from legitimate CLI/test/self-audit constructs.
-
-Parameterized readiness passed for:
-
-```text
-1, 2, 3, 4, 5, 10, 11, 15, 21, 31, 100
-```
-
-Dynamic primary/failover simulations passed for:
-
-```text
-5, 11, 21, 31
-```
-
-The audit itself passes. Any remaining MEDIUM findings are runtime result metadata such as an observed attempt count and do not represent pool structure.
-
-## 16. Regression Repair Discovered During Migration
-
-The full regression suite exposed a pre-existing calculator defect. It was repaired minimally so that:
-
-```text
-add(a, b)      → a + b
-multiply(a,b)  → a * b
-divide(a, b)   → a / b
-```
-
-The test source encoding was also normalized to remove a UTF-8 BOM that interfered with audit parsing.
-
-The repair is covered by the passing regression suite.
-
-## 17. GitHub ↔ Local Operating Model
-
-The repository is the shared durable project state and cross-session memory.
+## 10. GitHub ↔ Local Operating Model
 
 Repository:
 `badeemorse961-lang/ai-agent-review`
@@ -406,35 +192,9 @@ Repository:
 Local working directory:
 `D:\AI-Agent\Sandbox\agent-test`
 
-Normal controlled synchronization is:
+Normal synchronization is fetch/pull-fast-forward followed by inspection and validation. Do not use blind `git clean -fd` or `git reset --hard`.
 
-```text
-Repository revision
-      ↓
-fetch / pull
-      ↓
-inspect
-      ↓
-preserve intentional local state
-      ↓
-local implementation / validation
-      ↓
-tests
-      ↓
-commit
-      ↓
-push
-```
-
-The repository should be the transport medium between AI sessions.
-
-A human should not be required to copy architectural context from one chat to another when that context can be stored in the repository.
-
-## 18. Protected Local State
-
-Never commit secrets or sensitive machine state.
-
-Current local secret files include:
+Protected local secret files remain local-only:
 
 ```text
 groq_keys.txt
@@ -443,42 +203,9 @@ groq_keys.backup.txt
 openrouter_keys.backup.txt
 ```
 
-Raw keys must never enter source code, JSON configuration, Git history, logs, test output, or this document.
+Local generated profiles and other runtime/machine state must also be preserved when absent from Git.
 
-Repository metadata may contain connection IDs and fingerprints, but not raw credentials.
-
-Local generated profile copies remain preserved outside the repository at the protected local backup location created during branch synchronization. They must not be deleted merely because they are absent from Git.
-
-## 19. Local Change Rules
-
-For code changes:
-
-1. inspect the complete current file;
-2. inspect all relevant callers/dependencies;
-3. identify the authoritative configuration/source;
-4. make the smallest justified change;
-5. compile/syntax-check;
-6. run targeted tests;
-7. run affected integration/regression tests;
-8. inspect the diff;
-9. commit only verified changes;
-10. push only after validation.
-
-Do not edit from a partial snippet when the full file is required to preserve behavior.
-
-## 20. Conflict / Overwrite Rules
-
-Before syncing or replacing repository-controlled files:
-
-- inspect `git status`;
-- detect uncommitted local changes;
-- never silently overwrite intentional local work;
-- preserve local-only secrets and machine state;
-- stop on ambiguous conflicts.
-
-`.gitignore` is not a security boundary by itself.
-
-## 21. Testing Policy
+## 11. Testing Policy
 
 A commit is not an operational proof.
 
@@ -489,14 +216,18 @@ syntax/compile
 +
 targeted tests
 +
-regression
+regression suite
 +
-smoke/integration test
+smoke/integration validation
++
+diff review
++
+security-boundary review
 ```
 
-Do not push untested routing, execution, security, or synchronization changes.
+Do not claim local success without execution evidence.
 
-## 22. Failure Handling
+## 12. Failure Handling
 
 When a test fails:
 
@@ -512,233 +243,58 @@ fix the real cause
 retest
 ```
 
-Never mask a failure merely to obtain a green test result.
+Never mask a failure to manufacture a green result.
 
-Distinguish implementation defects, test defects, environment failures, dependency failures, architectural conflicts, and stale assumptions.
+## 13. Current Verified Baseline
 
-## 23. Rollback Policy
+The latest synchronized `main` baseline is the log-redaction milestone plus its checkpoint update. The current engineering milestone is the task-scoped Git mutation control plane in pull request `#17`.
 
-A rollback is verified only when both mutation restoration and independent post-rollback validation succeed.
+PR `#17` initially exposed two genuine defects during the Windows validation gate:
 
-```text
-rollback performed
-        +
-post-rollback validation
-        =
-verified rollback
-```
+1. Windows `pathlib` normalized `./file.py` before the policy inspected its parts, so explicit traversal syntax was not rejected.
+2. `ProcessSandbox` rejected `-m` universally, which incorrectly blocked the dedicated Git commit command even though `-m` must remain forbidden only for Python/Pytest inline launchers.
 
-## 24. Current Repository Baseline
+These defects were corrected on the feature branch.
 
-Known architecture/rules documents established in the repository include:
+Additional hardening now present on the branch includes:
 
-```text
-ARCHITECTURE.md
-PROJECT_RULES.md
-CONNECTIONS_AND_POOLS.md
-REPOSITORY_LOCAL_BOUNDARY.md
-SYNC_RULES.md
-SECURITY_AND_EXECUTION_RULES.md
-BASELINE_REVIEW_NOTES.md
-TASK.md
-```
+- rejection of credential-like commit messages before Git history is written;
+- rejection of post-validation target-content drift when current content differs from `FileChange.new_text`;
+- focused regression coverage for both protections;
+- hardened Git mutation documentation and architecture rules.
 
-These should be read before making a major architectural change.
+The branch must still pass the real Windows validation gate before merge.
 
-The baseline explicitly establishes strict separation of project understanding, planning, specialist work, guarded mutation, testing, verification, and approval.
-
-## 25. Current Verified Checkpoint — 2026-09-05
-
-Working branch:
-
-`agent/registry-router-migration`
-
-Verified head at the last local synchronization:
-
-`13df92082c5b1c0e7795d5034aa44b3e03d0ae8b`
-
-Pull request:
-
-`#1 — Migrate routing to registry and validate N-driven orchestration`
-
-The branch was ahead of `main` with no known divergence at the checkpoint.
-
-### Verified local results
+## 14. Required Promotion Sequence
 
 ```text
-python -m compileall -q .
-→ PASS
-
-python -m pytest -q
-→ 18 passed
-
-python expansion_readiness_audit.py
-→ EXPANSION READINESS AUDIT PASSED ✅
-
-python config_registry.py
-→ VALID ✅
-
-python leader_router.py
-→ LEADER ROUTER REGISTRY TEST PASSED ✅
-
-python worker_router.py
-→ WORKER ROUTER REGISTRY TEST PASSED ✅
-
-python orchestration_smoke_test.py
-→ PASSED ✅
-
-python orchestration_smoke_test.py
-→ PASSED ✅
-```
-
-Observed latest smoke details:
-
-```text
-Healthy Ultra leaders : 8
-Healthy Super leaders : 10
-Configured Groq workers: 15
-
-Leader attempts: 1 on one run, 2 on another
-Worker attempts: 1
-Leader output validation: PASSED
-Worker output validation: PASSED
-Project files sent: NO
-```
-
-The leader-attempt variation is consistent with runtime failover across eligible connections.
-
-### Expansion audit note
-
-The audit returns `PASS` while allowing informational MEDIUM findings for runtime result metadata such as `$.leader.attempts = 1`. These are execution observations, not routing configuration or fixed pool capacity.
-
-## 26. Promotion Status
-
-The migration has been opened as pull request `#1` for final repository review.
-
-The local verification gate is green, but the migration must not be merged merely because tests pass.
-
-Required final sequence:
-
-```text
-local verified
+complete grouped implementation
     ↓
-complete diff review
+Windows compile + focused tests + full suite
     ↓
-dependency / architecture review
+diff review
     ↓
 security / secret-boundary review
     ↓
-PR review
-    ↓
 merge to main
+    ↓
+update CURRENT_CHECKPOINT.md
 ```
 
-## 27. Final Diff / Architecture Review Checklist
+No local secret file is part of the GitHub promotion path.
 
-Inspect for:
+## 15. Continuation Rule
 
-- stale generated-profile dependencies;
-- hardcoded pool-size assumptions;
-- fixed maximum IDs in routing logic;
-- duplicated configuration authority;
-- runtime-state/schema incompatibilities;
-- obsolete legacy artifacts;
-- secret-handling regressions;
-- unsafe synchronization behavior;
-- weakened lease uniqueness or SAFE_STOP semantics;
-- regression-test coverage of the new audit and router behavior.
-
-Current executable-evidence conclusion:
-
-- registry-driven leader and worker routing is functioning;
-- global worker lease protection remains intact;
-- runtime failover works;
-- orchestration is repeatable with persisted state;
-- expansion readiness synthetic coverage passes;
-- full regression passes.
-
-## 28. Connection Manager Hardening — Next Major Milestone
-
-`connection_manager.py` still contains legacy repository-relative secret-file behavior.
-
-Final production design should use a local external secret locator rather than treating repository-relative paths as the permanent secret architecture.
-
-Also fix the identity model so key rotation preserves stable connection IDs. Do not derive account identity solely from secret-file line number.
-
-This work should occur as a separate architectural change after the current migration is promoted, unless final review discovers a blocking dependency.
-
-## 29. Handoff Update Rule
-
-After every major verified milestone, update this document with:
+Before starting a new milestone, inspect:
 
 ```text
-Current checkpoint
-What changed
-Why it changed
-Files affected
-Tests run
-Test results
-Known issues
-Next exact step
-```
-
-The handoff must describe the **verified** state, not an optimistic intended state.
-
-When updating it, never delete useful historical facts merely to make the document shorter.
-
-## 30. New AI Session Startup Protocol
-
-A new AI model connected to this repository MUST behave as a continuation agent, not as a new-project assistant.
-
-### Phase A — Read
-
-Read:
-
-```text
-AI_AGENT_HANDOFF.md
+CURRENT_CHECKPOINT.md
+TASK.md
+BASELINE_REVIEW_NOTES.md
 ARCHITECTURE.md
 PROJECT_RULES.md
-CONNECTIONS_AND_POOLS.md
-REPOSITORY_LOCAL_BOUNDARY.md
-SYNC_RULES.md
 SECURITY_AND_EXECUTION_RULES.md
-BASELINE_REVIEW_NOTES.md
-TASK.md
-config/registry.json
-config_registry.py
-roles.json
+GIT_MUTATION_CONTROL_PLANE.md
 ```
 
-Then verify the actual Git branch, working tree, and current test state before making claims.
-
-### Phase B — Verify
-
-Check:
-
-```text
-git status
-
-git branch --show-current
-
-git log -1 --oneline
-```
-
-Then run only the tests needed to establish current reality for the requested task.
-
-### Phase C — Continue
-
-Continue from verified repository state.
-
-Do not:
-
-- rebuild the project from memory;
-- recreate retired profile generators without evidence;
-- trust stale generated artifacts;
-- overwrite protected local secrets;
-- delete intentional local work;
-- bypass execution or validation safety rules;
-- assume a historical green test proves the current working tree is green.
-
-### Phase D — Update Memory
-
-When a major milestone is verified, update this handoff and the relevant checkpoint documentation so the next AI session can continue without reconstructing the entire history.
+Then inspect the executable code and tests relevant to the next gap. Prefer substantive engineering gaps over documentation-only cleanup.
