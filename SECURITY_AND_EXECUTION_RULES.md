@@ -66,6 +66,8 @@ TerminalPolicy
 GitSafetyPolicy (for Git)
       ↓
 ProcessSandbox
+      ↓
+SecretRedactor
 ```
 
 `TerminalPolicy` rejects unknown executables, dangerous shell wrappers/operators, forbidden inline interpreter launchers, overlong command shapes, and unauthorized path-like arguments before launch.
@@ -112,6 +114,18 @@ Production worker execution should use the terminal executor above the process s
 - bounded output
 - minimized/sanitized child environment
 - Git repository inspection policy when the Git executable is selected
+- secret redaction of stdout/stderr before the result becomes observable or persistent
+
+## Log redaction and secret leakage prevention
+Raw credentials must never become logs, diagnostics, process results, or persisted runtime state.
+
+`secret_redaction.py` provides a centralized redaction boundary. It combines exact-value replacement for explicitly supplied secret values with pattern-based detection for common credential forms such as bearer authorization values, Groq keys, OpenRouter keys, generic `sk-*` credentials, and secret-like assignments/query parameters.
+
+`ProcessSandbox` applies the redactor before constructing `ProcessResult`, so callers do not receive raw child-process output. Approved `AGENT_*` environment values are registered as explicit secrets for that invocation. Ambient variables whose names indicate keys, tokens, secrets, passwords, or authentication are excluded from the child environment by default.
+
+`ExecutionGate` redacts test stdout/stderr before storing them in execution state or returning them. Provider health-check errors are redacted before they are persisted to health JSON.
+
+Redaction is a backstop rather than an authorization mechanism. Credentials must remain outside source control and should remain outside child environments and unmanaged resources whenever possible.
 
 ## OS-level isolation limitation
 `cwd`, path validation, and process-group isolation are **not** equivalent to an OS-level filesystem sandbox. A child process can still programmatically open unmanaged paths unless the host provides stronger OS enforcement.
@@ -133,7 +147,7 @@ Each mutation transaction requires an isolated checkpoint containing enough meta
 Rollback is not complete until post-rollback tests/validation pass. If rollback verification fails: `SAFE_STOP`.
 
 ## Sensitive output
-Never expose raw API keys, authorization headers, or secret environment variables in logs.
+Never expose raw API keys, authorization headers, secret environment variables, or unredacted provider error details in logs or persisted runtime state. Any captured stdout/stderr must cross the redaction boundary before it is returned or stored.
 
 ## SAFE_STOP
 Stop rather than guess when:
@@ -147,6 +161,7 @@ Stop rather than guess when:
 - suitable model connections are exhausted
 - validation cannot prove a change is safe
 - a Git command would mutate repository state outside the approved control plane
+- a secret-bearing output cannot be confidently redacted
 
 ## Principle
 ```text

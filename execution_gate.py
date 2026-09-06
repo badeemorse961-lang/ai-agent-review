@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from secret_redaction import SecretRedactor, redact_text
+
 
 # ============================================================================
 # EXECUTION GATE v5
@@ -365,6 +367,17 @@ class ExecutionGate:
     # Tests
     # ----------------------------------------------------------------------
 
+    @staticmethod
+    def _test_redactor() -> SecretRedactor:
+        secret_values: list[str] = []
+        markers = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH")
+        for key, value in os.environ.items():
+            upper = key.upper()
+            if any(marker in upper for marker in markers):
+                if isinstance(value, str):
+                    secret_values.append(value)
+        return SecretRedactor.from_secrets(secret_values)
+
     def run_tests(
         self,
         final_state: str = "TESTING",
@@ -377,6 +390,8 @@ class ExecutionGate:
             "pytest",
             "-q",
         ]
+        redactor = self._test_redactor()
+        safe_command = [redactor.redact_text(item) for item in command]
 
         start = time.perf_counter()
 
@@ -417,10 +432,12 @@ class ExecutionGate:
             result = TestResult(
                 passed=False,
                 return_code=None,
-                stdout=stdout[-4000:],
-                stderr=(stderr + "\nTEST TIMEOUT").strip()[-4000:],
+                stdout=redactor.redact_text(stdout)[-4000:],
+                stderr=redactor.redact_text(
+                    (stderr + "\nTEST TIMEOUT").strip()
+                )[-4000:],
                 duration_ms=duration_ms,
-                command=command,
+                command=safe_command,
             )
 
             self.state["last_test"] = result.to_dict()
@@ -430,7 +447,7 @@ class ExecutionGate:
 
         except OSError as exc:
             raise TestExecutionError(
-                f"Failed to execute test command: {exc}"
+                f"Failed to execute test command: {redact_text(exc)}"
             ) from exc
 
         duration_ms = (time.perf_counter() - start) * 1000.0
@@ -438,10 +455,10 @@ class ExecutionGate:
         result = TestResult(
             passed=(completed.returncode == 0),
             return_code=completed.returncode,
-            stdout=(completed.stdout or "")[-4000:],
-            stderr=(completed.stderr or "")[-4000:],
+            stdout=redactor.redact_text(completed.stdout or "")[-4000:],
+            stderr=redactor.redact_text(completed.stderr or "")[-4000:],
             duration_ms=duration_ms,
-            command=command,
+            command=safe_command,
         )
 
         self.state["last_test"] = result.to_dict()
@@ -1057,7 +1074,7 @@ def main() -> int:
         print("EXECUTION GATE TEST FAILED ❌")
         print("=" * 70)
         print(
-            f"{type(exc).__name__}: {exc}"
+            redact_text(f"{type(exc).__name__}: {exc}")
         )
         return 1
 

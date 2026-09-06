@@ -10,6 +10,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from config_registry import validate_registry
+from secret_redaction import redact_text
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -86,14 +87,14 @@ def safe_error(response: requests.Response) -> str | None:
         code = error.get("code")
         message = error.get("message")
         if isinstance(code, (str, int)) and isinstance(message, str):
-            return f"code={code}; message={message[:300]}"
+            return redact_text(f"code={code}; message={message[:300]}")
         if isinstance(message, str):
-            return message[:300]
+            return redact_text(message[:300])
         if isinstance(code, (str, int)):
             return f"code={code}"
         return "error_object_present"
     if isinstance(error, str):
-        return error[:300]
+        return redact_text(error[:300])
     return None
 
 
@@ -107,7 +108,7 @@ def failed_result(connection_id: str, model: str, status: str, error: str | None
         "latency_ms": None,
         "healthy": False,
         "completion_received": False,
-        "error": error,
+        "error": redact_text(error) if error else None,
         "checked_at": utc_now(),
     }
 
