@@ -28,6 +28,8 @@ Git add -- <validated targets>
     ↓
 verify staged target set
     ↓
+verify current file content == validated FileChange.new_text
+    ↓
 Git commit -m <bounded message>
     ↓
 verify HEAD + clean index/worktree + exact committed target set
@@ -52,11 +54,12 @@ Every mutation is bound to:
 - a worker ID;
 - a passed `ValidationVerdict`;
 - an isolated checkpoint attestation;
-- an exact validated target set.
+- an exact validated target set;
+- the exact validated `FileChange.new_text` content at mutation time.
 
 The target set in independent-validation evidence must equal the target set supplied by `FileChange` records. The Git policy then re-normalizes the paths and requires the generated command to match the validated request exactly.
 
-Before invoking Git, each target is also required to resolve to an existing regular file inside the active workspace. Symlink/junction components are rejected so a path that only appears workspace-relative cannot redirect mutation outside the workspace.
+Before invoking Git, each target is required to resolve to an existing regular UTF-8 text file inside the active workspace. Symlink/junction components are rejected so a path that only appears workspace-relative cannot redirect mutation outside the workspace. The current content must exactly equal the validated `new_text`; post-validation content drift is therefore a SAFE_STOP instead of an implicitly accepted change.
 
 ## Preflight isolation
 
@@ -64,9 +67,10 @@ Before any Git mutation, the executor captures porcelain status and rejects the 
 
 - the Git index already contains staged changes;
 - any working-tree change exists outside the exact authorized target set;
-- the repository state cannot be parsed into trustworthy evidence.
+- the repository state cannot be parsed into trustworthy evidence;
+- a validated target's current content no longer matches its validated `new_text`.
 
-This prevents an agent task from silently absorbing unrelated human or another-agent changes.
+This prevents an agent task from silently absorbing unrelated human or another-agent changes or committing content that was not independently validated.
 
 A workspace-specific cross-process lock serializes local Git mutation transactions. A live or ambiguous lock fails closed. Only a lock whose recorded process ID is proven to have exited may be reclaimed automatically.
 
@@ -84,6 +88,12 @@ Verification requires all of the following:
 A commit hook can still perform repository-local side effects because hook execution is part of Git's normal commit behavior. The control plane therefore verifies the resulting commit after the fact and treats any target-set mismatch as a verification failure rather than automatically rewriting history or cleaning the repository.
 
 Any ambiguity is a fail-closed verification error. The executor never performs a blind reset or cleanup to manufacture a clean result.
+
+## Commit-message security
+
+Commit messages become permanent Git history, so the mutation policy rejects messages that the centralized `SecretRedactor` classifies as credential-like material. This covers common bearer credentials, provider-shaped keys, generic `sk-*` forms, and secret-like assignments. The policy allows normal descriptive messages but refuses to write recognizable credential material into repository history.
+
+The successful audit record stores only a SHA-256 fingerprint of the accepted message; the raw message is not copied into local mutation audit state.
 
 ## Failure semantics
 
@@ -115,10 +125,12 @@ Stop without attempting cleanup when any of these occur:
 - validation or authorization evidence is missing or fails;
 - the active workspace does not match the process sandbox;
 - Git is not explicitly allowlisted in the sandbox;
-- a mutation target is missing, non-regular, or traverses a symlink/junction;
+- a mutation target is missing, non-regular, not valid UTF-8 text, or traverses a symlink/junction;
+- validated file content has drifted from the approved `FileChange.new_text`;
 - preflight discovers unrelated changes or existing staged state;
 - another live/ambiguous mutation lock is present;
 - staged targets differ from the approved target set;
+- commit message contains credential-like material;
 - commit fails, times out, or returns incomplete evidence;
 - post-commit target verification differs from the authorized target set;
 - repository status or commit evidence is truncated/untrustworthy.
