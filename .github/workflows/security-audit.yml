@@ -24,3 +24,5 @@ jobs:
         run: python -m compileall -q .
       - name: Run security invariant audit
         run: python repository_security_audit.py
+      - name: Verify cross-process workspace mutation lock
+        run: pytest -q test_workspace_mutation_lock.py test_workspace_mutation_lock_multiprocess.py
