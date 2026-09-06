@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 
 from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
+from git_commit_evidence import GitCommitEvidenceError, verify_exact_target_set
 from independent_validation import ValidationVerdict
 from git_mutation_policy import (
     GitMutationPolicy,
@@ -547,19 +548,13 @@ class GitMutationExecutor:
             )
 
         show = self._run_internal(
-            [self.git_executable, "show", "--format=", "--name-only", commit_sha]
+            [self.git_executable, "show", "--format=", "--name-only", "-z", commit_sha]
         )
         self._require_success(show, "Git commit inspection")
-        touched = {
-            self._normalize_status_path(line)
-            for line in show.stdout.splitlines()
-            if line.strip()
-        }
-        expected = set(targets)
-        if touched != expected:
-            raise GitMutationVerificationError(
-                f"Committed target set mismatch: expected={sorted(expected)!r} actual={sorted(touched)!r}"
-            )
+        try:
+            verify_exact_target_set(show.stdout, targets)
+        except GitCommitEvidenceError as exc:
+            raise GitMutationVerificationError(str(exc)) from exc
 
     def _persist_audit(self, result: GitMutationResult) -> None:
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
