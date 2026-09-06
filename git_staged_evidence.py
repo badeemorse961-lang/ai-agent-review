@@ -35,19 +35,19 @@ def parse_nul_index_records(output: str, *, object_format: str) -> tuple[StagedI
         raise GitStagedEvidenceError("Unsupported Git object format")
     expected_oid_length = 40 if object_format == "sha1" else 64
 
-    if "\x00" not in output:
-        if output:
-            raise GitStagedEvidenceError("Git staged-index evidence is not NUL-delimited")
+    if not output:
         return ()
-
-    raw_records = output.split("\x00")
-    if raw_records[-1] != "":
+    if "\x00" not in output:
+        raise GitStagedEvidenceError("Git staged-index evidence is not NUL-delimited")
+    if not output.endswith("\x00"):
         raise GitStagedEvidenceError("Git staged-index evidence is not terminated by NUL")
 
+    raw_records = output[:-1].split("\x00")
+    if any(not raw for raw in raw_records):
+        raise GitStagedEvidenceError("Git staged-index evidence contained an empty record")
+
     entries: list[StagedIndexEntry] = []
-    for raw in raw_records[:-1]:
-        if not raw:
-            raise GitStagedEvidenceError("Git staged-index evidence contained an empty record")
+    for raw in raw_records:
         if "\t" not in raw:
             raise GitStagedEvidenceError("Git staged-index record is missing its pathname separator")
 
