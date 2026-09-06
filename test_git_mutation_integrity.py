@@ -120,11 +120,11 @@ def test_snapshot_uses_nul_separated_status_and_separate_branch_resolution(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
     workspace, executor = repo
-    path = workspace / "file -> with spaces.txt"
+    path = workspace / "file → with spaces.txt"
     path.write_text("content\n", encoding="utf-8")
 
     snapshot = executor.snapshot()
 
     assert snapshot.branch
-    assert snapshot.worktree_paths == ("file -> with spaces.txt",)
-    assert snapshot.status_lines == ("?? file -> with spaces.txt",)
+    assert snapshot.worktree_paths == ("file → with spaces.txt",)
+    assert snapshot.status_lines == ("?? file → with spaces.txt",)
