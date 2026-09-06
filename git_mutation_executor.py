@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from execution_authorization import ExecutionAuthorizationBoundary
+from execution_gate import FileChange
+from independent_validation import ValidationVerdict
 from git_mutation_policy import (
     GitMutationPolicy,
     GitMutationRequest,
@@ -16,7 +19,7 @@ from git_mutation_policy import (
 from process_sandbox import ProcessResult, ProcessSandbox, ProcessSandboxSafetyStop
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class GitMutationExecutorError(RuntimeError):
@@ -124,6 +127,10 @@ class GitMutationExecutor:
     adds exactly two mutation capabilities: stage validated targets and commit
     the exact staged target set. Remote operations and history rewriting are
     not available.
+
+    The public transaction path additionally requires the repository's existing
+    independent-validation and internal authorization evidence. A caller cannot
+    turn the Git mutation layer into an independent source of authority.
     """
 
     def __init__(
@@ -153,21 +160,30 @@ class GitMutationExecutor:
     def execute(
         self,
         *,
-        task_id: str,
-        worker_id: str,
-        targets: Iterable[str],
+        verdict: ValidationVerdict,
+        checkpoint: Mapping[str, Any],
+        changes: Sequence[FileChange],
         commit_message: str,
     ) -> GitMutationResult:
+        authorization = ExecutionAuthorizationBoundary(self.workspace_root).authorize(
+            verdict,
+            checkpoint=checkpoint,
+            changes=changes,
+        )
+        targets = authorization.changed_targets
+        if not targets:
+            raise GitMutationSafetyStop("Authorized Git mutation requires at least one target")
+
         stage_request = self.policy.validate_request(
-            task_id=task_id,
-            worker_id=worker_id,
+            task_id=authorization.task_id,
+            worker_id=authorization.worker_id,
             operation="stage",
             targets=targets,
             workspace_root=self.workspace_root,
         )
         commit_request = self.policy.validate_request(
-            task_id=task_id,
-            worker_id=worker_id,
+            task_id=authorization.task_id,
+            worker_id=authorization.worker_id,
             operation="commit",
             targets=stage_request.targets,
             commit_message=commit_message,
@@ -243,7 +259,10 @@ class GitMutationExecutor:
             path_text = line[3:]
             if " -> " in path_text:
                 old_path, new_path = path_text.split(" -> ", 1)
-                paths = (self._normalize_status_path(old_path), self._normalize_status_path(new_path))
+                paths = (
+                    self._normalize_status_path(old_path),
+                    self._normalize_status_path(new_path),
+                )
             else:
                 paths = (self._normalize_status_path(path_text),)
             if index_code != " ":
@@ -279,11 +298,10 @@ class GitMutationExecutor:
             workspace_root=self.workspace_root,
         )
         executable_command = (self.git_executable, *validated[1:])
-        result = self.process_sandbox.run(
+        return self.process_sandbox.run(
             executable_command,
             target_paths=request.targets,
         )
-        return result
 
     def _run_internal(self, command: Sequence[str]) -> ProcessResult:
         if not command:
@@ -304,7 +322,9 @@ class GitMutationExecutor:
             )
 
     def _resolve_head_sha(self) -> str:
-        result = self._run_internal([self.git_executable, "rev-parse", "HEAD"])
+        result = self._run_internal(
+            [self.git_executable, "rev-parse", "HEAD"]
+        )
         self._require_success(result, "Git HEAD resolution")
         sha = result.stdout.strip()
         if len(sha) < 7 or any(
@@ -401,9 +421,9 @@ def mutate_repository(
     workspace_root: Path,
     *,
     process_sandbox: ProcessSandbox,
-    task_id: str,
-    worker_id: str,
-    targets: Iterable[str],
+    verdict: ValidationVerdict,
+    checkpoint: Mapping[str, Any],
+    changes: Sequence[FileChange],
     commit_message: str,
     policy: GitMutationPolicy | None = None,
 ) -> GitMutationResult:
@@ -412,8 +432,8 @@ def mutate_repository(
         process_sandbox=process_sandbox,
         policy=policy,
     ).execute(
-        task_id=task_id,
-        worker_id=worker_id,
-        targets=targets,
+        verdict=verdict,
+        checkpoint=checkpoint,
+        changes=changes,
         commit_message=commit_message,
     )
