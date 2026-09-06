@@ -6,7 +6,7 @@
 
 Latest merged commit:
 
-`b44914f12802ff18f36da22a4f0c5b504a91151c`
+`9a4f08207dfce361c7ec27e6b8150f2638b24090`
 
 This baseline includes:
 
@@ -30,6 +30,10 @@ This baseline includes:
 - inspection-only Git terminal capability;
 - rejection of repository/history mutation and repository/configuration scope overrides;
 - Git path traversal protection within the active workspace;
+- centralized secret redaction for observable and persisted runtime output;
+- provider error redaction before health-state persistence;
+- secret-bearing ambient environment exclusion from sandboxed children;
+- explicit `AGENT_*` environment values registered for invocation-scoped redaction;
 - existing Execution Gate for checkpoint → apply → tests → verification → approve/rollback.
 
 ## Autonomous execution contract
@@ -58,6 +62,8 @@ TerminalExecutor → TerminalPolicy
              GitSafetyPolicy (Git)
                     ↓
               ProcessSandbox
+                    ↓
+             SecretRedactor
   ↓
 Execution Gate
       Checkpoint → Apply → Tests → Verification
@@ -93,7 +99,8 @@ An external design/assets directory on another path or drive requires an explici
 - bounded stdout/stderr;
 - minimized child environment with secret-bearing variables excluded by default;
 - explicit validation of command path arguments against workspace/external-resource authority;
-- descendant termination on timeout where the host platform supports the implemented process-tree mechanism.
+- descendant termination on timeout where the host platform supports the implemented process-tree mechanism;
+- secret-redaction of captured stdout/stderr before the result becomes observable or persistent.
 
 ## Terminal execution policy
 
@@ -139,23 +146,22 @@ Accepted Git path arguments must remain workspace-relative; absolute paths and t
 
 Repository mutation remains the responsibility of a separate future task-scoped control plane with explicit checkpoint and verification semantics. Terminal Git access must not silently become repository mutation authority.
 
-## Worker execution rule
+## Secret and log redaction boundary
 
-Normal worker execution must cross the following controlled path:
+Raw credentials must never become logs, diagnostics, process results, or persisted runtime state.
 
-```text
-WorkerExecutionBoundary
-        ↓
-TerminalExecutor
-        ↓
-TerminalPolicy
-        ↓
-GitSafetyPolicy (when command is Git)
-        ↓
-ProcessSandbox
-```
+`secret_redaction.py` provides the centralized sanitization layer. It combines:
 
-An explicitly injected executor adapter remains available only for tests or tightly controlled integration adapters. The production default must fail closed rather than silently falling back to raw `subprocess` execution.
+- exact-value replacement for explicitly supplied runtime secrets;
+- pattern detection for common bearer credentials and provider-shaped keys;
+- redaction of secret-like assignments and query parameters;
+- recursive redaction for mapping/list values used by structured diagnostics.
+
+`ProcessSandbox` sanitizes child stdout/stderr before creating `ProcessResult`. Approved `AGENT_*` values supplied for an invocation are registered as exact secrets for that redactor. Ambient variables whose names indicate keys, tokens, secrets, passwords, or authentication are excluded from the child environment by default.
+
+`ExecutionGate` sanitizes pytest stdout/stderr before storing test results in runtime state or returning them. Provider health-check error details are sanitized before being persisted to health JSON. Raw exception text used by the synthetic gate diagnostics crosses the redaction boundary before printing.
+
+Redaction is a backstop, not a replacement for authorization or environment hygiene. Secrets remain local-only and credentials should remain outside child environments and unmanaged resources whenever possible.
 
 ## OS isolation truthfulness
 
@@ -188,7 +194,7 @@ Never use destructive repository synchronization that can erase protected local 
 
 ## Validation record
 
-The worker terminal integration and Git safety changes were locally validated on Windows after the complete grouped implementation.
+The worker terminal integration, Git safety, and secret-redaction changes were locally validated on Windows after their complete grouped implementations.
 
 Worker terminal integration head before merge:
 
@@ -197,6 +203,10 @@ Worker terminal integration head before merge:
 Git safety head before merge:
 
 `ae60ed841c62299d87b3d46b0e48f6493721df3c`
+
+Log-redaction head before merge:
+
+`7a6ff2c81e28fda3e444c5e91ca0e4573092992a`
 
 Validated results for the Git safety milestone:
 
@@ -207,7 +217,18 @@ python -m compileall -q .                         PASS
 125 full-suite tests                              PASS
 ```
 
-Working tree was clean during the validation gate.
+Validated results for the log-redaction milestone:
+
+```text
+focused redaction tests                           8 passed
+python -m compileall -q .                         PASS
+full-suite tests                                  133 passed
+working tree                                      CLEAN
+```
+
+The final Windows validation occurred after the regex fix that preserves the `Bearer` prefix while redacting the credential value.
+
+No protected local secret files were modified by the promotion path.
 
 ## Promotion sequence
 
@@ -228,5 +249,7 @@ update CURRENT_CHECKPOINT.md
 The worker terminal integration branch was merged to `main` as commit `e60b6b70dd899d734f4a7afd1ab03bf45b9cc8df`.
 
 The Git safety boundary branch was merged to `main` as commit `b44914f12802ff18f36da22a4f0c5b504a91151c`.
+
+The log redaction branch was merged to `main` as commit `9a4f08207dfce361c7ec27e6b8150f2638b24090`.
 
 No local secret files are part of the GitHub promotion path.
