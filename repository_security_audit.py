@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Iterable
 
 
-PRODUCTION_SUBPROCESS_ALLOWLIST = {"process_sandbox.py"}
 FORBIDDEN_SUBPROCESS_APIS = {"run", "Popen", "call", "check_call", "check_output"}
 FORBIDDEN_OS_APIS = {"system", "popen"}
 SECRET_PATTERNS = (
@@ -22,6 +21,17 @@ PROTECTED_LOCAL_NAMES = {
     "openrouter_keys.txt",
     "groq_keys.backup.txt",
     "openrouter_keys.backup.txt",
+}
+
+# Narrow legacy exception: ProjectScanner uses fixed, read-only Git probes
+# with shell=False and bounded timeouts. It is intentionally command-specific;
+# the whole module is NOT exempt from subprocess auditing.
+LEGACY_READ_ONLY_GIT_PATH = "project_scanner.py"
+LEGACY_READ_ONLY_GIT_CALLS = {
+    ("git", "rev-parse", "--is-inside-work-tree"),
+    ("git", "branch", "--show-current"),
+    ("git", "rev-parse", "--show-toplevel"),
+    ("git", "status", "--porcelain", "--untracked-files=all"),
 }
 
 
@@ -54,6 +64,37 @@ def _literal_bool_keyword(node: ast.Call, name: str, expected: bool) -> bool:
         if keyword.arg == name and isinstance(keyword.value, ast.Constant):
             return keyword.value.value is expected
     return False
+
+
+def _constant_command(node: ast.Call) -> tuple[str, ...] | None:
+    if not node.args:
+        return None
+    value = node.args[0]
+    if not isinstance(value, (ast.List, ast.Tuple)):
+        return None
+    parts: list[str] = []
+    for item in value.elts:
+        if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+            return None
+        parts.append(item.value)
+    return tuple(parts)
+
+
+def _is_legacy_read_only_git_call(path: Path, node: ast.Call) -> bool:
+    if path.name != LEGACY_READ_ONLY_GIT_PATH:
+        return False
+    command = _constant_command(node)
+    if command not in LEGACY_READ_ONLY_GIT_CALLS:
+        return False
+    if not _literal_bool_keyword(node, "shell", False):
+        return False
+    if not _literal_bool_keyword(node, "check", False):
+        return False
+    timeout = next(
+        (keyword.value for keyword in node.keywords if keyword.arg == "timeout"),
+        None,
+    )
+    return isinstance(timeout, ast.Constant) and isinstance(timeout.value, (int, float)) and timeout.value > 0
 
 
 def _import_aliases(tree: ast.AST) -> tuple[set[str], set[str], set[str], set[str]]:
@@ -99,7 +140,7 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
                 owner = node.func.value.id
                 method = node.func.attr
                 if owner in subprocess_modules and method in FORBIDDEN_SUBPROCESS_APIS:
-                    if relative not in PRODUCTION_SUBPROCESS_ALLOWLIST:
+                    if not _is_legacy_read_only_git_call(path, node):
                         findings.append(
                             AuditFinding(
                                 "subprocess-boundary",
@@ -125,7 +166,7 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
                     )
 
             if isinstance(node.func, ast.Name):
-                if node.func.id in subprocess_functions and relative not in PRODUCTION_SUBPROCESS_ALLOWLIST:
+                if node.func.id in subprocess_functions:
                     findings.append(
                         AuditFinding(
                             "subprocess-boundary",
