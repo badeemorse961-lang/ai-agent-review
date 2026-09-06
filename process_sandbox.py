@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from sandbox_policy import SandboxPolicySafetyStop, WorkspaceResourcePolicy
+from secret_redaction import SecretRedactor
 
 
 SCHEMA_VERSION = 1
@@ -50,9 +51,10 @@ class ProcessSandbox:
     """Launch development tools with explicit process and resource policy.
 
     This layer provides process-group containment, bounded output, explicit cwd,
-    shell-free argument execution, and environment sanitization. It does not
-    claim OS-level filesystem isolation: a child process remains capable of
-    opening unmanaged paths unless the host supplies a stronger OS sandbox.
+    shell-free argument execution, environment sanitization, and secret-redacted
+    output. It does not claim OS-level filesystem isolation: a child process
+    remains capable of opening unmanaged paths unless the host supplies a
+    stronger OS sandbox.
     """
 
     _DEFAULT_ENV_ALLOWLIST = {
@@ -136,7 +138,7 @@ class ProcessSandbox:
             ) from exc
 
         normalized_command = (str(resolved_executable), *normalized_command[1:])
-        child_env = self._build_environment(env)
+        child_env, redactor = self._build_environment(env)
         creationflags = 0
         start_new_session = False
 
@@ -167,6 +169,7 @@ class ProcessSandbox:
                 stderr,
                 timed_out=False,
                 isolated_process_group=True,
+                redactor=redactor,
             )
         except subprocess.TimeoutExpired as exc:
             if process is not None:
@@ -180,6 +183,7 @@ class ProcessSandbox:
                 self._to_text(stderr) + "\nPROCESS TIMEOUT",
                 timed_out=True,
                 isolated_process_group=True,
+                redactor=redactor,
             )
         except OSError as exc:
             raise ProcessSandboxSafetyStop(
@@ -224,7 +228,10 @@ class ProcessSandbox:
             or path.suffix.lower() in cls._PATH_LIKE_SUFFIXES
         )
 
-    def _build_environment(self, requested: Mapping[str, str] | None) -> dict[str, str]:
+    def _build_environment(
+        self,
+        requested: Mapping[str, str] | None,
+    ) -> tuple[dict[str, str], SecretRedactor]:
         requested = requested or {}
         unknown = {
             str(key).upper()
@@ -247,11 +254,14 @@ class ProcessSandbox:
             and "PASSWORD" not in key.upper()
             and "AUTH" not in key.upper()
         }
+        accepted_values: list[str] = []
         for key, value in requested.items():
             upper = str(key).upper()
             if upper in self._REQUEST_ENV_ALLOWLIST or upper.startswith("AGENT_"):
-                base[str(key)] = str(value)
-        return base
+                text = str(value)
+                base[str(key)] = text
+                accepted_values.append(text)
+        return base, SecretRedactor.from_secrets(accepted_values)
 
     def _terminate_process_tree(self, process: subprocess.Popen[str]) -> None:
         if os.name == "nt":
@@ -287,9 +297,14 @@ class ProcessSandbox:
         *,
         timed_out: bool,
         isolated_process_group: bool,
+        redactor: SecretRedactor,
     ) -> ProcessResult:
-        stdout_text, stdout_truncated = self._bound(self._to_text(stdout))
-        stderr_text, stderr_truncated = self._bound(self._to_text(stderr))
+        stdout_text, stdout_truncated = self._bound(
+            redactor.redact_text(self._to_text(stdout))
+        )
+        stderr_text, stderr_truncated = self._bound(
+            redactor.redact_text(self._to_text(stderr))
+        )
         return ProcessResult(
             returncode=int(returncode),
             stdout=stdout_text,
