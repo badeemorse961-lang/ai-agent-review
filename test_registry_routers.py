@@ -187,7 +187,7 @@ class RegistryDrivenRouterTests(unittest.TestCase):
                     "task": {
                         "provider": leader["provider"],
                         "account_id": leader["primary_pool"][0],
-                        "model": leader["failover_model"],
+                        "model": leader["primary_model"],
                         "tier": "SUPER",
                         "task_id": "task",
                         "leased_at": 1.0,
