@@ -23,9 +23,7 @@ PROTECTED_LOCAL_NAMES = {
     "openrouter_keys.backup.txt",
 }
 
-# Narrow legacy exception: ProjectScanner uses fixed, read-only Git probes
-# with shell=False and bounded timeouts. It is intentionally command-specific;
-# the whole module is NOT exempt from subprocess auditing.
+PROCESS_SANDBOX_PATH = "process_sandbox.py"
 LEGACY_READ_ONLY_GIT_PATH = "project_scanner.py"
 LEGACY_READ_ONLY_GIT_CALLS = {
     ("git", "rev-parse", "--is-inside-work-tree"),
@@ -121,7 +119,11 @@ def _is_legacy_read_only_git_call(
         (keyword.value for keyword in node.keywords if keyword.arg == "timeout"),
         None,
     )
-    return isinstance(timeout, ast.Constant) and isinstance(timeout.value, (int, float)) and timeout.value > 0
+    return (
+        isinstance(timeout, ast.Constant)
+        and isinstance(timeout.value, (int, float))
+        and timeout.value > 0
+    )
 
 
 def _import_aliases(tree: ast.AST) -> tuple[set[str], set[str], set[str], set[str]]:
@@ -168,12 +170,14 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
                 owner = node.func.value.id
                 method = node.func.attr
                 if owner in subprocess_modules and method in FORBIDDEN_SUBPROCESS_APIS:
-                    if not _is_legacy_read_only_git_call(path, node, defined_commands):
+                    allowed_core = relative == PROCESS_SANDBOX_PATH
+                    allowed_legacy = _is_legacy_read_only_git_call(path, node, defined_commands)
+                    if not allowed_core and not allowed_legacy:
                         findings.append(
                             AuditFinding(
                                 "subprocess-boundary",
                                 relative,
-                                f"direct subprocess.{method} call is outside ProcessSandbox",
+                                f"direct subprocess.{method} call is outside approved execution boundary",
                             )
                         )
                 if owner in os_modules and method in FORBIDDEN_OS_APIS:
@@ -199,7 +203,7 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
                         AuditFinding(
                             "subprocess-boundary",
                             relative,
-                            f"imported subprocess.{node.func.id} call is outside ProcessSandbox",
+                            f"imported subprocess.{node.func.id} call is outside approved execution boundary",
                         )
                     )
                 if node.func.id in os_functions:
