@@ -158,9 +158,9 @@ class GitMutationExecutor:
     not available.
 
     The public transaction path requires independent-validation and internal
-    authorization evidence. File target/type/content validation runs while
-    holding the workspace mutation lock so the validation-to-staging boundary
-    cannot be invalidated by a cooperating task between checks.
+    authorization evidence. Final target/content validation runs while the
+    workspace mutation lock is held, and the staged index is checked against
+    the validated content before commit.
     """
 
     def __init__(
@@ -235,6 +235,7 @@ class GitMutationExecutor:
             self._run_policy_command(stage_request)
             staged = self.snapshot()
             self._verify_staged_targets(staged, stage_request.targets)
+            self._verify_staged_contents(changes, stage_request.targets)
 
             try:
                 commit_process = self._run_policy_command(commit_request)
@@ -373,6 +374,50 @@ class GitMutationExecutor:
             if current != change.new_text:
                 raise GitMutationSafetyStop(
                     f"Validated mutation content no longer matches target: {change.path!r}"
+                )
+
+    def _verify_staged_contents(
+        self,
+        changes: Sequence[FileChange],
+        targets: Sequence[str],
+    ) -> None:
+        format_result = self._run_internal(
+            [self.git_executable, "rev-parse", "--show-object-format"]
+        )
+        self._require_success(format_result, "Git object-format resolution")
+        object_format = format_result.stdout.strip().lower()
+        if object_format not in {"sha1", "sha256"}:
+            raise GitMutationVerificationError(
+                "Unsupported Git object format; staged-content verification cannot be proven"
+            )
+
+        expected_by_path = {
+            self.policy._normalize_targets([change.path], self.workspace_root)[0]: change.new_text
+            for change in changes
+        }
+        for target in targets:
+            if target not in expected_by_path:
+                raise GitMutationVerificationError(
+                    f"Validated content missing for staged target: {target!r}"
+                )
+            content = expected_by_path[target].encode("utf-8")
+            header = f"blob {len(content)}\0".encode("ascii")
+            digest = hashlib.sha1 if object_format == "sha1" else hashlib.sha256
+            expected_oid = digest(header + content).hexdigest()
+            result = self._run_internal(
+                [self.git_executable, "ls-files", "--stage", "--", target]
+            )
+            self._require_success(result, "Git staged-index inspection")
+            entries = [line for line in result.stdout.splitlines() if line.strip()]
+            if len(entries) != 1:
+                raise GitMutationVerificationError(
+                    f"Staged index evidence is ambiguous for target: {target!r}"
+                )
+            fields = entries[0].split()
+            if len(fields) < 3 or fields[1] != expected_oid:
+                actual = fields[1] if len(fields) > 1 else ""
+                raise GitMutationVerificationError(
+                    f"Staged content differs from validated FileChange.new_text for {target!r}: expected={expected_oid!r} actual={actual!r}"
                 )
 
     def policy_path(self, target: str) -> Path:
