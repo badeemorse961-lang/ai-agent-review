@@ -6,15 +6,17 @@
 
 Latest merged implementation baseline:
 
-`efe47c8e5a58bbb0c17d21b9474662f1bfa72654`
+`a5a61d7fcb36efe177c4f779204e4b87b8281c22`
 
-This squash merge promotes pull request `#17`, the task-scoped Git mutation control plane.
+This squash merge promotes pull request `#18`, which hardens the task-scoped Git mutation transaction without expanding mutation authority.
 
-The current engineering milestone is the transaction-hardening branch `agent/git-mutation-transaction-hardening`, based directly on this main baseline.
+Previous promoted mutation baseline:
+
+`efe47c8e5a58bbb0c17d21b9474662f1bfa72654` — PR #17.
 
 ## Verified architecture
 
-The repository now includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, and a separate task-scoped Git mutation control plane.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, and a separate task-scoped Git mutation control plane.
 
 The normal worker process path is:
 
@@ -68,45 +70,33 @@ Only local `stage` and `commit` operations are exposed. Remote mutation, history
 
 Every mutation consumes prior independent-validation and internal authorization evidence. It cannot self-authorize.
 
-Target paths must be workspace-relative, non-duplicate, existing regular UTF-8 files with no symlink/junction escape. Current contents must equal the validated `FileChange.new_text` before staging.
+## Transaction hardening
 
-The control plane refuses unrelated working-tree or pre-staged index state, serializes same-workspace mutation through a fail-closed lock, verifies the staged target set before commit, verifies the staged blob identity against the validated content, and verifies post-commit HEAD/index/worktree/target-set evidence.
+The mutation lock is acquired before final mutable target validation. While the lock is held, target type, symlink/junction containment, UTF-8 decoding, and exact current-content equality with validated `FileChange.new_text` are revalidated immediately before staging.
 
-Commit messages are bounded single-line values and are rejected when `SecretRedactor` identifies credential-like material, preventing recognizable credentials from entering Git history.
+After staging, the executor resolves the Git object format and verifies the exact staged blob object ID for every authorized target against the validated file content. An ambiguous index entry, unsupported object format, or staged-content mismatch stops before commit.
 
-Mutation failure preserves staged evidence and never runs blind `reset`, `restore`, or `clean` recovery.
+The transaction captures pre-mutation `HEAD`, proves it remains stable through final preflight, and after commit requires a distinct post-commit `HEAD` that matches the independently resolved commit identity used for exact target-set inspection.
 
-## Transaction-hardening milestone
+Only structurally valid 40-character SHA-1 and 64-character SHA-256 Git object IDs are accepted.
 
-This milestone does not add repository mutation authority. It closes validation/index race windows and strengthens repository identity evidence inside the already promoted boundary.
-
-The workspace-specific mutation lock is now entered before final mutable target validation. While the lock is held, the executor revalidates target type, symlink/junction containment, UTF-8 decoding, and exact current-content equality with the validated `FileChange.new_text` immediately before staging.
-
-After staging, the executor resolves the repository object format, computes the expected Git blob object ID for each validated `FileChange.new_text`, and compares it with the exact staged index entry reported by Git. An ambiguous index entry, unsupported object format, or content mismatch is a fail-closed verification stop before commit.
-
-The transaction captures the pre-mutation `HEAD`, verifies it remains stable through final preflight, and after commit requires a distinct post-commit `HEAD` that matches the independently resolved commit identity used for exact target-set inspection.
-
-Only structurally valid 40-character SHA-1 and 64-character SHA-256 Git object IDs are accepted as repository identities.
-
-Regression coverage was added for lock ordering, staged-index content integrity, HEAD advancement, and resolved-HEAD consistency.
+Mutation failure preserves evidence and never performs blind reset/restore/clean recovery.
 
 ## Validation status
 
-The promoted PR #17 was already validated on a real Windows working tree before merge:
+PR #18 was validated on the real Windows working tree at the tested branch head before merge:
 
 ```text
-focused mutation/security suite → 37 passed, 1 skipped
-full regression suite             → 153 passed, 1 skipped
-compileall                         → PASS
-git diff --check                   → PASS
-config registry                    → VALID
-leader router synthetic            → PASS
-worker router synthetic            → PASS
-orchestration smoke                → PASS
-working tree                       → CLEAN
+python -m compileall -q .                         PASS
+focused mutation/security suite                  42 passed, 1 skipped
+full regression suite                             158 passed, 1 skipped
+git diff --check                                  PASS
+python config_registry.py                         VALID
+python leader_router.py                           REGISTRY TEST PASSED
+python worker_router.py                           REGISTRY TEST PASSED
+python orchestration_smoke_test.py                PASSED
+git status --short --branch                      CLEAN
 ```
-
-The transaction-hardening branch requires a fresh Windows validation gate before promotion of this new code.
 
 ## Protected local state
 
@@ -123,18 +113,14 @@ Other local `.env`, runtime state, machine credentials, caches, and preserved pr
 
 Never use destructive synchronization such as blind `git clean -fd` or `git reset --hard`.
 
-## Promotion rule
+## Promotion record
 
 ```text
-complete grouped implementation
-    ↓
-Windows compile + focused tests + full suite
-    ↓
-diff review
-    ↓
-security / architecture review
-    ↓
-merge
-    ↓
-update CURRENT_CHECKPOINT.md with actual merge commit
+PR #18
+Title: Harden task-scoped Git mutation transaction evidence
+Merge method: squash
+Merge commit: a5a61d7fcb36efe177c4f779204e4b87b8281c22
+Status: MERGED
 ```
+
+The next engineering milestone should build on this hardened mutation boundary rather than widening generic terminal Git authority.
