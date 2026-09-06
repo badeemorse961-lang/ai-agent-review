@@ -45,8 +45,9 @@ def make_repo(tmp_path: Path) -> Path:
     run_git(workspace, "switch", "-c", "main")
     run_git(workspace, "config", "user.name", "Agent Test")
     run_git(workspace, "config", "user.email", "agent-test@example.invalid")
+    (workspace / ".gitignore").write_text(".agent_runtime/\n", encoding="utf-8")
     (workspace / "calculator.py").write_text("VALUE = 1\n", encoding="utf-8")
-    run_git(workspace, "add", "--", "calculator.py")
+    run_git(workspace, "add", "--", ".gitignore", "calculator.py")
     run_git(workspace, "commit", "-m", "baseline")
     return workspace
 
@@ -122,7 +123,7 @@ def test_live_rebind_rejects_branch_drift(tmp_path: Path) -> None:
 def test_live_rebind_rejects_head_drift(tmp_path: Path) -> None:
     workspace = make_repo(tmp_path)
     executor, result = execute_attested(workspace)
-    run_git(workspace, "commit", "--allow-empty", "unrelated live drift")
+    run_git(workspace, "commit", "--allow-empty", "-m", "unrelated live drift")
 
     with pytest.raises(GitMutationLiveRebindError, match="HEAD"):
         rebind_live_git_mutation_result(
@@ -141,7 +142,7 @@ def test_live_rebind_rejects_attested_digest_drift(tmp_path: Path) -> None:
         attestation=replace(result.attestation, commit_evidence_sha256="f" * 64),
     )
 
-    with pytest.raises(GitMutationLiveRebindError, match="not bound"):
+    with pytest.raises(GitMutationLiveRebindError, match="digest"):
         rebind_live_git_mutation_result(
             altered,
             workspace_root=workspace,
