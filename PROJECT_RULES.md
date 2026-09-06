@@ -17,3 +17,7 @@
 15. Terminal Git access is inspection-only; repository/history mutations require a separate explicit control plane.
 16. Git repository/configuration scope overrides must be rejected at the terminal boundary.
 17. Git path arguments must remain within the active workspace when path arguments are accepted by the Git safety policy.
+18. Process stdout/stderr must be secret-redacted before it is returned, logged, or persisted.
+19. Provider error details must be treated as untrusted output and redacted before persistence.
+20. Secret-pattern redaction is a backstop; credentials must still be excluded from child environments whenever possible.
+21. Redaction coverage must be regression-tested for explicit secrets, common credential forms, failing test output, and ambient secret-bearing environment variables.
