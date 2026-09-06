@@ -14,6 +14,7 @@ from git_mutation_executor import (
     GitMutationExecutorError,
     GitMutationVerificationError,
     GitRepositorySnapshot,
+    _WorkspaceMutationLock,
 )
 from git_mutation_policy import GitMutationSafetyStop
 from independent_validation import ValidationVerdict
@@ -87,13 +88,12 @@ def execute_authorized(
     worker_id: str = "worker-1",
     commit_message: str = "agent: update calculator value",
 ):
-    verdict = authorized_evidence(
-        change.path,
-        task_id=task_id,
-        worker_id=worker_id,
-    )
     return executor.execute(
-        verdict=verdict,
+        verdict=authorized_evidence(
+            change.path,
+            task_id=task_id,
+            worker_id=worker_id,
+        ),
         checkpoint={"isolated": True, "transaction_id": task_id},
         changes=[change],
         commit_message=commit_message,
@@ -184,6 +184,50 @@ def test_mutation_requires_isolated_checkpoint(
     assert (workspace / "calculator.py").read_text(encoding="utf-8") == change.new_text
 
 
+def test_missing_or_non_file_targets_are_rejected(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    workspace, executor = repo
+    missing = FileChange(path="missing.py", old_text="old\n", new_text="new\n")
+    with pytest.raises(GitMutationSafetyStop):
+        executor.execute(
+            verdict=authorized_evidence("missing.py"),
+            checkpoint={"isolated": True},
+            changes=[missing],
+            commit_message="agent: missing target",
+        )
+
+    directory = FileChange(path="nested", old_text="old\n", new_text="new\n")
+    (workspace / "nested").mkdir()
+    with pytest.raises(GitMutationSafetyStop):
+        executor.execute(
+            verdict=authorized_evidence("nested"),
+            checkpoint={"isolated": True},
+            changes=[directory],
+            commit_message="agent: directory target",
+        )
+
+
+def test_symlink_target_is_rejected(repo: tuple[Path, GitMutationExecutor]) -> None:
+    workspace, executor = repo
+    outside = workspace.parent / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    link = workspace / "linked.txt"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable on this host")
+
+    change = FileChange(path="linked.txt", old_text="outside\n", new_text="changed\n")
+    with pytest.raises(GitMutationSafetyStop):
+        executor.execute(
+            verdict=authorized_evidence("linked.txt"),
+            checkpoint={"isolated": True},
+            changes=[change],
+            commit_message="agent: symlink target",
+        )
+
+
 def test_preflight_rejects_unrelated_worktree_changes(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
@@ -231,7 +275,11 @@ def test_target_escape_is_rejected_before_git_invocation(
 
     with pytest.raises((GitMutationSafetyStop, ExecutionAuthorizationSafetyStop)):
         executor.execute(
-            verdict=authorized_evidence("../outside.py", task_id="task-4", worker_id="worker-4"),
+            verdict=authorized_evidence(
+                "../outside.py",
+                task_id="task-4",
+                worker_id="worker-4",
+            ),
             checkpoint={"isolated": True},
             changes=[change],
             commit_message="agent: blocked",
@@ -292,7 +340,9 @@ def test_executor_requires_allowlisted_git_tool(tmp_path: Path) -> None:
         GitMutationExecutor(workspace, process_sandbox=sandbox)
 
 
-def test_snapshot_parses_branch_and_scoped_status(repo: tuple[Path, GitMutationExecutor]) -> None:
+def test_snapshot_parses_branch_and_scoped_status(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
     workspace, executor = repo
     (workspace / "calculator.py").write_text("VALUE = 9\n", encoding="utf-8")
     snapshot = executor.snapshot()
@@ -301,8 +351,10 @@ def test_snapshot_parses_branch_and_scoped_status(repo: tuple[Path, GitMutationE
     assert snapshot.worktree_paths == ("calculator.py",)
 
 
-def test_verification_failure_is_fail_closed(repo: tuple[Path, GitMutationExecutor]) -> None:
-    workspace, executor = repo
+def test_verification_failure_is_fail_closed(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    _, executor = repo
     fake_before = GitRepositorySnapshot("main", (), (), ())
     fake_after = GitRepositorySnapshot("main", (), (), ("unexpected.py",))
     with pytest.raises(GitMutationVerificationError):
@@ -312,3 +364,16 @@ def test_verification_failure_is_fail_closed(repo: tuple[Path, GitMutationExecut
             ("calculator.py",),
             fake_before,
         )
+
+
+def test_workspace_mutation_lock_is_exclusive(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    workspace, _ = repo
+    first = _WorkspaceMutationLock(workspace)
+    second = _WorkspaceMutationLock(workspace)
+    with first:
+        with pytest.raises(GitMutationSafetyStop):
+            with second:
+                pass
+    assert not first.path.exists()
