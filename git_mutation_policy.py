@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from process_sandbox import ProcessSandboxSafetyStop
+from secret_redaction import redact_text
 
 
 SCHEMA_VERSION = 1
@@ -232,6 +232,10 @@ class GitMutationPolicy:
             raise GitMutationSafetyStop("Commit message must be single-line")
         if any(ord(char) < 32 and char not in "\t" for char in message):
             raise GitMutationSafetyStop("Commit message contains control characters")
+        if redact_text(cleaned) != cleaned:
+            raise GitMutationSafetyStop(
+                "Commit message contains credential-like material and cannot enter Git history"
+            )
 
     @staticmethod
     def _non_empty_identity(value: str, field: str) -> str:
