@@ -47,11 +47,7 @@ def _snapshot_from_dict(value: object, field: str) -> GitRepositorySnapshot:
     status_lines = _require_string_list(payload.get("status_lines"), f"{field}.status_lines")
     staged_paths = _require_string_list(payload.get("staged_paths"), f"{field}.staged_paths")
     worktree_paths = _require_string_list(payload.get("worktree_paths"), f"{field}.worktree_paths")
-    head_sha = _require_string(
-        payload.get("head_sha"),
-        f"{field}.head_sha",
-        allow_empty=True,
-    )
+    head_sha = _require_string(payload.get("head_sha"), f"{field}.head_sha", allow_empty=True)
     return GitRepositorySnapshot(
         branch=branch,
         status_lines=status_lines,
