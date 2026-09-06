@@ -55,9 +55,9 @@ def test_staged_content_verification_uses_one_nul_delimited_index_query(
 
     def fake_run_internal(command: Sequence[str]) -> ProcessResult:
         calls.append(tuple(command))
-        if command[1:] == ("rev-parse", "--show-object-format"):
+        if tuple(command[1:]) == ("rev-parse", "--show-object-format"):
             return _result("sha1\n")
-        if command[1:] == ("ls-files", "--stage", "-z", "--", "calculator.py"):
+        if tuple(command[1:]) == ("ls-files", "--stage", "-z", "--", "calculator.py"):
             return _result(f"100644 {object_id} 0\tcalculator.py\0")
         raise AssertionError(f"unexpected command: {command!r}")
 
@@ -83,7 +83,7 @@ def test_staged_content_verification_rejects_line_oriented_index_evidence(
     ).hexdigest()
 
     def fake_run_internal(command: Sequence[str]) -> ProcessResult:
-        if command[1:] == ("rev-parse", "--show-object-format"):
+        if tuple(command[1:]) == ("rev-parse", "--show-object-format"):
             return _result("sha1\n")
         return _result(f"100644 {object_id} 0\tcalculator.py\n")
 
