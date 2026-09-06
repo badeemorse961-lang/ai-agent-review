@@ -30,7 +30,8 @@ def test_parse_rejects_line_oriented_output() -> None:
 def test_parse_rejects_unterminated_output() -> None:
     with pytest.raises(GitStagedEvidenceError, match="not terminated"):
         parse_nul_index_records(
-            "100644 abcdef0123456789abcdef0123456789abcdef01 0\tfile.py\0",
+            "100644 abcdef0123456789abcdef0123456789abcdef01 0\tfile.py\0"
+            "100644 0123456789abcdef0123456789abcdef01234567 0\tother.py",
             object_format="sha1",
         )
 
