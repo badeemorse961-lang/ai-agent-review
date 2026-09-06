@@ -137,6 +137,20 @@ def test_control_plane_stages_and_commits_exact_authorized_targets(
     assert "calculator.py" in shown
 
 
+def test_mutation_rejects_content_drift_after_validation(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    workspace, executor = repo
+    change = change_for(workspace, new_value="VALUE = 2\n")
+    (workspace / "calculator.py").write_text("VALUE = attacker\n", encoding="utf-8")
+
+    with pytest.raises(GitMutationSafetyStop):
+        execute_authorized(executor, change)
+
+    assert not run_git(workspace, "diff", "--cached", "--name-only").stdout.strip()
+    assert "VALUE = attacker" in (workspace / "calculator.py").read_text(encoding="utf-8")
+
+
 def test_mutation_requires_passed_independent_validation(
     repo: tuple[Path, GitMutationExecutor],
 ) -> None:
