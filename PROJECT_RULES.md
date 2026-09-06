@@ -21,3 +21,8 @@
 19. Provider error details must be treated as untrusted output and redacted before persistence.
 20. Secret-pattern redaction is a backstop; credentials must still be excluded from child environments whenever possible.
 21. Redaction coverage must be regression-tested for explicit secrets, common credential forms, failing test output, and ambient secret-bearing environment variables.
+22. The task-scoped Git mutation control plane must consume passed independent-validation evidence and isolated checkpoint authorization; it cannot self-authorize.
+23. Git mutation targets must be an exact normalized subset proven by the validated task; unrelated working-tree or staged changes must cause SAFE_STOP.
+24. The Git mutation control plane may stage and commit only its exact validated target set; it must not expose remote mutation or history-rewriting authority.
+25. Post-commit verification must prove a clean index/worktree and exact committed target set before reporting success.
+26. Mutation failure must preserve evidence rather than performing blind cleanup, reset, or destructive synchronization.
