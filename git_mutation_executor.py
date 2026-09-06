@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
@@ -149,19 +150,7 @@ class _WorkspaceMutationLock:
 
 
 class GitMutationExecutor:
-    """Perform only local Git mutations bound to one validated task.
-
-    This is intentionally separate from TerminalExecutor/GitSafetyPolicy.
-    Ordinary terminal Git access remains inspection-only. This control plane
-    adds exactly two mutation capabilities: stage validated targets and commit
-    the exact staged target set. Remote operations and history rewriting are
-    not available.
-
-    The public transaction path requires independent-validation and internal
-    authorization evidence. Final target/content validation runs while the
-    workspace mutation lock is held, and the staged index is checked against
-    the validated content before commit.
-    """
+    """Perform only local Git mutations bound to one validated task."""
 
     def __init__(
         self,
@@ -277,44 +266,98 @@ class GitMutationExecutor:
 
     def snapshot(self) -> GitRepositorySnapshot:
         status_result = self._run_internal(
-            [self.git_executable, "status", "--porcelain=v1", "--branch"]
+            [self.git_executable, "status", "--porcelain=v1", "-z"]
         )
         self._require_success(status_result, "Git status")
-        branch = self._parse_branch(status_result.stdout)
-        lines = tuple(
-            line
-            for line in status_result.stdout.splitlines()
-            if line and not line.startswith("##")
+
+        branch_result = self._run_internal(
+            [self.git_executable, "branch", "--show-current"]
         )
+        self._require_success(branch_result, "Git active-branch resolution")
+        branch = branch_result.stdout.strip()
+        if not branch:
+            raise GitMutationVerificationError(
+                "Git active branch could not be proven"
+            )
+
+        records = self._parse_status_records(status_result.stdout)
         staged_paths: list[str] = []
         worktree_paths: list[str] = []
-        for line in lines:
-            if len(line) < 3:
+        status_lines: list[str] = []
+        for index_code, worktree_code, paths in records:
+            if index_code not in " MADRCU?!" or worktree_code not in " MADC?U!":
                 raise GitMutationVerificationError(
-                    f"Unparseable Git status evidence: {line!r}"
+                    f"Unsupported Git status code: {index_code!r}{worktree_code!r}"
                 )
-            index_code = line[0]
-            worktree_code = line[1]
-            path_text = line[3:]
-            if " -> " in path_text:
-                old_path, new_path = path_text.split(" -> ", 1)
-                paths = (
-                    self._normalize_status_path(old_path),
-                    self._normalize_status_path(new_path),
-                )
-            else:
-                paths = (self._normalize_status_path(path_text),)
             if index_code != " ":
                 staged_paths.extend(paths)
             if worktree_code != " ":
                 worktree_paths.extend(paths)
+            display_paths = " -> ".join(paths) if len(paths) > 1 else paths[0]
+            status_lines.append(f"{index_code}{worktree_code} {display_paths}")
+
         return GitRepositorySnapshot(
             branch=branch,
-            status_lines=lines,
+            status_lines=tuple(status_lines),
             staged_paths=tuple(sorted(set(staged_paths))),
             worktree_paths=tuple(sorted(set(worktree_paths))),
             head_sha=self._resolve_head_sha(),
         )
+
+    @classmethod
+    def _parse_status_records(
+        cls,
+        status_output: str,
+    ) -> list[tuple[str, str, tuple[str, ...]]]:
+        records: list[tuple[str, str, tuple[str, ...]]] = []
+        payload = status_output.encode("utf-8", errors="surrogatepass")
+        raw_records = payload.split(b"\0")
+        index = 0
+
+        while index < len(raw_records) - 1:
+            raw = raw_records[index]
+            index += 1
+            if not raw:
+                continue
+            if len(raw) < 3 or raw[2:3] != b" ":
+                raise GitMutationVerificationError(
+                    "Unparseable NUL-separated Git status record"
+                )
+            try:
+                header = raw[:2].decode("ascii")
+                path = raw[3:].decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise GitMutationVerificationError(
+                    "Git status contained a non-UTF-8 pathname"
+                ) from exc
+
+            index_code, worktree_code = header
+            paths = [path]
+            if index_code in {"R", "C"} or worktree_code in {"R", "C"}:
+                if index >= len(raw_records) - 1:
+                    raise GitMutationVerificationError(
+                        "Rename/copy status record is missing its source pathname"
+                    )
+                try:
+                    source = raw_records[index].decode("utf-8", errors="strict")
+                except UnicodeDecodeError as exc:
+                    raise GitMutationVerificationError(
+                        "Git rename/copy source pathname is not valid UTF-8"
+                    ) from exc
+                index += 1
+                paths.append(source)
+
+            normalized = tuple(
+                cls._normalize_status_path(value)
+                for value in paths
+            )
+            if any(not value for value in normalized):
+                raise GitMutationVerificationError(
+                    "Git status contained an empty pathname"
+                )
+            records.append((index_code, worktree_code, normalized))
+
+        return records
 
     def _preflight(self, before: GitRepositorySnapshot, targets: Sequence[str]) -> None:
         expected = set(targets)
@@ -392,7 +435,7 @@ class GitMutationExecutor:
             )
 
         expected_by_path = {
-            Path(change.path).as_posix().replace("\\", "/"): change.new_text
+            self._normalize_status_path(change.path): change.new_text
             for change in changes
         }
         for target in targets:
@@ -543,19 +586,7 @@ class GitMutationExecutor:
 
     @staticmethod
     def _normalize_status_path(value: str) -> str:
-        return value.strip().replace("\\", "/")
-
-    @staticmethod
-    def _parse_branch(status_output: str) -> str:
-        for line in status_output.splitlines():
-            if line.startswith("##"):
-                value = line[2:].strip()
-                if "..." in value:
-                    value = value.split("...", 1)[0]
-                return value
-        raise GitMutationVerificationError(
-            "Git status did not report the active branch"
-        )
+        return value.replace("\\", "/")
 
     @staticmethod
     def _require_success(result: ProcessResult, operation: str) -> None:

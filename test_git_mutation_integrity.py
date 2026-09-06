@@ -93,3 +93,38 @@ def test_staged_index_content_matches_validated_filechange(
     run_git(workspace, "add", "--", "calculator.py")
 
     executor._verify_staged_contents([validated], ["calculator.py"])
+
+
+def test_parse_status_preserves_literal_arrow_and_space_in_filename() -> None:
+    raw = " M file -> draft.py\0"
+    records = GitMutationExecutor._parse_status_records(raw)
+
+    assert records == [(" ", "M", ("file -> draft.py",))]
+
+
+def test_parse_status_decodes_unusual_utf8_filename_without_git_quoting() -> None:
+    raw = "?? café notes.txt\0"
+    records = GitMutationExecutor._parse_status_records(raw)
+
+    assert records == [("?", "?", ("café notes.txt",))]
+
+
+def test_parse_status_rename_uses_destination_then_source() -> None:
+    raw = "R  renamed file.txt\0original file.txt\0"
+    records = GitMutationExecutor._parse_status_records(raw)
+
+    assert records == [("R", " ", ("renamed file.txt", "original file.txt"))]
+
+
+def test_snapshot_uses_nul_separated_status_and_separate_branch_resolution(
+    repo: tuple[Path, GitMutationExecutor],
+) -> None:
+    workspace, executor = repo
+    path = workspace / "file → with spaces.txt"
+    path.write_text("content\n", encoding="utf-8")
+
+    snapshot = executor.snapshot()
+
+    assert snapshot.branch
+    assert snapshot.worktree_paths == ("file → with spaces.txt",)
+    assert snapshot.status_lines == ("?? file → with spaces.txt",)

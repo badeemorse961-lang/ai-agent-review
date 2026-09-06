@@ -58,7 +58,9 @@ Before invoking Git, each target is required to resolve to an existing regular U
 
 A workspace-specific cross-process mutation lock is acquired before mutable target validation or staging. This closes the validation-to-staging race window for cooperating mutation transactions. A live or ambiguous lock fails closed. Only a lock whose recorded process ID is proven to have exited may be reclaimed automatically.
 
-After the lock is acquired, the executor captures porcelain status and validates that the Git index has no staged changes and that every working-tree change belongs to the exact authorized target set. It then re-checks target type, symlink/junction containment, UTF-8 decoding, and exact equality with the validated `FileChange.new_text` while the lock remains held.
+After the lock is acquired, the executor captures machine-readable NUL-delimited porcelain status and independently resolves the active branch. The status parser does not depend on Git path quoting or textual separators, so filenames containing spaces, arrows, quotes, or other unusual UTF-8 characters remain exact. Every working-tree change must belong to the exact authorized target set.
+
+It then re-checks target type, symlink/junction containment, UTF-8 decoding, and exact equality with the validated `FileChange.new_text` while the lock remains held.
 
 The executor also confirms that `HEAD` is unchanged across this final preflight sequence. A concurrent repository mutation therefore becomes `SAFE_STOP` instead of being silently combined with the authorized transaction.
 
@@ -75,6 +77,14 @@ A commit is not considered successful merely because `git commit` returned zero.
 The recorded pre-mutation and post-mutation `HEAD` values are compared, and the post-commit `HEAD` must advance and match the independently resolved value used for commit inspection. The implementation accepts the two currently supported Git object-id widths: 40-character SHA-1 and 64-character SHA-256.
 
 A commit hook can still perform repository-local side effects. The control plane therefore treats any post-commit target-set mismatch as a verification failure rather than automatically rewriting history or cleaning the repository.
+
+## Git evidence parsing contract
+
+For repository-state evidence, `GitMutationExecutor` uses `git status --porcelain=v1 -z`. The NUL-delimited form is the machine-parsing contract: each status field still begins with the two-character `XY` state, while pathname records are NUL-terminated and are not subject to Git's human-readable quoting rules. Rename/copy records carry the destination pathname first and the source pathname second.
+
+The executor keeps both rename/copy pathnames in the conservative evidence set. A rename/copy or any other unexpected working-tree state cannot silently disappear through a fragile textual parser; preflight must prove that every reported path is part of the authorized task scope.
+
+Branch identity is resolved separately with `git branch --show-current`. Detached HEAD therefore fails closed rather than being represented as an ambiguous branch string.
 
 ## Commit-message security
 
@@ -100,4 +110,4 @@ This control plane does not provide remote push authority, permission to rewrite
 
 ## SAFE_STOP conditions
 
-Stop without attempting cleanup when validation/authorization evidence is missing or fails, the workspace/sandbox boundary does not match, Git is not explicitly allowlisted, a target is missing/non-regular/not valid UTF-8 or traverses a symlink/junction, validated file content has drifted, `HEAD` changes during final preflight, preflight discovers unrelated or staged work, another live/ambiguous lock is present, staged targets differ from the approved set, staged index content differs from the validated `FileChange.new_text`, the commit message contains credential-like material, commit evidence is incomplete, post-commit `HEAD` does not advance consistently, post-commit target verification differs, or repository evidence is truncated/untrustworthy.
+Stop without attempting cleanup when validation/authorization evidence is missing or fails, the workspace/sandbox boundary does not match, Git is not explicitly allowlisted, a target is missing/non-regular/not valid UTF-8 or traverses a symlink/junction, validated file content has drifted, `HEAD` changes during final preflight, preflight discovers unrelated or staged work, repository status evidence cannot be parsed exactly, detached HEAD cannot establish a branch identity, another live/ambiguous lock is present, staged targets differ from the approved set, staged index content differs from the validated `FileChange.new_text`, the commit message contains credential-like material, commit evidence is incomplete, post-commit `HEAD` does not advance consistently, post-commit target verification differs, or repository evidence is truncated/untrustworthy.
