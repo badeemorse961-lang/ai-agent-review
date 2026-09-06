@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Sequence
 
 import pytest
 
@@ -31,9 +32,9 @@ def _snapshot(*, worktree_paths: tuple[str, ...] = ()) -> GitRepositorySnapshot:
 
 def test_post_commit_verification_uses_nul_delimited_git_show(monkeypatch: pytest.MonkeyPatch) -> None:
     executor = _executor_without_runtime()
-    calls: list[tuple[str, ...]] = []
+    calls: list[Sequence[str]] = []
 
-    def fake_run_internal(command: tuple[str, ...]) -> ProcessResult:
+    def fake_run_internal(command: Sequence[str]) -> ProcessResult:
         calls.append(command)
         return ProcessResult(
             returncode=0,
@@ -64,13 +65,15 @@ def test_post_commit_verification_uses_nul_delimited_git_show(monkeypatch: pytes
         before,
     )
 
-    assert calls == [("git", "show", "--format=", "--name-only", "-z", "2" * 40)]
+    assert [tuple(command) for command in calls] == [
+        ("git", "show", "--format=", "--name-only", "-z", "2" * 40)
+    ]
 
 
 def test_post_commit_verification_rejects_line_oriented_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     executor = _executor_without_runtime()
 
-    def fake_run_internal(_: tuple[str, ...]) -> ProcessResult:
+    def fake_run_internal(_: Sequence[str]) -> ProcessResult:
         return ProcessResult(
             returncode=0,
             stdout="calculator.py\nREADME.md\n",
@@ -95,7 +98,7 @@ def test_post_commit_verification_rejects_line_oriented_evidence(monkeypatch: py
 def test_post_commit_verification_rejects_ambiguous_duplicate_path_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     executor = _executor_without_runtime()
 
-    def fake_run_internal(_: tuple[str, ...]) -> ProcessResult:
+    def fake_run_internal(_: Sequence[str]) -> ProcessResult:
         return ProcessResult(
             returncode=0,
             stdout="calculator.py\x00calculator.py\x00",
@@ -120,7 +123,7 @@ def test_post_commit_verification_rejects_ambiguous_duplicate_path_evidence(monk
 def test_post_commit_verification_rejects_unexpected_exact_target_set(monkeypatch: pytest.MonkeyPatch) -> None:
     executor = _executor_without_runtime()
 
-    def fake_run_internal(_: tuple[str, ...]) -> ProcessResult:
+    def fake_run_internal(_: Sequence[str]) -> ProcessResult:
         return ProcessResult(
             returncode=0,
             stdout="calculator.py\x00other.py\x00",
