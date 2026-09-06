@@ -6,15 +6,13 @@
 
 Latest merged implementation baseline:
 
-`f95e47eb3aec39fc68b9e19c79072714d2c504cf`
+`f323c26934d8e719d2b721b215486ec6ce42d047`
 
-This squash merge promotes PR #33, adding an inspection-only live Git evidence rebinding boundary for restored `GitMutationResult` records.
-
-The live rebind contract proves the same canonical workspace, process-sandbox binding, active branch, attested `HEAD`, clean index/worktree, exact committed target set, and matching committed-evidence SHA-256 digest. It performs no mutation, recovery, branch switching, or authorization.
+This squash merge promotes PR #34, making the static configuration registry authority machine-checkable and separating connection metadata from routing authority.
 
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, and live evidence rebinding.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, and machine-validated configuration authority.
 
 ## Git mutation trust chain
 
@@ -60,19 +58,42 @@ The mutation control plane exposes only local `stage` and `commit`. Remote mutat
 
 `config/registry.json` is the authoritative source for leader pools, worker roles, and connection assignment.
 
-`connections.json` is connection metadata only. Its `role_source` marker must be `config/registry.json` and must not reference a legacy role file.
+`connections.json` is connection metadata only. Its role-source marker is aligned to `config/registry.json` and is not used as routing authority.
 
-The current engineering milestone hardens `config_registry.py` so the declared invariants are machine-checked:
+`config_registry.py` now fails closed when:
 
-- every leader/worker assignment is unique;
-- leader and worker pools are disjoint;
-- every registry connection has corresponding metadata;
-- no metadata connection exists without an authoritative assignment;
-- metadata keys match their embedded connection IDs;
-- provider, status, active flag, and SHA-256 key fingerprint fields have validated shapes;
-- leader and worker providers match their assigned connection metadata.
+- leader or worker assignments are duplicated or overlap;
+- a registry connection has no matching metadata;
+- metadata contains an unassigned connection;
+- a metadata key disagrees with the embedded connection ID;
+- provider, status, active flag, or SHA-256 fingerprint shapes are malformed;
+- an assigned connection has a provider inconsistent with its registry pool.
 
-`connection_manager.py` preserves the authoritative role-source marker when loading or saving connection metadata and does not treat role information as routing authority.
+`connection_manager.py` preserves the authoritative role-source marker and continues to keep raw provider secrets outside the repository by default; only one-way fingerprints are stored in `connections.json`.
+
+Legacy role/profile structures are no longer routing authorities. Compatibility names may remain in routers, but routing decisions are driven by `config/registry.json`.
+
+## Runtime health/state boundary — next milestone
+
+The next substantive gap is to make runtime health and persisted lease state strictly subordinate to the authoritative registry.
+
+The target contract is:
+
+```text
+Authoritative registry
+        +
+Runtime health observations
+        +
+Local lease/failure state
+        ↓
+validated effective availability
+        ↓
+LeaderRouter / WorkerRouter
+```
+
+Health/state input is observation data, not configuration truth. Unknown connection IDs, wrong-provider observations, malformed state, stale leases, and state that cannot be safely reconciled with the registry must be ignored or fail closed according to the component contract rather than expanding routing authority.
+
+This milestone must preserve N-driven pools, stable connection IDs, safe-stop behavior on required-role exhaustion, and local-only runtime state.
 
 ## Project and safety rules
 
@@ -109,9 +130,11 @@ PR #32 — strict whole-result restoration boundary.
 
 PR #33 — live Git evidence rebinding.
 
+PR #34 — machine-validated configuration registry authority.
+
 ## Validation record
 
-The latest real Windows validation completed on the live-rebind branch before promotion:
+PR #33 was validated on the real Windows working tree before promotion:
 
 ```text
 python -m compileall -q .                                  PASS
@@ -122,20 +145,25 @@ git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
-That evidence applies to merged baseline `f95e47eb3aec39fc68b9e19c79072714d2c504cf` plus the promoted live-rebind tests.
+PR #34 was validated on the real Windows working tree before promotion:
 
-## Current milestone
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_config_registry.py test_connection_manager.py 13 passed
+pytest -q                                                   251 passed, 1 skipped
+python repository_security_audit.py                        PASS
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
 
-`agent/harden-config-authority`
+## Promotion rule
 
-Goal: make the static routing authority and connection metadata contract machine-validated so stale role sources, unassigned connections, identity mismatches, and malformed connection metadata fail closed before routing decisions are made.
-
-Required promotion sequence:
+For each architectural milestone:
 
 ```text
 complete grouped implementation
     ↓
-real Windows compile + focused configuration/connection tests + full regression
+real Windows compile + focused tests + full regression
     ↓
 security audit + diff review + working-tree verification
     ↓
