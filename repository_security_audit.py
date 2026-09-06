@@ -99,7 +99,7 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
                 owner = node.func.value.id
                 method = node.func.attr
                 if owner in subprocess_modules and method in FORBIDDEN_SUBPROCESS_APIS:
-                    if path.name not in PRODUCTION_SUBPROCESS_ALLOWLIST:
+                    if relative not in PRODUCTION_SUBPROCESS_ALLOWLIST:
                         findings.append(
                             AuditFinding(
                                 "subprocess-boundary",
@@ -125,7 +125,7 @@ def audit_python_execution_boundaries(root: Path) -> list[AuditFinding]:
                     )
 
             if isinstance(node.func, ast.Name):
-                if node.func.id in subprocess_functions and path.name not in PRODUCTION_SUBPROCESS_ALLOWLIST:
+                if node.func.id in subprocess_functions and relative not in PRODUCTION_SUBPROCESS_ALLOWLIST:
                     findings.append(
                         AuditFinding(
                             "subprocess-boundary",
