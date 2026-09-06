@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -255,6 +256,16 @@ class LeaderRouter:
     def refresh_health(self) -> None:
         """Refresh external health while preserving runtime failures."""
         health = read_json(self.health_file)
+        configured_by_model = {
+            self.primary_model: set(self.primary_pool),
+            self.failover_model: set(self.failover_pool),
+        }
+
+        declared_provider = health.get("provider")
+        if declared_provider is not None and declared_provider != self.provider:
+            raise LeaderConfigurationError(
+                "Leader health provider does not match the authoritative registry"
+            )
 
         healthy_by_model: Dict[str, Set[str]] = {}
         failed_by_model: Dict[str, Set[str]] = {}
@@ -264,6 +275,10 @@ class LeaderRouter:
             account_id: str,
             healthy: bool,
         ) -> None:
+            if model not in configured_by_model:
+                return
+            if account_id not in configured_by_model[model]:
+                return
             if healthy:
                 healthy_by_model.setdefault(model, set()).add(account_id)
             else:
@@ -279,6 +294,9 @@ class LeaderRouter:
         for key, model in mappings:
             section = health.get(key)
             if not isinstance(section, dict):
+                continue
+            section_provider = section.get("provider")
+            if section_provider is not None and section_provider != self.provider:
                 continue
 
             healthy = section.get("healthy")
@@ -297,7 +315,13 @@ class LeaderRouter:
         models = health.get("models")
         if isinstance(models, dict):
             for model, section in models.items():
-                if not isinstance(model, str) or not isinstance(section, dict):
+                if model not in configured_by_model or not isinstance(section, dict):
+                    continue
+                section_provider = section.get("provider")
+                section_model = section.get("model")
+                if section_provider is not None and section_provider != self.provider:
+                    continue
+                if section_model is not None and section_model != model:
                     continue
 
                 healthy = section.get("healthy")
@@ -323,9 +347,36 @@ class LeaderRouter:
                 "AVAILABLE",
             }
 
-            for account_id, result in results.items():
-                if not isinstance(account_id, str) or not isinstance(result, dict):
+            for result_key, result in results.items():
+                if not isinstance(result_key, str) or not isinstance(result, dict):
                     continue
+                account_id = result.get("account_id") or result.get("connection_id")
+                if not isinstance(account_id, str):
+                    account_id = result_key.split(":", 1)[0]
+                if not isinstance(account_id, str):
+                    continue
+
+                result_provider = result.get("provider")
+                if result_provider is not None and result_provider != self.provider:
+                    continue
+                result_model = result.get("model")
+                result_tier = result.get("tier")
+                if result_model is not None and result_model not in configured_by_model:
+                    continue
+                if result_model is not None and account_id not in configured_by_model[result_model]:
+                    continue
+                if result_tier is not None:
+                    tier_model = {
+                        "ultra": self.primary_model,
+                        "Ultra": self.primary_model,
+                        "super": self.failover_model,
+                        "Super": self.failover_model,
+                    }.get(result_tier)
+                    if tier_model is None:
+                        continue
+                    if result_model is not None and result_model != tier_model:
+                        continue
+                    result_model = tier_model
 
                 for key, model in [
                     ("ultra", self.primary_model),
@@ -340,6 +391,17 @@ class LeaderRouter:
                             account_id,
                             status.upper() in status_values,
                         )
+
+                status = result.get("status")
+                healthy_flag = result.get("healthy")
+                if isinstance(status, str) and result_model is not None:
+                    add_status(
+                        result_model,
+                        account_id,
+                        status.upper() in status_values,
+                    )
+                elif isinstance(healthy_flag, bool) and result_model is not None:
+                    add_status(result_model, account_id, healthy_flag)
 
         accounts = health.get("accounts")
         if isinstance(accounts, list):
@@ -358,6 +420,9 @@ class LeaderRouter:
                 account_id = account.get("id") or account.get("account_id")
                 if not isinstance(account_id, str):
                     continue
+                account_provider = account.get("provider")
+                if account_provider is not None and account_provider != self.provider:
+                    continue
 
                 for key, model in [
                     ("ultra", self.primary_model),
@@ -367,7 +432,15 @@ class LeaderRouter:
                 ]:
                     section = account.get(key)
                     if isinstance(section, dict):
+                        section_provider = section.get("provider")
+                        if section_provider is not None and section_provider != self.provider:
+                            continue
+                        section_model = section.get("model")
+                        if section_model is not None and section_model != model:
+                            continue
                         status = section.get("status")
+                        if isinstance(section.get("healthy"), bool):
+                            add_status(model, account_id, section["healthy"])
                     else:
                         status = section
 
@@ -397,13 +470,22 @@ class LeaderRouter:
         except (OSError, json.JSONDecodeError):
             return
 
+        configured_by_model = {
+            self.primary_model: set(self.primary_pool),
+            self.failover_model: set(self.failover_pool),
+        }
+
         runtime_failed = payload.get("runtime_failed_by_model")
         if isinstance(runtime_failed, dict):
             for model, accounts in runtime_failed.items():
-                if isinstance(model, str) and isinstance(accounts, list):
-                    self.runtime_failed_by_model[model] = {
-                        account for account in accounts if isinstance(account, str)
-                    }
+                if model not in configured_by_model or not isinstance(accounts, list):
+                    continue
+                self.runtime_failed_by_model[model] = {
+                    account
+                    for account in accounts
+                    if isinstance(account, str)
+                    and account in configured_by_model[model]
+                }
 
         leases = payload.get("leases")
         if isinstance(leases, dict):
@@ -412,17 +494,33 @@ class LeaderRouter:
                     continue
 
                 try:
-                    lease = LeaderLease(
-                        provider=str(item["provider"]),
-                        account_id=str(item["account_id"]),
-                        model=str(item["model"]),
-                        tier=str(item["tier"]),
-                        task_id=str(item["task_id"]),
-                        leased_at=float(item["leased_at"]),
-                    )
+                    leased_at = float(item["leased_at"])
                 except (KeyError, TypeError, ValueError):
                     continue
+                provider = item.get("provider")
+                account_id = item.get("account_id")
+                model = item.get("model")
+                tier = item.get("tier")
+                saved_task_id = item.get("task_id")
+                if not all(isinstance(value, str) and value.strip() for value in [
+                    provider,
+                    account_id,
+                    model,
+                    tier,
+                    saved_task_id,
+                ]):
+                    continue
+                if not math.isfinite(leased_at) or leased_at < 0:
+                    continue
 
+                lease = LeaderLease(
+                    provider=provider,
+                    account_id=account_id,
+                    model=model,
+                    tier=tier,
+                    task_id=saved_task_id,
+                    leased_at=leased_at,
+                )
                 if lease.task_id == task_id:
                     self.leases[task_id] = lease
 
@@ -443,23 +541,49 @@ class LeaderRouter:
     def _normalize_state(self) -> None:
         valid: Dict[str, LeaderLease] = {}
         used_accounts: Set[str] = set()
-
-        configured = set(self.primary_pool) | set(self.failover_pool)
+        configured_by_tier = {
+            PRIMARY_TIER: (self.primary_model, set(self.primary_pool)),
+            FAILOVER_TIER: (self.failover_model, set(self.failover_pool)),
+        }
 
         for task_id, lease in self.leases.items():
+            tier_config = configured_by_tier.get(lease.tier)
+            if tier_config is None:
+                continue
+            expected_model, configured = tier_config
             if lease.account_id not in configured:
                 continue
             if lease.account_id in used_accounts:
                 continue
             if lease.provider != self.provider:
                 continue
+            if lease.model != expected_model:
+                continue
             if lease.task_id != task_id:
+                continue
+            if not math.isfinite(lease.leased_at) or lease.leased_at < 0:
                 continue
 
             valid[task_id] = lease
             used_accounts.add(lease.account_id)
 
         self.leases = valid
+
+        if self.active_account is not None:
+            active_lease = next(
+                (
+                    lease
+                    for lease in self.leases.values()
+                    if lease.account_id == self.active_account
+                    and lease.tier == self.active_tier
+                ),
+                None,
+            )
+            if active_lease is None:
+                self.active_tier = None
+                self.active_account = None
+        elif self.active_tier is not None:
+            self.active_tier = None
 
         if not self.leases:
             self.active_tier = None

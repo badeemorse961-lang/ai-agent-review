@@ -7,8 +7,8 @@ from pathlib import Path
 
 from config_registry import validate_registry
 from leader_failover import LeaderFailover
-from leader_router import LeaderRouter, LeaderUnavailable
-from worker_router import NoWorkerAvailable, WorkerRouter
+from leader_router import LeaderConfigurationError, LeaderRouter, LeaderUnavailable
+from worker_router import ConfigurationError, NoWorkerAvailable, WorkerRouter
 
 
 class RegistryDrivenRouterTests(unittest.TestCase):
@@ -140,10 +140,177 @@ class RegistryDrivenRouterTests(unittest.TestCase):
         with self.assertRaises(NoWorkerAvailable):
             router.acquire("coder", "standby-exhausted")
 
+    def test_leader_health_ignores_unknown_id_even_when_marked_healthy(self) -> None:
+        registry = validate_registry()
+        leader = registry["architecture"]["leader"]
+        health = self._write(
+            "leader_health_unknown.json",
+            {
+                "provider": leader["provider"],
+                "models": {
+                    leader["primary_model"]: {
+                        "healthy": list(leader["primary_pool"]) + ["OR-999"],
+                        "failed": [],
+                    },
+                    leader["failover_model"]: {
+                        "healthy": list(leader["failover_pool"]),
+                        "failed": [],
+                    },
+                },
+            },
+        )
+        router = LeaderRouter(health_file=health, state_file=self.root / "state.json")
+
+        self.assertNotIn("OR-999", router.external_healthy_by_model[leader["primary_model"]])
+        self.assertNotIn("OR-999", router.active_pool("ULTRA"))
+
+    def test_leader_health_rejects_wrong_provider(self) -> None:
+        registry = validate_registry()
+        leader = registry["architecture"]["leader"]
+        health = self._leader_health()
+        payload = json.loads(health.read_text(encoding="utf-8"))
+        payload["provider"] = "groq"
+        health.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaises(LeaderConfigurationError):
+            LeaderRouter(health_file=health, state_file=self.root / "state.json")
+
+    def test_leader_state_rejects_cross_tier_lease(self) -> None:
+        registry = validate_registry()
+        leader = registry["architecture"]["leader"]
+        health = self._leader_health()
+        state = self._write(
+            "leader_state_cross_tier.json",
+            {
+                "runtime_failed_by_model": {},
+                "leases": {
+                    "task": {
+                        "provider": leader["provider"],
+                        "account_id": leader["primary_pool"][0],
+                        "model": leader["primary_model"],
+                        "tier": "SUPER",
+                        "task_id": "task",
+                        "leased_at": 1.0,
+                    }
+                },
+                "active_tier": "SUPER",
+                "active_account": leader["primary_pool"][0],
+            },
+        )
+        router = LeaderRouter(health_file=health, state_file=state)
+
+        self.assertEqual(router.leases, {})
+        self.assertIsNone(router.active_tier)
+        self.assertIsNone(router.active_account)
+
+    def test_worker_health_ignores_unknown_and_wrong_provider_entries(self) -> None:
+        registry = validate_registry()
+        workers = registry["architecture"]["workers"]
+        first = workers["roles"]["coder"][0]
+        health = self._write(
+            "worker_health_adversarial.json",
+            {
+                "provider": workers["provider"],
+                "healthy": ["GROQ-999"],
+                "failed": [],
+                "results": {
+                    "GROQ-999": {
+                        "provider": "groq",
+                        "model": workers["model"],
+                        "status": "OK",
+                    },
+                    first: {
+                        "provider": "openrouter",
+                        "model": workers["model"],
+                        "status": "OK",
+                    },
+                },
+            },
+        )
+        router = WorkerRouter(health_file=health, state_file=self.root / "state.json")
+
+        self.assertNotIn(first, router.external_healthy_connections)
+        self.assertNotIn("GROQ-999", router.external_healthy_connections)
+        self.assertNotIn("GROQ-999", router.external_failed_connections)
+
+    def test_worker_state_rejects_wrong_role_lease_and_stale_standby_metadata(self) -> None:
+        registry = validate_registry()
+        workers = registry["architecture"]["workers"]
+        coder = workers["roles"]["coder"][0]
+        standby = workers["roles"]["standby"][0]
+        state = self._write(
+            "worker_state_adversarial.json",
+            {
+                "leases": {
+                    "bad-role": {
+                        "worker_id": coder,
+                        "role": "reviewer",
+                        "task_id": "bad-role",
+                        "leased_at": 1.0,
+                        "standby": False,
+                    },
+                    "bad-standby": {
+                        "worker_id": coder,
+                        "role": "coder",
+                        "task_id": "bad-standby",
+                        "leased_at": 1.0,
+                        "standby": True,
+                    },
+                    "good-standby": {
+                        "worker_id": standby,
+                        "role": "coder",
+                        "task_id": "good-standby",
+                        "leased_at": 1.0,
+                        "standby": True,
+                    },
+                },
+                "active_standby_for": "debugger",
+                "active_standby_worker": standby,
+            },
+        )
+        router = WorkerRouter(
+            health_file=self._worker_health(),
+            state_file=state,
+        )
+
+        self.assertNotIn("bad-role", router.leases)
+        self.assertNotIn("bad-standby", router.leases)
+        self.assertIn("good-standby", router.leases)
+        self.assertIsNone(router.active_standby_for)
+        self.assertIsNone(router.active_standby_worker)
+
+    def test_worker_state_ignores_non_finite_lease_time(self) -> None:
+        registry = validate_registry()
+        workers = registry["architecture"]["workers"]
+        worker_id = workers["roles"]["coder"][0]
+        state = self._write(
+            "worker_state_non_finite.json",
+            {
+                "leases": {
+                    "task": {
+                        "worker_id": worker_id,
+                        "role": "coder",
+                        "task_id": "task",
+                        "leased_at": float("nan"),
+                        "standby": False,
+                    }
+                }
+            },
+        )
+
+        router = WorkerRouter(
+            health_file=self._worker_health(),
+            state_file=state,
+        )
+        self.assertNotIn("task", router.leases)
+
 
 class RouterExhaustionContractTests(unittest.TestCase):
     def test_leader_unavailable_type_is_explicit(self) -> None:
         self.assertTrue(issubclass(LeaderUnavailable, Exception))
+
+    def test_worker_configuration_error_is_explicit(self) -> None:
+        self.assertTrue(issubclass(ConfigurationError, Exception))
 
 
 if __name__ == "__main__":
