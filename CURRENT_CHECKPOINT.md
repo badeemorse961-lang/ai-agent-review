@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`f8db02667a79a8a172ca89a73d488311af5e2bcc`
+`c5c6a37ada46f590a27b5be44c44fec2bc223e97`
 
-This squash merge promotes pull request `#22`, which adds a repository security invariant audit gate covering unsafe direct process execution primitives, shell execution, protected local credential filenames, and credential-shaped literals.
+This squash merge promotes pull request `#23`, which hardens post-commit Git pathname evidence with NUL-delimited parsing and exact authorized-target set verification.
 
 Previous promoted milestone:
 
-`e452094a66c62af7042837d6604a40bac6743ef4` — PR #20 Git status evidence parsing hardening.
+`f8db02667a79a8a172ca89a73d488311af5e2bcc` — PR #22 repository security invariant audit gate.
 
 ## Verified architecture
 
@@ -86,6 +86,24 @@ Only local `stage` and `commit` operations are exposed. Remote mutation, history
 
 Every mutation consumes prior independent-validation and internal authorization evidence. It cannot self-authorize.
 
+## Git commit pathname evidence hardening
+
+PR #23 was merged as:
+
+`c5c6a37ada46f590a27b5be44c44fec2bc223e97`
+
+Post-commit committed-target verification now requests NUL-delimited pathname evidence using:
+
+```text
+git show --format= --name-only -z <commit>
+```
+
+The dedicated verifier requires NUL framing and a terminated stream, rejects empty records, rejects duplicate evidence, rejects duplicate authorized targets, normalizes only Windows separators, and requires the committed pathname set to equal the authorized target set exactly.
+
+The integration tests additionally prove that line-oriented evidence is rejected, duplicate evidence is rejected, unexpected targets are rejected, and the executor issues the NUL-delimited inspection command.
+
+This boundary is evidence-only. It adds no new authorization, process, shell, network, Git mutation, or rollback authority.
+
 ## Transaction hardening
 
 The mutation lock is acquired before final mutable target validation. While the lock is held, target type, symlink/junction containment, UTF-8 decoding, and exact current-content equality with validated `FileChange.new_text` are revalidated immediately before staging.
@@ -105,19 +123,6 @@ PR #19 was merged as:
 `653b2b842e5f4c734b3390b1baec31c70f6ff3d7`
 
 The prior direct `subprocess.run()` pytest path was removed. Gate test execution now uses the same process/resource containment model used by the rest of the execution stack.
-
-The boundary explicitly:
-
-- allowlists the resolved absolute pytest executable
-- uses the active workspace as `cwd`
-- forbids shell wrappers and interpreter inline launch shortcuts through the shared sandbox
-- inherits process-group containment
-- inherits timeout and output bounds
-- inherits centralized secret redaction
-- forwards only explicit `AGENT_*` environment variables requested by the gate test process
-- fails closed when pytest cannot be resolved or launched
-
-No filesystem, Git, remote, or shell mutation authority was added.
 
 ## Git status evidence parsing hardening
 
@@ -161,19 +166,18 @@ The audit is inspection-only and fail-closed. It adds no execution, Git mutation
 
 ## Validation status
 
-PR #22 was validated on the real Windows working tree at tested head `611c94b55ccfdd7ef86dad3685b17fe21c89dfb5` before the rebased promotion:
+PR #23 was validated on the real Windows working tree at tested head `c0b657d4819283502e8640d206b82ba160eda654`:
 
 ```text
 python -m compileall -q .                         PASS
+pytest -q test_git_commit_evidence.py test_git_mutation_commit_evidence_integration.py
+                                                14 passed
 python repository_security_audit.py               PASS
-pytest -q test_repository_security_audit.py      12 passed
-pytest -q                                        180 passed, 1 skipped
+pytest -q                                        194 passed, 1 skipped
 
 git diff --check                               PASS
 git status --short --branch                      CLEAN
 ```
-
-The rebased promotion branch contained only the four intended security-audit files and was created directly from the current GitHub `main` tip before merge.
 
 ## Protected local state
 
@@ -193,16 +197,18 @@ Never use destructive synchronization such as blind `git clean -fd` or `git rese
 ## Promotion record
 
 ```text
-PR #22
+PR #23
+Title: Harden Git commit pathname evidence
+Merge method: squash
+Merge commit: c5c6a37ada46f590a27b5be44c44fec2bc223e97
+Tested head: c0b657d4819283502e8640d206b82ba160eda654
+Status: MERGED
+
+Previous PR #22
 Title: Add repository security invariant audit gate (rebased)
 Merge method: squash
 Merge commit: f8db02667a79a8a172ca89a73d488311af5e2bcc
-Tested head: 611c94b55ccfdd7ef86dad3685b17fe21c89dfb5
 Status: MERGED
-
-Previous PR #21
-Status: CLOSED WITHOUT MERGE
-Reason: superseded by PR #22 after safe rebase onto current main
 ```
 
-The next engineering milestone should build on the established ProcessSandbox, repository-security, repository-evidence, and mutation boundaries rather than bypassing them.
+The next engineering milestone should harden the transaction lock itself, preserving fail-closed concurrency semantics without introducing new mutation authority.
