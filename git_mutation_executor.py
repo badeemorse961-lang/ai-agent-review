@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
 from git_commit_evidence import GitCommitEvidenceError, verify_exact_target_set
+from git_mutation_attestation import GitMutationAttestation, verify_attestation_binding
 from git_staged_evidence import GitStagedEvidenceError, verify_exact_staged_targets
 from independent_validation import ValidationVerdict
 from git_mutation_policy import (
@@ -63,6 +64,7 @@ class GitMutationResult:
     before: GitRepositorySnapshot
     after: GitRepositorySnapshot
     commit_message_sha256: str | None
+    attestation: GitMutationAttestation | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -77,6 +79,7 @@ class GitMutationResult:
             "before": self.before.to_dict(),
             "after": self.after.to_dict(),
             "commit_message_sha256": self.commit_message_sha256,
+            "attestation": self.attestation.to_dict() if self.attestation else None,
         }
 
 
@@ -173,7 +176,9 @@ class GitMutationExecutor:
             self._run_policy_command(stage_request)
             staged = self.snapshot()
             self._verify_staged_targets(staged, stage_request.targets)
-            self._verify_staged_contents(changes, stage_request.targets)
+            object_format, staged_evidence_sha256 = self._verify_staged_contents(
+                changes, stage_request.targets
+            )
 
             try:
                 commit_process = self._run_policy_command(commit_request)
@@ -189,12 +194,36 @@ class GitMutationExecutor:
 
             after = self.snapshot()
             commit_sha = self._resolve_head_sha()
-            self._verify_post_commit(
+            commit_evidence_sha256 = self._verify_post_commit(
                 after,
                 commit_sha,
                 commit_request.targets,
                 before,
             )
+
+            attestation = GitMutationAttestation(
+                task_id=stage_request.task_id,
+                worker_id=stage_request.worker_id,
+                workspace=str(self.workspace_root),
+                targets=stage_request.targets,
+                commit_sha=commit_sha,
+                object_format=object_format,
+                staged_evidence_sha256=staged_evidence_sha256,
+                commit_evidence_sha256=commit_evidence_sha256,
+            )
+            try:
+                verify_attestation_binding(
+                    attestation,
+                    task_id=stage_request.task_id,
+                    worker_id=stage_request.worker_id,
+                    workspace=self.workspace_root,
+                    targets=commit_request.targets,
+                    commit_sha=commit_sha,
+                )
+            except Exception as exc:
+                raise GitMutationVerificationError(
+                    "Transaction attestation binding could not be proven"
+                ) from exc
 
             result = GitMutationResult(
                 task_id=stage_request.task_id,
@@ -209,6 +238,7 @@ class GitMutationExecutor:
                 commit_message_sha256=hashlib.sha256(
                     commit_request.commit_message.encode("utf-8")
                 ).hexdigest(),
+                attestation=attestation,
             )
             self._persist_audit(result)
             return result
@@ -372,7 +402,7 @@ class GitMutationExecutor:
         self,
         changes: Sequence[FileChange],
         targets: Sequence[str],
-    ) -> None:
+    ) -> tuple[str, str]:
         format_result = self._run_internal(
             [self.git_executable, "rev-parse", "--show-object-format"]
         )
@@ -411,6 +441,7 @@ class GitMutationExecutor:
             )
         except GitStagedEvidenceError as exc:
             raise GitMutationVerificationError(str(exc)) from exc
+        return object_format, hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
 
     def policy_path(self, target: str) -> Path:
         candidate = (self.workspace_root / target).resolve(strict=False)
@@ -473,7 +504,7 @@ class GitMutationExecutor:
         commit_sha: str,
         targets: Sequence[str],
         before: GitRepositorySnapshot,
-    ) -> None:
+    ) -> str:
         if after.staged_paths:
             raise GitMutationVerificationError(
                 "Post-commit index is not clean; commit scope cannot be proven"
@@ -503,6 +534,7 @@ class GitMutationExecutor:
             verify_exact_target_set(show.stdout, targets)
         except GitCommitEvidenceError as exc:
             raise GitMutationVerificationError(str(exc)) from exc
+        return hashlib.sha256(show.stdout.encode("utf-8")).hexdigest()
 
     def _persist_audit(self, result: GitMutationResult) -> None:
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
