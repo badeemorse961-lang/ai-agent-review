@@ -43,7 +43,7 @@ def test_unknown_executable_is_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_git_subcommand_policy_is_narrow() -> None:
+def test_git_uses_dedicated_safety_policy_even_when_terminal_policy_is_custom() -> None:
     policy = TerminalPolicy(
         [TerminalCommandPolicy("git", allowed_subcommands=("status", "diff"))]
     )
@@ -53,6 +53,9 @@ def test_git_subcommand_policy_is_narrow() -> None:
         "git",
         "status",
     )
+
+    with pytest.raises(ProcessSandboxSafetyStop):
+        policy.validate(["git", "commit", "-m", "should-not-run"], workspace_root=workspace)
 
     with pytest.raises(ProcessSandboxSafetyStop):
         policy.validate(["git", "push"], workspace_root=workspace)

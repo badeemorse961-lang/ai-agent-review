@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from git_safety import GitSafetyPolicy
 from process_sandbox import ProcessSandboxSafetyStop
 
 
@@ -32,18 +33,7 @@ class TerminalPolicy:
     DEFAULT_COMMANDS = (
         TerminalCommandPolicy("python", forbidden_arguments=("-c", "-m")),
         TerminalCommandPolicy("pytest", forbidden_arguments=("-c", "-m")),
-        TerminalCommandPolicy(
-            "git",
-            allowed_subcommands=(
-                "status",
-                "diff",
-                "log",
-                "show",
-                "branch",
-                "switch",
-                "restore",
-            ),
-        ),
+        TerminalCommandPolicy("git"),
     )
 
     _SHELL_TOKENS = frozenset(
@@ -88,6 +78,7 @@ class TerminalPolicy:
         policies: Iterable[TerminalCommandPolicy] | None = None,
         *,
         max_arguments: int = 32,
+        git_safety_policy: GitSafetyPolicy | None = None,
     ) -> None:
         source = tuple(policies or self.DEFAULT_COMMANDS)
         if not source:
@@ -102,6 +93,7 @@ class TerminalPolicy:
             for policy in source
         }
         self.max_arguments = int(max_arguments)
+        self.git_safety_policy = git_safety_policy or GitSafetyPolicy()
 
     def validate(
         self,
@@ -136,6 +128,13 @@ class TerminalPolicy:
             raise ProcessSandboxSafetyStop(
                 f"Terminal command exceeds argument limit for {normalized!r}"
             )
+
+        if normalized == "git":
+            self.git_safety_policy.validate(
+                args,
+                workspace_root=workspace_root,
+            )
+            return args
 
         lowered = tuple(item.lower() for item in args[1:])
         forbidden = {item.lower() for item in policy.forbidden_arguments}

@@ -40,7 +40,7 @@ class TerminalExecutor:
                 if Path(command).name.lower().removesuffix(".exe") in {"python", "pytest"}
                 else (),
             )
-            for command in ("python", "pytest")
+            for command in ("python", "pytest", "git")
         )
 
     def validate(
