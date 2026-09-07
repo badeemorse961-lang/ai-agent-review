@@ -20,22 +20,22 @@ def install_visual_runtime(app_class: Any) -> None:
             "Nav.TButton",
             anchor="center",
             justify="center",
-            padding=(10, 10),
-            font=("Segoe UI", 11, "bold"),
+            padding=(10, 6),
+            font=("Segoe UI", 10, "bold"),
         )
         style.configure(
             "Primary.TButton",
-            font=("Segoe UI", 11, "bold"),
+            font=("Segoe UI", 10, "bold"),
             padding=(12, 9),
         )
 
         # Keep the navigation readable even when the window is resized down.
-        self.root.grid_columnconfigure(0, minsize=220)
+        self.root.grid_columnconfigure(0, minsize=224)
         sidebar_items = self.root.grid_slaves(row=0, column=0)
         if sidebar_items:
             sidebar = sidebar_items[0]
             try:
-                sidebar.configure(width=220)
+                sidebar.configure(width=224)
             except Exception:
                 pass
             try:
@@ -45,7 +45,11 @@ def install_visual_runtime(app_class: Any) -> None:
             for button in sidebar.winfo_children():
                 try:
                     if button.winfo_class() == "TButton":
-                        button.configure(wraplength=190, justify="center")
+                        button.configure(
+                            wraplength=198,
+                            justify="center",
+                            height=42,
+                        )
                 except Exception:
                     pass
 
