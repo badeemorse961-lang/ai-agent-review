@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from execution_gate import ExecutionGate, FileChange
+from git_mutation_policy import GitMutationSafetyStop
 from independent_validation import ValidationVerdict
 
 SCHEMA_VERSION = 2
@@ -14,7 +15,7 @@ class ExecutionAuthorizationError(ValueError):
     """Base error for final authorization failures."""
 
 
-class ExecutionAuthorizationSafetyStop(ExecutionAuthorizationError):
+class ExecutionAuthorizationSafetyStop(ExecutionAuthorizationError, GitMutationSafetyStop):
     """Raised when a validated task cannot be safely promoted to mutation."""
 
 
@@ -99,6 +100,35 @@ class ExecutionAuthorizationBoundary:
                 "Mutation requires an isolated checkpoint attestation"
             )
 
+        checkpoint_id = checkpoint.get("checkpoint_id")
+        evidence_checkpoint_id = evidence.get("checkpoint_id")
+        legacy_checkpoint_binding = False
+        if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
+            transaction_id = checkpoint.get("transaction_id")
+            if (
+                isinstance(transaction_id, str)
+                and transaction_id.strip()
+                and transaction_id.strip() == verdict.task_id.strip()
+                and evidence.get("validated") is True
+            ):
+                checkpoint_id = transaction_id
+                legacy_checkpoint_binding = True
+            else:
+                raise ExecutionAuthorizationSafetyStop(
+                    "Mutation checkpoint requires a non-empty checkpoint_id"
+                )
+        if not isinstance(evidence_checkpoint_id, str) or not evidence_checkpoint_id.strip():
+            if legacy_checkpoint_binding:
+                evidence_checkpoint_id = checkpoint_id
+            else:
+                raise ExecutionAuthorizationSafetyStop(
+                    "Validation evidence requires the execution checkpoint_id"
+                )
+        if evidence_checkpoint_id.strip() != checkpoint_id.strip():
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation evidence checkpoint does not match the authorized checkpoint"
+            )
+
         target_evidence = evidence.get("changed_targets")
         if not isinstance(target_evidence, list):
             raise ExecutionAuthorizationSafetyStop(
@@ -114,18 +144,23 @@ class ExecutionAuthorizationBoundary:
                 "Authorized mutation targets do not exactly match independently validated targets"
             )
 
+        basis = [
+            "independent_validation_passed",
+            "validation_evidence_explicitly_passed",
+            "validation_identity_consistent",
+            "validation_checkpoint_bound",
+            "isolated_checkpoint_attested",
+            "mutation_targets_exactly_match_validation_targets",
+        ]
+        if legacy_checkpoint_binding:
+            basis.append("legacy_transaction_id_checkpoint_compatibility")
+
         return AuthorizationRecord(
             task_id=verdict.task_id,
             worker_id=verdict.worker_id,
             authorized=True,
             changed_targets=change_paths,
-            basis=(
-                "independent_validation_passed",
-                "validation_evidence_explicitly_passed",
-                "validation_identity_consistent",
-                "isolated_checkpoint_attested",
-                "mutation_targets_exactly_match_validation_targets",
-            ),
+            basis=tuple(basis),
         )
 
     def apply(

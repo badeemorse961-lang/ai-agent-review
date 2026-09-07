@@ -75,7 +75,7 @@ class IndependentValidator:
     ) -> ValidationVerdict:
         self._validate_request(request)
         self._validate_task(task, request)
-        self._validate_result(result, request)
+        checkpoint_id = self._validate_result(result, request)
         normalized_targets = tuple(
             self._validate_target(target) for target in changed_targets
         )
@@ -96,7 +96,11 @@ class IndependentValidator:
             worker_id=request.worker_id,
             passed=True,
             reasons=(),
-            evidence={**dict(evidence), "changed_targets": list(normalized_targets)},
+            evidence={
+                **dict(evidence),
+                "checkpoint_id": checkpoint_id,
+                "changed_targets": list(normalized_targets),
+            },
         )
 
     def _validate_request(self, request: ExecutionRequest) -> None:
@@ -128,7 +132,7 @@ class IndependentValidator:
             )
 
     @staticmethod
-    def _validate_result(result: ExecutionResult, request: ExecutionRequest) -> None:
+    def _validate_result(result: ExecutionResult, request: ExecutionRequest) -> str:
         if not isinstance(result, ExecutionResult):
             raise IndependentValidationSafetyStop(
                 "Validation requires an ExecutionResult"
@@ -137,6 +141,11 @@ class IndependentValidator:
         if not isinstance(checkpoint, Mapping) or checkpoint.get("isolated") is not True:
             raise IndependentValidationSafetyStop(
                 "Execution result lacks an isolated checkpoint attestation"
+            )
+        checkpoint_id = checkpoint.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
+            raise IndependentValidationSafetyStop(
+                "Execution result checkpoint requires a non-empty checkpoint_id"
             )
         if result.timed_out:
             raise IndependentValidationSafetyStop("Timed-out execution cannot be approved")
@@ -148,6 +157,7 @@ class IndependentValidator:
             raise IndependentValidationSafetyStop(
                 f"Worker execution did not succeed for task {request.task_id!r}"
             )
+        return checkpoint_id.strip()
 
     def _validate_target(self, target: str) -> str:
         if not isinstance(target, str) or not target.strip():

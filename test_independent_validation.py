@@ -137,6 +137,22 @@ class IndependentValidationTests(unittest.TestCase):
                 self._result(checkpoint={"checkpoint_id": "CP-1", "isolated": False}),
             )
 
+    def test_checkpoint_id_is_required_for_validation(self) -> None:
+        root = self._workspace()
+        validator = IndependentValidator(root, validation_hook=self._hook)
+        with self.assertRaises(IndependentValidationSafetyStop):
+            validator.validate(
+                self._request(root),
+                self._task(),
+                self._result(checkpoint={"isolated": True}),
+            )
+
+    def test_successful_validation_binds_checkpoint_identity(self) -> None:
+        root = self._workspace()
+        validator = IndependentValidator(root, validation_hook=self._hook)
+        verdict = validator.validate(self._request(root), self._task(), self._result())
+        self.assertEqual(verdict.evidence["checkpoint_id"], "CP-1")
+
     def test_successful_validation_returns_auditable_verdict(self) -> None:
         root = self._workspace()
         validator = IndependentValidator(root, validation_hook=self._hook)
@@ -150,6 +166,7 @@ class IndependentValidationTests(unittest.TestCase):
         self.assertEqual(verdict.worker_id, "GROQ-01")
         self.assertTrue(verdict.passed)
         self.assertEqual(verdict.evidence["changed_targets"], ["worker.py", "src/module.py"])
+        self.assertEqual(verdict.evidence["checkpoint_id"], "CP-1")
         self.assertEqual(verdict.to_dict()["schema_version"], 1)
 
 
