@@ -6,9 +6,9 @@
 
 Latest merged implementation baseline:
 
-`3e74f3417d81c517a159d182c4496e908a5b0999`
+`cacad462a62ffd584ef437e42015e34825bacfc3`
 
-This squash merge promotes PR #36, hardening the runtime health and persisted lease-state boundary so routing remains subordinate to `config/registry.json`.
+This squash merge promotes PR #38, hardening the worker execution/orchestration boundary so process launch requires a current authoritative worker lease binding.
 
 ## Verified architecture
 
@@ -93,6 +93,8 @@ Health/state input remains observation data, not configuration truth. Unknown co
 
 The implementation preserves shared leader accounts across the configured primary/failover pools: a connection may legitimately appear in both tiers, while each persisted lease must still bind to the tier/model actually recorded for that lease.
 
+Worker execution adds a second authority check at the process-launch boundary: serialized worker assignments are not proof of identity. The boundary requires an authoritative active lease lookup, matches task/role/worker identity, rejects standby leases from direct execution, and rechecks the live lease after checkpoint establishment immediately before process launch.
+
 N-driven pools, stable connection IDs, safe-stop behavior on required-role exhaustion, and local-only runtime state remain intact.
 
 ## Project and safety rules
@@ -134,6 +136,8 @@ PR #34 — machine-validated configuration registry authority.
 
 PR #36 — runtime health and lease state authority hardening.
 
+PR #38 — authoritative worker lease binding at the execution boundary.
+
 ## Validation record
 
 PR #33 was validated on the real Windows working tree before promotion:
@@ -168,6 +172,19 @@ python repository_security_audit.py                        PASS
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
+
+PR #38 was validated on the real Windows working tree before promotion:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_worker_dispatch.py test_worker_execution.py test_worker_execution_process_sandbox.py 27 passed
+pytest -q                                                   265 passed, 1 skipped
+python repository_security_audit.py                        PASS
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
+
+No GitHub Actions workflow runs were configured/available for PR #38; local Windows execution was therefore the promotion evidence.
 
 ## Promotion rule
 
