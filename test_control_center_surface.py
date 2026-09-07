@@ -39,8 +39,10 @@ def test_windows_entry_point_is_non_console_launcher() -> None:
     assert "from control_center_safety_view import install_real_safety_view" in entry_point
     assert "from control_center_language_runtime_v2 import install_bilingual_support" in entry_point
     assert "from control_center_window_runtime import install_responsive_window" in entry_point
+    assert "from control_center_sidebar_runtime import install_scrollable_sidebar" in entry_point
     assert "install_bilingual_support(ControlCenterApp)" in entry_point
     assert "install_responsive_window(ControlCenterApp)" in entry_point
+    assert "install_scrollable_sidebar(ControlCenterApp)" in entry_point
     assert "subprocess" not in entry_point
     assert "powershell" not in entry_point.lower()
 
@@ -123,3 +125,13 @@ def test_responsive_window_runtime_is_integrated() -> None:
     assert "root.resizable(True, True)" in source
     assert "_install_scrollable_body" in source
     assert "Scrollbar" in source
+
+
+def test_sidebar_runtime_is_integrated_and_keeps_navigation_accessible() -> None:
+    entry_point = Path("control_center.pyw").read_text(encoding="utf-8")
+    source = Path("control_center_sidebar_runtime.py").read_text(encoding="utf-8")
+    assert "install_scrollable_sidebar(ControlCenterApp)" in entry_point
+    assert "_cc_sidebar_scrollbar" in source
+    assert "<MouseWheel>" in source
+    assert "place(" in source
+    assert "self._cc_sidebar_nav" in source
