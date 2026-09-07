@@ -41,7 +41,7 @@ class FakeRouter:
 
 
 class CentralLeaderTests(unittest.TestCase):
-    def _context(self, state: str = "CONTINUE") -> dict:
+    def _context(self, state: str = "CONTINUE", *, autonomous_start_allowed: bool = True) -> dict:
         return {
             "schema_version": 1,
             "authority": {
@@ -52,6 +52,7 @@ class CentralLeaderTests(unittest.TestCase):
             "project": {
                 "state": state,
                 "confidence": 0.9,
+                "autonomous_start_allowed": autonomous_start_allowed,
             },
             "requirements": [],
         }
@@ -106,6 +107,18 @@ class CentralLeaderTests(unittest.TestCase):
             with self.subTest(state=state):
                 with self.assertRaises(LeaderPlanningSafetyStop):
                     leader.prepare(f"stop-{state}", self._context(state))
+
+    def test_autonomous_start_must_be_explicitly_allowed(self) -> None:
+        leader = CentralLeader(router=FakeRouter(), transport=lambda _: None)
+
+        for value in (False, None):
+            context = self._context(autonomous_start_allowed=True)
+            context["project"].pop("autonomous_start_allowed", None) if value is None else context["project"].update(
+                {"autonomous_start_allowed": value}
+            )
+            with self.subTest(value=value):
+                with self.assertRaises(LeaderPlanningSafetyStop):
+                    leader.prepare("blocked-autonomous-start", context)
 
     def test_context_cannot_grant_execution_or_mutation_authority(self) -> None:
         leader = CentralLeader(router=FakeRouter())
