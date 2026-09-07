@@ -141,7 +141,18 @@ class ConnectionControlCenterService(ControlCenterService):
                 {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)},
                 "Protected credential is unavailable",
             )
-        result = enable_connection(connection_id, registry)
+        try:
+            result = enable_connection(connection_id, registry)
+        except ValueError as exc:
+            return ApplicationResult(
+                "BLOCKED",
+                {
+                    "connection_id": connection_id,
+                    "status": get_connection_status(connection_id, registry),
+                    "setup_required": "REGISTRY_ASSIGNMENT",
+                },
+                str(exc),
+            )
         self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"]})
 
@@ -181,26 +192,57 @@ class ConnectionControlCenterApp(ControlCenterApp):
         self.body.rowconfigure(0, weight=1)
         tree = self.ttk.Treeview(
             self.body,
-            columns=("id", "provider", "model", "assignment", "status", "runtime", "fingerprint"),
+            columns=("id", "provider", "model", "assignment", "status", "ready", "runtime", "fingerprint"),
             show="headings",
             selectmode="browse",
         )
-        labels = {"id": "Connection ID", "provider": "Provider", "model": "Model", "assignment": "Assignment", "status": "Status", "runtime": "Runtime / Health", "fingerprint": "Fingerprint"}
-        widths = {"id": 120, "provider": 110, "model": 260, "assignment": 170, "status": 120, "runtime": 140, "fingerprint": 110}
+        labels = {
+            "id": "Connection ID",
+            "provider": "Provider",
+            "model": "Model",
+            "assignment": "Assignment",
+            "status": "Status",
+            "ready": "Automatic Use",
+            "runtime": "Runtime / Health",
+            "fingerprint": "Fingerprint",
+        }
+        widths = {
+            "id": 120,
+            "provider": 100,
+            "model": 240,
+            "assignment": 160,
+            "status": 105,
+            "ready": 125,
+            "runtime": 125,
+            "fingerprint": 100,
+        }
         for column in tree["columns"]:
             tree.heading(column, text=labels[column])
             tree.column(column, width=widths[column], anchor="w")
         connections = result.data.get("connections", []) if isinstance(result.data, Mapping) else []
         for item in connections:
             item = self._mapping(item)
+            readiness, readiness_reason = self._connection_readiness(item)
             raw_status = str(item.get("metadata_status", "UNKNOWN"))
             display_status = "ACTIVE" if raw_status == "VALIDATED" else raw_status
             tree.insert("", "end", values=(
                 item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""),
                 ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned",
-                display_status, item.get("runtime_status", "UNOBSERVED"),
+                display_status,
+                readiness,
+                item.get("runtime_status", "UNOBSERVED"),
                 "present" if item.get("fingerprint_present") else "absent",
             ))
+            item_id = tree.get_children()[-1]
+            tree.item(item_id, tags=(readiness,))
+            tree.tag_configure("READY", foreground=self.palette[self.dark]["good"])
+            tree.tag_configure("STORED", foreground=self.palette[self.dark]["muted"])
+            tree.tag_configure("SETUP", foreground=self.palette[self.dark]["warn"])
+            tree.tag_configure("FAILED", foreground=self.palette[self.dark]["bad"])
+            tree.tag_configure("REMOVED", foreground=self.palette[self.dark]["muted"])
+            tree.item(item_id, tags=(readiness,))
+            tree.item(item_id, values=tree.item(item_id, "values")[0:6] + (readiness_reason,) + (tree.item(item_id, "values")[6],))
+
         tree.grid(row=0, column=0, sticky="nsew")
         self.connection_tree = tree
 
@@ -216,6 +258,28 @@ class ConnectionControlCenterApp(ControlCenterApp):
             self._show_connection_operation(toolbar, operation)
         else:
             self._set_status(result, "Connection registry refreshed")
+
+    def _connection_readiness(self, item: Mapping[str, Any]) -> tuple[str, str]:
+        """Derive a truthful UI-only readiness marker from Core state and protected-store presence."""
+        status = str(item.get("metadata_status", "UNKNOWN")).upper()
+        runtime = str(item.get("runtime_status", "UNOBSERVED")).upper()
+        connection_id = item.get("connection_id")
+        assigned = isinstance(item.get("assignments"), list) and bool(item.get("assignments"))
+        credential_present = isinstance(connection_id, str) and self.service.secret_store.has(connection_id)
+
+        if status == "REMOVED":
+            return "REMOVED", "Removed"
+        if status in {"FAILED", "INVALID"} or runtime == "FAILED":
+            return "FAILED", "Not ready"
+        if not credential_present:
+            return "SETUP", "Credential not stored"
+        if not assigned:
+            return "STORED", "Stored · awaiting registry assignment"
+        if status == "DISABLED":
+            return "STORED", "Stored · manually disabled"
+        if status in {"ACTIVE", "VALIDATED"} and runtime != "FAILED":
+            return "READY", "✓ Ready · automatic use"
+        return "SETUP", "Needs validation"
 
     def _selected_connection_id(self) -> str | None:
         if self.connection_tree is None:
