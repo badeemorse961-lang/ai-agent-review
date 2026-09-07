@@ -4,6 +4,7 @@ from pathlib import Path
 
 from application_boundary import ApplicationIntent, ControlCenterService
 from control_center_i18n import _TRANSLATIONS, _translate
+from control_center_language_runtime import TRANSLATIONS as RUNTIME_TRANSLATIONS
 from desktop_control_center import ControlCenterApp
 
 
@@ -36,7 +37,7 @@ def test_windows_entry_point_is_non_console_launcher() -> None:
     entry_point = Path("control_center.pyw").read_text(encoding="utf-8")
     assert "from desktop_control_center import ControlCenterApp, main" in entry_point
     assert "from control_center_safety_view import install_real_safety_view" in entry_point
-    assert "from control_center_i18n import install_bilingual_support" in entry_point
+    assert "from control_center_language_runtime import install_bilingual_support" in entry_point
     assert "install_bilingual_support(ControlCenterApp)" in entry_point
     assert "subprocess" not in entry_point
     assert "powershell" not in entry_point.lower()
@@ -84,15 +85,18 @@ def test_bilingual_support_has_real_arabic_translations_for_product_surface() ->
         "Exit",
     }
     assert required.issubset(_TRANSLATIONS)
+    assert required.issubset(RUNTIME_TRANSLATIONS)
     for text in required:
         translated = _translate(text, "ar")
         assert translated != text
         assert translated.strip()
 
 
-def test_bilingual_layer_is_reversible_and_rtl_aware() -> None:
-    source = Path("control_center_i18n.py").read_text(encoding="utf-8")
-    assert 'self.language = "ar" if self.language == "en" else "en"' in source
-    assert '_SOURCE_TEXT' in source
-    assert 'anchor="e" if language == "ar" else "w"' in source
-    assert 'justify="right" if language == "ar" else "left"' in source
+def test_bilingual_runtime_is_reversible_visible_and_rtl_aware() -> None:
+    source = Path("control_center_language_runtime.py").read_text(encoding="utf-8")
+    assert 'self.language = "ar" if getattr(self, "language", "en") == "en" else "en"' in source
+    assert 'before=self.theme_button' in source
+    assert 'anchor="e", justify="right"' in source
+    assert 'anchor="w", justify="left"' in source
+    assert 'text="العربية"' in source
+    assert 'text="English"' in source
