@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
@@ -109,6 +110,7 @@ class WorkerExecutionBoundary:
         ".yaml",
         ".yml",
     }
+    _VERSIONED_PYTHON_RE = re.compile(r"^python(?:3(?:\.\d+)*)?$")
 
     def __init__(
         self,
@@ -365,9 +367,12 @@ class WorkerExecutionBoundary:
             executable = executable_stem
 
         if executable not in allowed_names:
-            raise WorkerExecutionSafetyStop(
-                f"Command executable is not allowlisted: {args[0]!r}"
-            )
+            if self._VERSIONED_PYTHON_RE.fullmatch(executable) is not None and "python" in allowed_names:
+                executable = "python"
+            else:
+                raise WorkerExecutionSafetyStop(
+                    f"Command executable is not allowlisted: {args[0]!r}"
+                )
 
         forbidden = {
             "shell",
@@ -379,11 +384,12 @@ class WorkerExecutionBoundary:
             "sh",
         }
         inline_interpreter_flags = {"-c", "/c", "-m"}
+        is_python = executable == "python" or self._VERSIONED_PYTHON_RE.fullmatch(Path(args[0]).name.lower().removesuffix(".exe")) is not None
         if any(item.lower() in forbidden for item in args):
             raise WorkerExecutionSafetyStop(
                 "Shell-wrapper arguments are not permitted at the worker boundary"
             )
-        if executable in {"python", "python3", "pytest"} and any(
+        if (is_python or executable == "pytest") and any(
             item.lower() in inline_interpreter_flags for item in args[1:]
         ):
             raise WorkerExecutionSafetyStop(
