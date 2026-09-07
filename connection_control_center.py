@@ -9,8 +9,6 @@ from application_boundary import ApplicationIntent, ApplicationResult, ControlCe
 from connection_manager import (
     LIFECYCLE_ACTIVE,
     LIFECYCLE_DISABLED,
-    LIFECYCLE_FAILED,
-    LIFECYCLE_INVALID,
     disable_connection,
     enable_connection,
     get_connection_status,
@@ -25,14 +23,6 @@ from protected_secret_store import SecretStore, WindowsProtectedSecretStore
 
 class ConnectionControlCenterService(ControlCenterService):
     """Adds explicit connection lifecycle intents while preserving the Core boundary."""
-
-    CONNECTION_INTENTS = {
-        "import_provider_connections",
-        "disable_connection",
-        "enable_connection",
-        "remove_connection",
-        "mark_connection_failed",
-    }
 
     def __init__(self, *, secret_store: SecretStore | None = None, **kwargs: Any) -> None:
         self.secret_store = secret_store or WindowsProtectedSecretStore()
@@ -55,8 +45,10 @@ class ConnectionControlCenterService(ControlCenterService):
         except Exception as exc:
             result = ApplicationResult("ERROR", {}, f"{type(exc).__name__}: {exc}")
         self._record_event(intent, result)
-        self.last_connection_operation = dict(result.data)
-        return result
+        data = dict(result.data)
+        data["result_status"] = result.status
+        self.last_connection_operation = data
+        return ApplicationResult(result.status, data, result.error)
 
     def _import_provider_connections(self, payload: Mapping[str, Any]) -> ApplicationResult:
         provider = payload.get("provider")
@@ -76,9 +68,8 @@ class ConnectionControlCenterService(ControlCenterService):
             "GROQ" if provider == "groq" else "OR",
             secret_store=self.secret_store,
         )
-        data = summary.to_dict()
         status = "NO_CHANGES" if summary.imported_count == 0 and summary.rejected_count == 0 else "OK"
-        return ApplicationResult(status, data)
+        return ApplicationResult(status, summary.to_dict())
 
     def _connection_from_payload(self, payload: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
         connection_id = payload.get("connection_id")
@@ -96,7 +87,7 @@ class ConnectionControlCenterService(ControlCenterService):
         return ApplicationResult("OK", {"connection_id": connection_id, "status": LIFECYCLE_DISABLED})
 
     def _enable_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
-        connection_id, item, registry = self._connection_from_payload(payload)
+        connection_id, _, registry = self._connection_from_payload(payload)
         if not self.secret_store.has(connection_id):
             return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, "Protected credential is unavailable")
         result = enable_connection(connection_id, registry)
@@ -156,6 +147,8 @@ class ConnectionControlCenterApp(ControlCenterApp):
         connections = result.data.get("connections", []) if isinstance(result.data, Mapping) else []
         for item in connections:
             item = self._mapping(item)
+            raw_status = str(item.get("metadata_status", "UNKNOWN"))
+            display_status = "ACTIVE" if raw_status == "VALIDATED" else raw_status
             tree.insert(
                 "",
                 "end",
@@ -164,7 +157,7 @@ class ConnectionControlCenterApp(ControlCenterApp):
                     item.get("provider", ""),
                     item.get("model", ""),
                     ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned",
-                    item.get("metadata_status", "UNKNOWN"),
+                    display_status,
                     item.get("runtime_status", "UNOBSERVED"),
                     "present" if item.get("fingerprint_present") else "absent",
                 ),
@@ -232,9 +225,9 @@ class ConnectionControlCenterApp(ControlCenterApp):
         self._set_status(result)
 
     def _show_connection_operation(self, parent: Any, data: Mapping[str, Any]) -> None:
-        provider = str(data.get("provider", ""))
         if "imported_count" in data:
-            status = str(data.get("status", ""))
+            provider = str(data.get("provider", ""))
+            status = str(data.get("result_status", ""))
             summary = (
                 f"{provider}: imported={data.get('imported_count', 0)} | "
                 f"already present={data.get('already_present_count', 0)} | "
@@ -244,9 +237,10 @@ class ConnectionControlCenterApp(ControlCenterApp):
             if status == "NO_CHANGES":
                 summary = f"{provider}: NO CHANGES | already present={data.get('already_present_count', 0)}"
             self.ttk.Label(parent, text=summary, style="Status.TLabel").pack(side="left", padx=(12, 0))
-            self.status.configure(text=summary, foreground=self.palette[self.dark]["good"])
+            palette = self.palette[self.dark]
+            self.status.configure(text=summary, foreground=palette["good"] if status != "ERROR" else palette["bad"])
         else:
-            self._set_status(ApplicationResult("OK", data), str(data.get("status", "Updated")))
+            self._set_status(ApplicationResult(str(data.get("result_status", "OK")), data), str(data.get("status", "Updated")))
 
 
 def main() -> int:
