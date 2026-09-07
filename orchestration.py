@@ -11,6 +11,7 @@ from independent_validation import IndependentValidator, ValidationHook, Validat
 from plan_decomposer import PlanDecomposer
 from worker_dispatch import WorkerAssignment, WorkerDispatcher
 from worker_execution import ExecutionRequest, ExecutionResult, WorkerExecutionBoundary
+from worker_work_product import WorkerWorkProduct
 
 
 SCHEMA_VERSION = 1
@@ -68,6 +69,7 @@ class TaskExecutionRecord:
     execution_request: ExecutionRequest
     execution_result: ExecutionResult
     validation: ValidationVerdict
+    work_product: WorkerWorkProduct
     authorization: Mapping[str, Any]
     transaction: Mapping[str, Any]
 
@@ -103,6 +105,7 @@ class OrchestrationResult:
                     "execution_request": record.execution_request.to_dict(),
                     "execution_result": record.execution_result.to_dict(),
                     "validation": record.validation.to_dict(),
+                    "work_product": record.work_product.to_dict(),
                     "authorization": dict(record.authorization),
                     "transaction": dict(record.transaction),
                 }
@@ -235,6 +238,16 @@ class CanonicalOrchestrator:
                     changed_targets=spec.changed_targets,
                 )
 
+                work_product = WorkerWorkProduct.from_validated_execution(
+                    task=task,
+                    assignment=assignment_dict,
+                    request=request,
+                    result=result,
+                    changes=spec.changes,
+                    changed_targets=spec.changed_targets,
+                    validation_evidence=verdict.evidence,
+                )
+
                 authorization = {
                     "task_id": verdict.task_id,
                     "worker_id": verdict.worker_id,
@@ -278,6 +291,7 @@ class CanonicalOrchestrator:
                         execution_request=request,
                         execution_result=result,
                         validation=verdict,
+                        work_product=work_product,
                         authorization=authorization,
                         transaction=transaction,
                     )
