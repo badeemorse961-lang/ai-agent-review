@@ -9,7 +9,6 @@ from typing import Iterable, Any
 
 from protected_secret_store import SecretStore, WindowsProtectedSecretStore
 
-
 BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_FILE = BASE_DIR / "connections.json"
 AUTHORITATIVE_REGISTRY_FILE = BASE_DIR / "config" / "registry.json"
@@ -18,26 +17,14 @@ SECRET_DIR_ENV = "AI_AGENT_SECRET_DIR"
 LEGACY_SECRET_FALLBACK_ENV = "AI_AGENT_ALLOW_LEGACY_SECRET_PATH"
 DEFAULT_SECRET_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "AI-Agent" / "secrets"
 
-PROVIDER_FILES = {
-    "groq": "groq_keys.txt",
-    "openrouter": "openrouter_keys.txt",
-}
-PROVIDER_PREFIXES = {
-    "groq": "GROQ",
-    "openrouter": "OR",
-}
+PROVIDER_FILES = {"groq": "groq_keys.txt", "openrouter": "openrouter_keys.txt"}
+PROVIDER_PREFIXES = {"groq": "GROQ", "openrouter": "OR"}
 LIFECYCLE_ACTIVE = "ACTIVE"
 LIFECYCLE_DISABLED = "DISABLED"
 LIFECYCLE_FAILED = "FAILED"
 LIFECYCLE_INVALID = "INVALID"
 LIFECYCLE_REMOVED = "REMOVED"
-LIFECYCLE_VALUES = {
-    LIFECYCLE_ACTIVE,
-    LIFECYCLE_DISABLED,
-    LIFECYCLE_FAILED,
-    LIFECYCLE_INVALID,
-    LIFECYCLE_REMOVED,
-}
+LIFECYCLE_VALUES = {LIFECYCLE_ACTIVE, LIFECYCLE_DISABLED, LIFECYCLE_FAILED, LIFECYCLE_INVALID, LIFECYCLE_REMOVED}
 NON_ELIGIBLE = {LIFECYCLE_DISABLED, LIFECYCLE_FAILED, LIFECYCLE_INVALID, LIFECYCLE_REMOVED}
 
 
@@ -84,7 +71,6 @@ def _legacy_secret_file(provider: str) -> Path:
 
 
 def resolve_secret_file(provider: str) -> Path:
-    """Resolve a TXT import source only; it is never the credential store."""
     external = secret_file(provider)
     if external.exists():
         return external
@@ -92,9 +78,7 @@ def resolve_secret_file(provider: str) -> Path:
     allow_legacy = os.environ.get(LEGACY_SECRET_FALLBACK_ENV, "").strip().lower()
     if allow_legacy in {"1", "true", "yes"} and legacy.exists():
         return legacy
-    raise FileNotFoundError(
-        f"Import source not found: {external}. Set {SECRET_DIR_ENV} to the protected import-source directory."
-    )
+    raise FileNotFoundError(f"Import source not found: {external}. Set {SECRET_DIR_ENV} to the import-source directory.")
 
 
 def load_registry() -> dict:
@@ -151,8 +135,7 @@ def read_secret_source(path: Path, prefix: str) -> tuple[dict[str, str], list[st
 
 def _connection_ids_for_provider(registry: dict, provider: str) -> list[str]:
     values = [
-        connection_id
-        for connection_id, item in registry.get("connections", {}).items()
+        connection_id for connection_id, item in registry.get("connections", {}).items()
         if isinstance(item, dict) and item.get("provider") == provider
     ]
     return sorted(values, key=lambda value: int(value.split("-", 1)[1]))
@@ -168,7 +151,7 @@ def _next_connection_id(used_ids: set[str], prefix: str) -> str:
 def _status(item: dict[str, Any]) -> str:
     raw = str(item.get("status", ""))
     if raw == "VALIDATED":
-        return LIFECYCLE_ACTIVE if bool(item.get("active")) else LIFECYCLE_ACTIVE
+        return LIFECYCLE_ACTIVE
     if raw == "KEY_ROTATED":
         return LIFECYCLE_DISABLED
     if raw in LIFECYCLE_VALUES:
@@ -183,29 +166,28 @@ def import_provider(
     prefix: str,
     *,
     secret_store: SecretStore | None = None,
+    persist: bool = True,
 ) -> ImportSummary:
-    """Additive import into protected storage. TXT omission never removes a prior connection."""
+    """Additive import into protected storage; TXT omission never removes a prior connection."""
     if provider not in PROVIDER_FILES:
         raise ValueError(f"Unsupported provider: {provider}")
     if keys_path.suffix.lower() != ".txt":
         raise ValueError("Import source must be a .txt file")
-
     connections = registry.setdefault("connections", {})
     store = secret_store or WindowsProtectedSecretStore()
     labeled, unlabeled = read_secret_source(keys_path, prefix)
     by_fingerprint = {
         item.get("key_fingerprint"): connection_id
         for connection_id, item in connections.items()
-        if isinstance(item, dict) and item.get("provider") == provider and isinstance(item.get("key_fingerprint"), str)
+        if isinstance(item, dict) and item.get("provider") == provider
+        and item.get("status") != LIFECYCLE_REMOVED
+        and isinstance(item.get("key_fingerprint"), str)
     }
     used_ids = {
-        connection_id
-        for connection_id, item in connections.items()
+        connection_id for connection_id, item in connections.items()
         if isinstance(item, dict) and item.get("provider") == provider
     }
-    imported = 0
-    already_present = 0
-    rejected = 0
+    imported = already_present = rejected = 0
     touched: list[str] = []
     seen: set[str] = set()
 
@@ -220,7 +202,6 @@ def import_provider(
         if duplicate_id is not None and duplicate_id != connection_id:
             already_present += 1
             return
-
         existing = connections.get(connection_id)
         if existing is None:
             connections[connection_id] = {
@@ -236,11 +217,9 @@ def import_provider(
             imported += 1
             touched.append(connection_id)
             return
-
         if not isinstance(existing, dict) or existing.get("provider") != provider:
             rejected += 1
             return
-
         current_fp = existing.get("key_fingerprint")
         if current_fp == fp:
             if store.has(connection_id):
@@ -250,12 +229,11 @@ def import_provider(
                 imported += 1
                 touched.append(connection_id)
             return
-
         previous_status = _status(existing)
         store.put(connection_id, provider, secret, fp)
         existing["key_fingerprint"] = fp
-        existing["status"] = previous_status if previous_status in {LIFECYCLE_ACTIVE, LIFECYCLE_DISABLED} else LIFECYCLE_DISABLED
-        existing["active"] = existing["status"] == LIFECYCLE_ACTIVE
+        existing["status"] = previous_status
+        existing["active"] = previous_status == LIFECYCLE_ACTIVE
         if current_fp:
             by_fingerprint.pop(current_fp, None)
         by_fingerprint[fp] = connection_id
@@ -274,9 +252,9 @@ def import_provider(
         used_ids.add(connection_id)
         ingest(connection_id, secret)
 
-    # No stale pass here: omission from an import file has no lifecycle effect.
-    save_registry(registry)
-    return ImportSummary(provider, imported, already_present, rejected, "PERSISTED", tuple(touched))
+    if persist:
+        save_registry(registry)
+    return ImportSummary(provider, imported, already_present, rejected, "PERSISTED" if persist else "TEST_ONLY", tuple(touched))
 
 
 def _assigned_connections(authoritative: dict) -> set[str]:
@@ -301,7 +279,7 @@ def get_connection_status(connection_id: str, registry: dict | None = None) -> s
     return _status(item) if isinstance(item, dict) else LIFECYCLE_REMOVED
 
 
-def set_connection_status(connection_id: str, status: str, registry: dict | None = None) -> dict[str, Any]:
+def set_connection_status(connection_id: str, status: str, registry: dict | None = None, *, persist: bool = True) -> dict[str, Any]:
     if status not in LIFECYCLE_VALUES:
         raise ValueError(f"Unsupported connection lifecycle status: {status}")
     data = registry or load_registry()
@@ -316,24 +294,26 @@ def set_connection_status(connection_id: str, status: str, registry: dict | None
     item["active"] = status == LIFECYCLE_ACTIVE
     if status in {LIFECYCLE_FAILED, LIFECYCLE_INVALID} and "failure_reason" not in item:
         item["failure_reason"] = "runtime validation reported the connection as unavailable"
-    save_registry(data)
+    if persist:
+        save_registry(data)
     return item
 
 
-def disable_connection(connection_id: str, registry: dict | None = None) -> dict[str, Any]:
-    return set_connection_status(connection_id, LIFECYCLE_DISABLED, registry)
+def disable_connection(connection_id: str, registry: dict | None = None, *, persist: bool = True) -> dict[str, Any]:
+    return set_connection_status(connection_id, LIFECYCLE_DISABLED, registry, persist=persist)
 
 
-def enable_connection(connection_id: str, registry: dict | None = None) -> dict[str, Any]:
-    return set_connection_status(connection_id, LIFECYCLE_ACTIVE, registry)
+def enable_connection(connection_id: str, registry: dict | None = None, *, persist: bool = True) -> dict[str, Any]:
+    return set_connection_status(connection_id, LIFECYCLE_ACTIVE, registry, persist=persist)
 
 
-def mark_connection_failed(connection_id: str, *, invalid: bool = False, reason: str | None = None, registry: dict | None = None) -> dict[str, Any]:
-    item = set_connection_status(connection_id, LIFECYCLE_INVALID if invalid else LIFECYCLE_FAILED, registry)
+def mark_connection_failed(connection_id: str, *, invalid: bool = False, reason: str | None = None, registry: dict | None = None, persist: bool = True) -> dict[str, Any]:
+    item = set_connection_status(connection_id, LIFECYCLE_INVALID if invalid else LIFECYCLE_FAILED, registry, persist=persist)
     if reason:
         data = registry or load_registry()
         item["failure_reason"] = reason[:240]
-        save_registry(data)
+        if persist:
+            save_registry(data)
     return item
 
 
@@ -342,6 +322,7 @@ def remove_connection(
     *,
     registry: dict | None = None,
     secret_store: SecretStore | None = None,
+    persist: bool = True,
 ) -> bool:
     data = registry or load_registry()
     item = data.get("connections", {}).get(connection_id)
@@ -355,7 +336,7 @@ def remove_connection(
         for key in ("primary_pool", "failover_pool"):
             pool = leader.get(key)
             if isinstance(pool, list) and connection_id in pool:
-                remaining = [item for item in pool if item != connection_id]
+                remaining = [value for value in pool if value != connection_id]
                 if not remaining:
                     raise ValueError("Cannot remove the final connection from a leader pool")
                 leader[key] = remaining
@@ -364,15 +345,17 @@ def remove_connection(
         for role, pool in roles.items():
             if not isinstance(pool, list) or connection_id not in pool:
                 continue
-            remaining = [item for item in pool if item != connection_id]
+            remaining = [value for value in pool if value != connection_id]
             if role != "standby" and not remaining:
                 raise ValueError(f"Cannot remove the final connection from worker role: {role}")
             roles[role] = remaining
     store = secret_store or WindowsProtectedSecretStore()
     store.delete(connection_id)
-    del data["connections"][connection_id]
-    AUTHORITATIVE_REGISTRY_FILE.write_text(json.dumps(authoritative, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    save_registry(data)
+    data["connections"][connection_id]["status"] = LIFECYCLE_REMOVED
+    data["connections"][connection_id]["active"] = False
+    if persist:
+        AUTHORITATIVE_REGISTRY_FILE.write_text(json.dumps(authoritative, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        save_registry(data)
     return True
 
 
