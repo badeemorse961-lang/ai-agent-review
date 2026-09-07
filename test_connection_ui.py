@@ -15,7 +15,10 @@ def test_connection_ui_uses_file_picker_and_lifecycle_actions() -> None:
     assert "already_present_count" in source
     assert "rejected_count" in source
     assert "NO_CHANGES" in source
-    assert "Connection must be assigned in config/registry.json before it can be enabled" in source or "Awaiting registry assignment" in source
+    assert "Protected credential is unavailable" in source
+    assert "setup_required" in source
+    assert "✓ READY" in source
+    assert "Automatic Use" in source
     assert "raw secret" not in source.lower()
 
 
