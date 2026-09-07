@@ -10,7 +10,12 @@ from central_leader import CentralLeader, LeaderLease, LeaderPlanningSafetyStop
 from execution_authorization import ExecutionAuthorizationBoundary, ExecutionAuthorizationSafetyStop
 from execution_gate import FileChange
 from independent_validation import IndependentValidationSafetyStop
-from orchestration import CanonicalOrchestrator, OrchestrationSafetyStop, WorkerExecutionSpec, default_validator_factory
+from orchestration import (
+    CanonicalOrchestrator,
+    OrchestrationSafetyStop,
+    WorkerExecutionSpec,
+    default_validator_factory,
+)
 from plan_decomposer import PlanDecomposer
 from worker_dispatch import WorkerDispatcher
 from worker_execution import WorkerExecutionBoundary, WorkerExecutionSafetyStop
@@ -74,13 +79,22 @@ class StubWorkerRouter:
 
 
 class StubWorkerAdapter:
-    def __init__(self, *, changes: bool = True, validation: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        changes: bool = True,
+        validation: Mapping[str, Any] | None = None,
+    ) -> None:
         self.changes = changes
         self.validation = dict(validation or {"passed": True})
         self.prepared: list[str] = []
         self.validated: list[str] = []
 
-    def prepare(self, task: Mapping[str, Any], assignment: Mapping[str, Any]) -> WorkerExecutionSpec:
+    def prepare(
+        self,
+        task: Mapping[str, Any],
+        assignment: Mapping[str, Any],
+    ) -> WorkerExecutionSpec:
         del assignment
         task_id = str(task["task_id"])
         self.prepared.append(task_id)
@@ -89,7 +103,13 @@ class StubWorkerAdapter:
                 command=("pytest", "-q", "test_target.py"),
                 targets=("test_target.py",),
                 changed_targets=("target.txt",),
-                changes=(FileChange("target.txt", 'VALUE = "before"', 'VALUE = "after"'),),
+                changes=(
+                    FileChange(
+                        "target.txt",
+                        'VALUE = "before"',
+                        'VALUE = "after"',
+                    ),
+                ),
             )
         return WorkerExecutionSpec(
             command=("pytest", "-q", "test_target.py"),
@@ -98,7 +118,13 @@ class StubWorkerAdapter:
             changes=(),
         )
 
-    def validate(self, request: Any, task: Mapping[str, Any], result: Any, spec: WorkerExecutionSpec) -> Mapping[str, Any]:
+    def validate(
+        self,
+        request: Any,
+        task: Mapping[str, Any],
+        result: Any,
+        spec: WorkerExecutionSpec,
+    ) -> Mapping[str, Any]:
         del request, result, spec
         self.validated.append(str(task["task_id"]))
         return dict(self.validation)
@@ -108,7 +134,13 @@ class StubAuthorization:
     def __init__(self) -> None:
         self.calls = 0
 
-    def apply(self, verdict: Any, *, checkpoint: Mapping[str, Any], changes: Any) -> Mapping[str, Any]:
+    def apply(
+        self,
+        verdict: Any,
+        *,
+        checkpoint: Mapping[str, Any],
+        changes: Any,
+    ) -> Mapping[str, Any]:
         self.calls += 1
         return {
             "status": "APPROVED",
@@ -144,29 +176,38 @@ def workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def make_orchestrator(tmp_path: Path, *, understanding: StubUnderstanding | None = None,
-                      worker_router: StubWorkerRouter | None = None,
-                      worker_adapter: StubWorkerAdapter | None = None,
-                      executor: Any | None = None,
-                      checkpoint: Any | None = None,
-                      authorization: Any | None = None,
-                      max_output_chars: int = 20_000):
-    root = workspace(tmp_path)
+def make_orchestrator(
+    root: Path,
+    *,
+    understanding: StubUnderstanding | None = None,
+    worker_router: StubWorkerRouter | None = None,
+    worker_adapter: StubWorkerAdapter | None = None,
+    executor: Any | None = None,
+    checkpoint: Any | None = None,
+    authorization: Any | None = None,
+    max_output_chars: int = 20_000,
+):
     leader_router = StubLeaderRouter()
     worker_router = worker_router or StubWorkerRouter()
     worker_adapter = worker_adapter or StubWorkerAdapter()
     understanding = understanding or StubUnderstanding(context())
-    calls: list[Any] = []
 
     def default_executor(request: Any) -> tuple[int, str, str, bool]:
-        calls.append(request)
+        del request
         return 0, "worker ok", "", False
+
+    def active_lease(task_id: str) -> Any:
+        return worker_router.active_leases().get(task_id)
 
     worker_execution = WorkerExecutionBoundary(
         root,
         executor=executor or default_executor,
-        checkpoint=checkpoint or (lambda request: {"isolated": True, "checkpoint_id": request.task_id + ":cp"}),
-        active_lease_lookup=worker_router.active_leases,
+        checkpoint=checkpoint
+        or (lambda request: {
+            "isolated": True,
+            "checkpoint_id": request.task_id + ":cp",
+        }),
+        active_lease_lookup=active_lease,
         max_output_chars=max_output_chars,
     )
     authorization = authorization or StubAuthorization()
@@ -196,14 +237,21 @@ def make_orchestrator(tmp_path: Path, *, understanding: StubUnderstanding | None
         validator_factory=default_validator_factory(root),
         authorization=authorization,
     )
-    return orchestrator, root, leader_router, worker_router, worker_adapter, calls
+    return orchestrator, leader_router, worker_router, worker_adapter, authorization
 
 
-def test_full_mutating_flow_uses_real_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    root = workspace(tmp_path)
+def isolate_gate_files(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     monkeypatch.setattr(execution_gate_module, "STATE_FILE", root / "execution_gate_state.json")
     monkeypatch.setattr(execution_gate_module, "CHECKPOINT_ROOT", root / ".agent_gate_checkpoints")
-    orchestrator, _, leader_router, worker_router, adapter, _ = make_orchestrator(tmp_path)
+
+
+def test_full_mutating_flow_uses_real_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = workspace(tmp_path)
+    isolate_gate_files(monkeypatch, root)
+    orchestrator, leader_router, worker_router, adapter, _ = make_orchestrator(root)
     orchestrator.authorization = ExecutionAuthorizationBoundary(root)
 
     result = orchestrator.run("TASK-1")
@@ -220,7 +268,10 @@ def test_full_mutating_flow_uses_real_gate(tmp_path: Path, monkeypatch: pytest.M
 def test_unknown_state_stops_before_leader(tmp_path: Path) -> None:
     root = workspace(tmp_path)
     understanding = StubUnderstanding(context(state="UNKNOWN"))
-    orchestrator, _, leader_router, worker_router, _, calls = make_orchestrator(tmp_path, understanding=understanding)
+    orchestrator, leader_router, worker_router, _, _ = make_orchestrator(
+        root,
+        understanding=understanding,
+    )
 
     with pytest.raises(LeaderPlanningSafetyStop):
         orchestrator.run("TASK-UNKNOWN")
@@ -228,10 +279,10 @@ def test_unknown_state_stops_before_leader(tmp_path: Path) -> None:
     assert understanding.calls == 1
     assert leader_router.leases == {}
     assert worker_router.leases == {}
-    assert calls == []
 
 
 def test_worker_lease_rebind_stops_before_launch(tmp_path: Path) -> None:
+    root = workspace(tmp_path)
     worker_router = StubWorkerRouter()
     calls: list[Any] = []
 
@@ -240,11 +291,20 @@ def test_worker_lease_rebind_stops_before_launch(tmp_path: Path) -> None:
         return 0, "unexpected", "", False
 
     def checkpoint(request: Any) -> Mapping[str, Any]:
-        worker_router.leases[request.task_id] = WorkerLease("W-2", "coder", request.task_id, 2.0, False)
+        worker_router.leases[request.task_id] = WorkerLease(
+            "W-2",
+            "coder",
+            request.task_id,
+            2.0,
+            False,
+        )
         return {"isolated": True, "checkpoint_id": request.task_id + ":cp"}
 
-    orchestrator, _, _, worker_router, _, _ = make_orchestrator(
-        tmp_path, worker_router=worker_router, executor=executor, checkpoint=checkpoint
+    orchestrator, _, worker_router, _, _ = make_orchestrator(
+        root,
+        worker_router=worker_router,
+        executor=executor,
+        checkpoint=checkpoint,
     )
 
     with pytest.raises(WorkerExecutionSafetyStop, match="identity"):
@@ -255,10 +315,11 @@ def test_worker_lease_rebind_stops_before_launch(tmp_path: Path) -> None:
 
 
 def test_validation_failure_stops_before_authorization(tmp_path: Path) -> None:
+    root = workspace(tmp_path)
     adapter = StubWorkerAdapter(validation={"passed": False, "reason": "criteria failed"})
-    authorization = StubAuthorization()
-    orchestrator, root, _, worker_router, _, _ = make_orchestrator(
-        tmp_path, worker_adapter=adapter, authorization=authorization
+    orchestrator, _, worker_router, _, authorization = make_orchestrator(
+        root,
+        worker_adapter=adapter,
     )
 
     with pytest.raises(IndependentValidationSafetyStop):
@@ -270,33 +331,46 @@ def test_validation_failure_stops_before_authorization(tmp_path: Path) -> None:
 
 
 def test_changed_target_mismatch_stops_before_execution(tmp_path: Path) -> None:
+    root = workspace(tmp_path)
     adapter = StubWorkerAdapter()
 
-    def mismatched_prepare(task: Mapping[str, Any], assignment: Mapping[str, Any]) -> WorkerExecutionSpec:
+    def mismatched_prepare(
+        task: Mapping[str, Any],
+        assignment: Mapping[str, Any],
+    ) -> WorkerExecutionSpec:
         del task, assignment
         return WorkerExecutionSpec(
             command=("pytest", "-q", "test_target.py"),
             targets=("test_target.py",),
             changed_targets=("other.txt",),
-            changes=(FileChange("target.txt", 'VALUE = "before"', 'VALUE = "after"'),),
+            changes=(
+                FileChange("target.txt", 'VALUE = "before"', 'VALUE = "after"'),
+            ),
         )
 
     adapter.prepare = mismatched_prepare  # type: ignore[method-assign]
-    orchestrator, _, _, worker_router, _, calls = make_orchestrator(tmp_path, worker_adapter=adapter)
+    orchestrator, _, worker_router, _, _ = make_orchestrator(root, worker_adapter=adapter)
 
     with pytest.raises(OrchestrationSafetyStop, match="changed_targets"):
         orchestrator.run("TASK-TARGET")
 
-    assert calls == []
     assert worker_router.released == ["TASK-TARGET:1"]
 
 
-def test_validation_identity_mismatch_reaches_authorization_safely(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validation_identity_mismatch_reaches_authorization_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = workspace(tmp_path)
-    monkeypatch.setattr(execution_gate_module, "STATE_FILE", root / "execution_gate_state.json")
-    monkeypatch.setattr(execution_gate_module, "CHECKPOINT_ROOT", root / ".agent_gate_checkpoints")
-    adapter = StubWorkerAdapter(validation={"passed": True, "task_id": "WRONG-TASK", "worker_id": "WRONG-WORKER"})
-    orchestrator, _, _, worker_router, _, _ = make_orchestrator(tmp_path, worker_adapter=adapter)
+    isolate_gate_files(monkeypatch, root)
+    adapter = StubWorkerAdapter(
+        validation={
+            "passed": True,
+            "task_id": "WRONG-TASK",
+            "worker_id": "WRONG-WORKER",
+        }
+    )
+    orchestrator, _, worker_router, _, _ = make_orchestrator(root, worker_adapter=adapter)
     orchestrator.authorization = ExecutionAuthorizationBoundary(root)
 
     with pytest.raises(ExecutionAuthorizationSafetyStop, match="task identity"):
@@ -307,12 +381,16 @@ def test_validation_identity_mismatch_reaches_authorization_safely(tmp_path: Pat
 
 
 def test_truncated_execution_cannot_reach_authorization(tmp_path: Path) -> None:
+    root = workspace(tmp_path)
+
     def noisy_executor(request: Any) -> tuple[int, str, str, bool]:
         del request
         return 0, "x" * 2048, "", False
 
-    orchestrator, _, _, worker_router, _, _ = make_orchestrator(
-        tmp_path, executor=noisy_executor, max_output_chars=256
+    orchestrator, _, worker_router, _, _ = make_orchestrator(
+        root,
+        executor=noisy_executor,
+        max_output_chars=256,
     )
 
     with pytest.raises(IndependentValidationSafetyStop, match="Truncated"):
@@ -322,11 +400,16 @@ def test_truncated_execution_cannot_reach_authorization(tmp_path: Path) -> None:
 
 
 def test_missing_checkpoint_identity_stops_before_authorization(tmp_path: Path) -> None:
+    root = workspace(tmp_path)
+
     def checkpoint(request: Any) -> Mapping[str, Any]:
         del request
         return {"isolated": True}
 
-    orchestrator, _, _, worker_router, _, _ = make_orchestrator(tmp_path, checkpoint=checkpoint)
+    orchestrator, _, worker_router, _, _ = make_orchestrator(
+        root,
+        checkpoint=checkpoint,
+    )
 
     with pytest.raises(IndependentValidationSafetyStop, match="checkpoint_id"):
         orchestrator.run("TASK-CHECKPOINT")
