@@ -35,6 +35,7 @@ class ExecutionAuthorizationTests(unittest.TestCase):
                 "passed": evidence_passed,
                 "task_id": task_id,
                 "worker_id": worker_id,
+                "checkpoint_id": "CP-1",
                 "changed_targets": targets or ["target.txt"],
             },
         )
@@ -87,6 +88,7 @@ class ExecutionAuthorizationTests(unittest.TestCase):
                 "passed": True,
                 "task_id": "TASK-1",
                 "worker_id": "GROQ-01",
+                "checkpoint_id": "CP-1",
                 "changed_targets": ["target.txt"],
             }
             evidence[field] = value
@@ -109,6 +111,40 @@ class ExecutionAuthorizationTests(unittest.TestCase):
                 changes=[self._change()],
             )
 
+    def test_authorization_requires_checkpoint_identity(self) -> None:
+        root = self._workspace()
+        boundary = ExecutionAuthorizationBoundary(root)
+        with self.assertRaises(ExecutionAuthorizationSafetyStop):
+            boundary.authorize(
+                self._verdict(),
+                checkpoint={"isolated": True},
+                changes=[self._change()],
+            )
+
+    def test_authorization_rejects_checkpoint_rebinding(self) -> None:
+        root = self._workspace()
+        boundary = ExecutionAuthorizationBoundary(root)
+        with self.assertRaises(ExecutionAuthorizationSafetyStop):
+            boundary.authorize(
+                self._verdict(),
+                checkpoint={"checkpoint_id": "CP-OTHER", "isolated": True},
+                changes=[self._change()],
+            )
+
+    def test_authorization_requires_matching_validation_checkpoint(self) -> None:
+        root = self._workspace()
+        boundary = ExecutionAuthorizationBoundary(root)
+        verdict = self._verdict()
+        evidence = dict(verdict.evidence)
+        evidence.pop("checkpoint_id")
+        object.__setattr__(verdict, "evidence", evidence)
+        with self.assertRaises(ExecutionAuthorizationSafetyStop):
+            boundary.authorize(
+                verdict,
+                checkpoint=self._checkpoint(),
+                changes=[self._change()],
+            )
+
     def test_authorization_is_internal_and_does_not_require_human_approval(self) -> None:
         root = self._workspace()
         boundary = ExecutionAuthorizationBoundary(root)
@@ -121,6 +157,7 @@ class ExecutionAuthorizationTests(unittest.TestCase):
         self.assertIn("independent_validation_passed", record.basis)
         self.assertIn("validation_evidence_explicitly_passed", record.basis)
         self.assertIn("validation_identity_consistent", record.basis)
+        self.assertIn("validation_checkpoint_bound", record.basis)
 
     def test_targets_must_match_validation_evidence_exactly(self) -> None:
         root = self._workspace()
