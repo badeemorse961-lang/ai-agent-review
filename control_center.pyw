@@ -1,5 +1,5 @@
 from desktop_control_center import ControlCenterApp, main
-from control_center_language_runtime import install_bilingual_support
+from control_center_language_runtime_v2 import install_bilingual_support
 from control_center_safety_view import install_real_safety_view
 
 
