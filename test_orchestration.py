@@ -258,6 +258,11 @@ def test_full_mutating_flow_uses_real_gate(
 
     assert result.status == "APPROVED"
     assert result.task_records[0].transaction["status"] == "APPROVED"
+    assert result.task_records[0].work_product.status == "SUCCEEDED"
+    assert result.task_records[0].work_product.task_id == "TASK-1:1"
+    assert result.task_records[0].work_product.worker_id == "W-1"
+    assert result.task_records[0].work_product.changed_targets == ("target.txt",)
+    assert result.task_records[0].work_product.validation_evidence["checkpoint_id"] == "TASK-1:1:cp"
     assert (root / "target.txt").read_text(encoding="utf-8") == 'VALUE = "after"'
     assert adapter.prepared == ["TASK-1:1"]
     assert adapter.validated == ["TASK-1:1"]
