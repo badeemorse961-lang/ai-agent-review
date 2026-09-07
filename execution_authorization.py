@@ -63,12 +63,43 @@ class ExecutionAuthorizationBoundary:
             raise ExecutionAuthorizationSafetyStop(
                 "Mutation requires a passed independent validation verdict"
             )
+
+        if not isinstance(verdict.task_id, str) or not verdict.task_id.strip():
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation verdict requires a non-empty task identity"
+            )
+        if not isinstance(verdict.worker_id, str) or not verdict.worker_id.strip():
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation verdict requires a non-empty worker identity"
+            )
+
+        evidence = verdict.evidence
+        if not isinstance(evidence, Mapping):
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation verdict evidence must be a mapping"
+            )
+        if evidence.get("passed") is not True:
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation evidence must explicitly attest passed=True"
+            )
+
+        evidence_task_id = evidence.get("task_id")
+        if evidence_task_id is not None and evidence_task_id != verdict.task_id:
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation evidence task identity does not match the verdict"
+            )
+        evidence_worker_id = evidence.get("worker_id")
+        if evidence_worker_id is not None and evidence_worker_id != verdict.worker_id:
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation evidence worker identity does not match the verdict"
+            )
+
         if not isinstance(checkpoint, Mapping) or checkpoint.get("isolated") is not True:
             raise ExecutionAuthorizationSafetyStop(
                 "Mutation requires an isolated checkpoint attestation"
             )
 
-        target_evidence = verdict.evidence.get("changed_targets")
+        target_evidence = evidence.get("changed_targets")
         if not isinstance(target_evidence, list):
             raise ExecutionAuthorizationSafetyStop(
                 "Validation evidence must contain changed_targets"
@@ -90,6 +121,8 @@ class ExecutionAuthorizationBoundary:
             changed_targets=change_paths,
             basis=(
                 "independent_validation_passed",
+                "validation_evidence_explicitly_passed",
+                "validation_identity_consistent",
                 "isolated_checkpoint_attested",
                 "mutation_targets_exactly_match_validation_targets",
             ),
