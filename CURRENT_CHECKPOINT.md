@@ -6,15 +6,17 @@
 
 Latest merged implementation baseline:
 
-`31cf39db845ec4487cecd8accdb46ccc69593cf3`
+`9d0be9c8b67e975fc0a1fe0d286c663933842283`
 
 PR #42 binds mutation authorization to the authoritative execution checkpoint identity: every independently validated `ExecutionResult` must carry a non-empty `checkpoint_id`; that identity is copied into `ValidationVerdict.evidence`; and `ExecutionAuthorizationBoundary` requires the isolated authorization checkpoint identity to match the validation evidence exactly. Missing/rebound checkpoint identities are safety stops. Existing legacy mutation fixtures remain compatible only when `transaction_id` exactly matches the verdict task identity and validation evidence explicitly attests `validated=True`.
 
 PR #43 restores the repository's GitHub Actions security-evidence path by installing the declared test dependency before the cross-process workspace-lock suite. The resulting workflow run passed dependency installation, Python compilation, repository security audit, and the cross-process mutation-lock tests.
 
+PR #45 establishes the canonical end-to-end orchestration composition over the existing authority boundaries. The coordinator composes project understanding, Central Leader, plan decomposition, worker dispatch, guarded worker execution, independent validation, execution authorization, and the Execution Gate without collapsing their authority responsibilities. Deterministic integration coverage includes the normal mutating path plus adversarial authority/evidence failures. No plan-wide atomic rollback claim was added.
+
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, machine-validated configuration authority, registry-bound runtime health/lease state, authoritative worker lease binding, validation verdict authority binding, explicit autonomous leader start authorization, live Central Leader lease rebinding, and execution-checkpoint identity binding at mutation authorization.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, machine-validated configuration authority, registry-bound runtime health/lease state, authoritative worker lease binding, validation verdict authority binding, explicit autonomous leader start authorization, live Central Leader lease rebinding, execution-checkpoint identity binding at mutation authorization, and canonical orchestration composition from project understanding through Execution Gate approval.
 
 ## Git mutation trust chain
 
@@ -134,6 +136,8 @@ PR #42 — execution-checkpoint identity binding at mutation authorization.
 
 PR #43 — restored GitHub Actions security-audit test dependency.
 
+PR #45 — canonical end-to-end orchestration composition and deterministic integration acceptance.
+
 ## Validation record
 
 PR #33 — real Windows working tree:
@@ -202,6 +206,7 @@ python -m compileall -q .                                  PASS
 pytest -q test_central_leader.py                            7 passed
 pytest -q                                                   269 passed, 1 skipped
 python repository_security_audit.py                         PASS
+pytest -q                                                   269 passed, 1 skipped
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
@@ -229,7 +234,7 @@ pytest -q test_independent_validation.py test_execution_authorization.py 25 pass
 pytest -q                                                   277 passed, 1 skipped
 python repository_security_audit.py                         PASS
 git diff --check                                            PASS
-git status --short --branch                                 CLEAN
+ git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #42; local Windows execution was therefore the promotion evidence.
@@ -246,11 +251,12 @@ python -m pytest -q test_workspace_mutation_lock.py \
 
 PR #43 is evidence-pipeline hardening only; it does not replace the real Windows validation requirement for architectural/runtime milestones.
 
-Current main — real Windows acceptance evidence after PR #43:
+PR #45 — real Windows acceptance evidence:
 
 ```text
 python -m compileall -q .                                  PASS
-pytest -q                                                   277 passed, 1 skipped
+pytest -q test_orchestration.py                             8 passed
+pytest -q                                                   285 passed, 1 skipped
 python repository_security_audit.py                         PASS
 python orchestration_smoke_test.py                          PASS
   Healthy Ultra leaders : 8
@@ -265,23 +271,31 @@ git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
-This current-main smoke evidence proves real provider connectivity, registry-driven leader/worker routing, runtime lease acquisition/release, response validation, and the configured failover path. It does not by itself prove the full target architecture from project understanding through execution gate and mutation verification.
+PR #45 is the accepted canonical composition evidence. The focused integration suite exercises the real worker execution, independent validation, and execution-authorization/Execution-Gate boundaries through deterministic adapters, while the provider/router smoke remains a separate connectivity/failover check. The accepted architecture does not claim plan-wide atomic rollback across multiple task transactions.
 
-## Remaining readiness gaps
+## Future operational readiness — Dynamic Connection Onboarding & Auto-Assignment
 
-### Integration composition — UNVERIFIED / GAP
+Tracking issue: **#46 — Future readiness: Dynamic Connection Onboarding & Auto-Assignment**.
 
-The repository contains validated project-understanding, Central Leader, plan decomposition, worker dispatch, worker execution, independent validation, execution authorization, and execution-gate components, but the current evidence does not establish a single production orchestration coordinator that composes the full target flow end-to-end. The existing `orchestration_smoke_test.py` is a real provider/router smoke test and intentionally does not send project files or exercise the complete mutation/verification chain.
+Current assessment: **CONFIGURATION-DRIVEN ONLY**.
 
-Required evidence before final acceptance:
+The repository already supports variable-length registry-defined leader/worker pools, uniqueness and assignment validation, provider consistency checks, runtime health separation, and router-side exclusion of unavailable connections. This proves configuration-driven expansion, not automatic onboarding.
 
-1. identify or implement the canonical production orchestration composition;
-2. exercise it with deterministic adapters without bypassing authority boundaries;
-3. cover negative paths for missing/rebound/mismatched authority and execution evidence;
-4. run the resulting integration suite on the real Windows environment;
-5. preserve the provider/router smoke as a separate connectivity/failover check.
+The following are **not currently verified** as a single end-to-end capability: automatic capability discovery for a newly added connection, deterministic classification from validated metadata/policy/registry, automatic pool insertion without manual registry maintenance, onboarding health admission, and automatic quarantine/re-admission lifecycle.
 
-Until those conditions are proven, overall project status remains NOT READY FOR FINAL ADOPTION.
+This requirement is intentionally not a current milestone and must not interrupt canonical-orchestration acceptance. When formally evaluated, record exactly one status:
+
+```text
+AUTO-ONBOARDING VERIFIED
+CONFIGURATION-DRIVEN ONLY
+MISSING IMPLEMENTATION
+```
+
+The requirement must preserve these invariants: `config/registry.json` remains routing authority; pool sizes stay N-driven; connection IDs stay unique and stable; every connection has exactly one valid routing assignment; provider/model/role assignment remains policy-consistent; runtime health/state never becomes configuration authority; secrets remain outside Git; and onboarding classification is deterministic rather than guessed from a model name.
+
+## Current readiness
+
+Canonical end-to-end orchestration is now promoted and verified. Provider/router smoke remains independently verified. Dynamic connection onboarding remains a future operational-readiness requirement and is **not** part of PR #45 acceptance.
 
 ## Promotion rule
 
