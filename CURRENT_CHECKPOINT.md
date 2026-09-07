@@ -6,13 +6,13 @@
 
 Latest merged implementation baseline:
 
-`fd5deca992798d0e519027c2f25f77ed07ee1d2f`
+`c5dad608eaab7cee0c401902ee7f27cfc1767b49`
 
-PR #41 hardens the Central Leader planning boundary: after model transport returns, the authoritative router snapshot is re-read and the original leader lease must still exist with the exact provider, account, model, tier, and task identity. A disappeared or rebound lease is a safety stop; the model result is never accepted under a new leader identity.
+PR #42 binds mutation authorization to the authoritative execution checkpoint identity: every independently validated `ExecutionResult` must carry a non-empty `checkpoint_id`; that identity is copied into `ValidationVerdict.evidence`; and `ExecutionAuthorizationBoundary` requires the isolated authorization checkpoint identity to match the validation evidence exactly. Missing/rebound checkpoint identities are safety stops. Existing legacy mutation fixtures remain compatible only when `transaction_id` exactly matches the verdict task identity and validation evidence explicitly attests `validated=True`.
 
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, machine-validated configuration authority, registry-bound runtime health/lease state, authoritative worker lease binding, validation verdict authority binding, and explicit autonomous leader start authorization.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, machine-validated configuration authority, registry-bound runtime health/lease state, authoritative worker lease binding, validation verdict authority binding, explicit autonomous leader start authorization, live Central Leader lease rebinding, and execution-checkpoint identity binding at mutation authorization.
 
 ## Git mutation trust chain
 
@@ -22,6 +22,7 @@ Passed ValidationVerdict
         + exact FileChange targets/content
         + validation evidence explicitly attests passed=True
         + verdict/evidence task+worker identity agreement
+        + execution checkpoint identity matches validation evidence
         ↓
 ExecutionAuthorizationBoundary
         ↓
@@ -72,7 +73,7 @@ LeaderRouter / WorkerRouter
 
 Health/state input is observation data, not configuration truth. Unknown IDs are ignored; wrong-provider observations are rejected/ignored according to component contract; model/tier mismatches do not become routing state; malformed/non-finite leases are discarded. Leader leases must match configured tier/model/provider/account/task identity. Worker leases must match configured role membership and standby semantics.
 
-Worker execution requires an authoritative active lease lookup, matches task/role/worker identity, rejects standby leases from direct execution, and rechecks the live lease after checkpoint establishment immediately before process launch. Mutation authorization also binds a passed `ValidationVerdict` to explicit positive evidence and matching task/worker identities before Git mutation admission.
+Worker execution requires an authoritative active lease lookup, matches task/role/worker identity, rejects standby leases from direct execution, and rechecks the live lease after checkpoint establishment immediately before process launch. Mutation authorization binds a passed `ValidationVerdict` to explicit positive evidence, matching task/worker identities, and the exact execution checkpoint identity before Git mutation admission.
 
 ## Central Leader authority boundary
 
@@ -126,6 +127,8 @@ PR #39 — validation verdict authority binding at mutation admission.
 PR #40 — explicit autonomous leader start authorization at the Central Leader boundary.
 
 PR #41 — live Central Leader lease rebinding after model transport.
+
+PR #42 — execution-checkpoint identity binding at mutation authorization.
 
 ## Validation record
 
@@ -213,6 +216,19 @@ git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #41; local Windows execution was therefore the promotion evidence.
+
+PR #42 — real Windows working tree:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_independent_validation.py test_execution_authorization.py 25 passed
+pytest -q                                                   277 passed, 1 skipped
+python repository_security_audit.py                         PASS
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
+
+No GitHub Actions workflow runs were configured/available for PR #42; local Windows execution was therefore the promotion evidence.
 
 ## Promotion rule
 
