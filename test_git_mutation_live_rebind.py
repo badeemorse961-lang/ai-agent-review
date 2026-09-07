@@ -65,7 +65,7 @@ def execute_attested(workspace: Path):
             worker_id=worker_id,
             passed=True,
             reasons=(),
-            evidence={"changed_targets": [change.path], "validated": True},
+            evidence={"passed": True, "changed_targets": [change.path], "validated": True},
         ),
         checkpoint={"isolated": True, "transaction_id": task_id},
         changes=[change],
