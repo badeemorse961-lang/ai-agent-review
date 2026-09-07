@@ -146,6 +146,10 @@ class CentralLeader:
             raise LeaderPlanningSafetyStop(
                 f"Unsupported project state for autonomous leader planning: {state}"
             )
+        if project.get("autonomous_start_allowed") is not True:
+            raise LeaderPlanningSafetyStop(
+                "Project evidence does not explicitly authorize autonomous leader planning"
+            )
 
     @staticmethod
     def _request_from_lease(
