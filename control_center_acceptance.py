@@ -8,7 +8,7 @@ from application_boundary import ApplicationIntent, ControlCenterService
 
 
 def run_service_smoke(root: Path) -> None:
-    service = ControlCenterService(workspace_root=root)
+    service = ControlCenterService(workspace_root=root, autowire_core=False)
 
     selected = service.dispatch(ApplicationIntent("select_project", {"workspace_root": str(root)}))
     assert selected.status == "OK", selected.error
