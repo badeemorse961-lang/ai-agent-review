@@ -1,0 +1,37 @@
+name: Windows Regression Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  windows-regression:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Compile Python sources
+        run: python -m compileall -q .
+      - name: Run canonical orchestration integration suite
+        run: python -m pytest -q test_orchestration.py test_production_runtime.py test_provider_transport.py
+      - name: Run full regression suite
+        run: python -m pytest -q
+      - name: Run repository security audit
+        run: python repository_security_audit.py
+      - name: Verify diff whitespace
+        shell: pwsh
+        run: |
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
