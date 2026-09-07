@@ -246,6 +246,43 @@ python -m pytest -q test_workspace_mutation_lock.py \
 
 PR #43 is evidence-pipeline hardening only; it does not replace the real Windows validation requirement for architectural/runtime milestones.
 
+Current main — real Windows acceptance evidence after PR #43:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q                                                   277 passed, 1 skipped
+python repository_security_audit.py                         PASS
+python orchestration_smoke_test.py                          PASS
+  Healthy Ultra leaders : 8
+  Healthy Super leaders : 10
+  Configured Groq workers: 15
+  Leader: OR-02 / nvidia/nemotron-3-ultra-550b-a55b:free / ULTRA
+  Leader output validation                                PASS
+  Worker: GROQ-01 / openai/gpt-oss-120b / standby=False
+  Worker output validation                                PASS
+  Project files sent                                       NO
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
+
+This current-main smoke evidence proves real provider connectivity, registry-driven leader/worker routing, runtime lease acquisition/release, response validation, and the configured failover path. It does not by itself prove the full target architecture from project understanding through execution gate and mutation verification.
+
+## Remaining readiness gaps
+
+### Integration composition — UNVERIFIED / GAP
+
+The repository contains validated project-understanding, Central Leader, plan decomposition, worker dispatch, worker execution, independent validation, execution authorization, and execution-gate components, but the current evidence does not establish a single production orchestration coordinator that composes the full target flow end-to-end. The existing `orchestration_smoke_test.py` is a real provider/router smoke test and intentionally does not send project files or exercise the complete mutation/verification chain.
+
+Required evidence before final acceptance:
+
+1. identify or implement the canonical production orchestration composition;
+2. exercise it with deterministic adapters without bypassing authority boundaries;
+3. cover negative paths for missing/rebound/mismatched authority and execution evidence;
+4. run the resulting integration suite on the real Windows environment;
+5. preserve the provider/router smoke as a separate connectivity/failover check.
+
+Until those conditions are proven, overall project status remains NOT READY FOR FINAL ADOPTION.
+
 ## Promotion rule
 
 For each architectural milestone:
