@@ -206,8 +206,7 @@ python -m compileall -q .                                  PASS
 pytest -q test_central_leader.py                            7 passed
 pytest -q                                                   269 passed, 1 skipped
 python repository_security_audit.py                         PASS
-pytest -q                                                   269 passed, 1 skipped
-git diff --check                                            PASS
+ git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
@@ -234,7 +233,7 @@ pytest -q test_independent_validation.py test_execution_authorization.py 25 pass
 pytest -q                                                   277 passed, 1 skipped
 python repository_security_audit.py                         PASS
 git diff --check                                            PASS
- git status --short --branch                                 CLEAN
+git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #42; local Windows execution was therefore the promotion evidence.
