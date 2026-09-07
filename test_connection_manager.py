@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from connection_manager import (
-    AUTHORITATIVE_REGISTRY_FILE,
     LIFECYCLE_ACTIVE,
     LIFECYCLE_DISABLED,
     LIFECYCLE_FAILED,
@@ -51,12 +49,11 @@ def test_import_is_additive_and_preserves_existing(tmp_path: Path) -> None:
     source = tmp_path / "new.txt"
     source.write_text("new-secret\n", encoding="utf-8")
 
-    summary = import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store)
+    summary = import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store, persist=False)
 
     assert summary.imported_count == 1
     assert set(registry["connections"]) == {"GROQ-01", "GROQ-02"}
-    assert store.has("GROQ-01")
-    assert store.has("GROQ-02")
+    assert store.has("GROQ-01") and store.has("GROQ-02")
 
 
 def test_duplicate_import_is_idempotent_by_fingerprint(tmp_path: Path) -> None:
@@ -69,8 +66,8 @@ def test_duplicate_import_is_idempotent_by_fingerprint(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_text(f"{secret}\n", encoding="utf-8")
 
-    first = import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store)
-    second = import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store)
+    first = import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store, persist=False)
+    second = import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store, persist=False)
 
     assert first.already_present_count == 1
     assert second.already_present_count == 1
@@ -88,7 +85,7 @@ def test_import_omission_never_disables_previous_key(tmp_path: Path) -> None:
     source = tmp_path / "subset.txt"
     source.write_text("secret-GROQ-02\n", encoding="utf-8")
 
-    import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store)
+    import_provider("groq", source, registry, PROVIDER_PREFIXES["groq"], secret_store=store, persist=False)
 
     assert get_connection_status("GROQ-01", registry) == LIFECYCLE_ACTIVE
     assert connection_is_eligible("GROQ-01", registry)
@@ -103,24 +100,23 @@ def test_disable_and_enable_preserve_secret(tmp_path: Path) -> None:
     auth.write_text(json.dumps({"architecture": {"workers": {"roles": {"coder": ["GROQ-01"]}}}}), encoding="utf-8")
 
     with patch("connection_manager.AUTHORITATIVE_REGISTRY_FILE", auth):
-        disable_connection("GROQ-01", registry)
+        disable_connection("GROQ-01", registry, persist=False)
         assert get_connection_status("GROQ-01", registry) == LIFECYCLE_DISABLED
         assert not connection_is_eligible("GROQ-01", registry)
-        enable_connection("GROQ-01", registry)
+        enable_connection("GROQ-01", registry, persist=False)
 
     assert get_connection_status("GROQ-01", registry) == LIFECYCLE_ACTIVE
     assert store.get("GROQ-01", "groq") == secret
 
 
-def test_failed_does_not_delete_secret(tmp_path: Path) -> None:
+def test_failed_does_not_delete_secret() -> None:
     registry = registry_with(["GROQ-01"])
     store = MemorySecretStore()
     secret = "secret-GROQ-01"
-    fp = fingerprint(secret)
-    store.put("GROQ-01", "groq", secret, fp)
+    store.put("GROQ-01", "groq", secret, fingerprint(secret))
     from connection_manager import mark_connection_failed
 
-    mark_connection_failed("GROQ-01", reason="expired", registry=registry)
+    mark_connection_failed("GROQ-01", reason="expired", registry=registry, persist=False)
 
     assert get_connection_status("GROQ-01", registry) == LIFECYCLE_FAILED
     assert store.get("GROQ-01", "groq") == secret
@@ -133,15 +129,12 @@ def test_remove_deletes_only_selected_and_updates_authoritative_registry(tmp_pat
         secret = f"secret-{connection_id}"
         store.put(connection_id, "groq", secret, fingerprint(secret))
     auth = tmp_path / "registry.json"
-    auth.write_text(
-        json.dumps({"architecture": {"workers": {"roles": {"coder": ["GROQ-01", "GROQ-02"]}}}}),
-        encoding="utf-8",
-    )
+    auth.write_text(json.dumps({"architecture": {"workers": {"roles": {"coder": ["GROQ-01", "GROQ-02"]}}}}), encoding="utf-8")
 
     with patch("connection_manager.AUTHORITATIVE_REGISTRY_FILE", auth):
-        assert remove_connection("GROQ-01", registry=registry, secret_store=store)
+        assert remove_connection("GROQ-01", registry=registry, secret_store=store, persist=True)
 
-    assert "GROQ-01" not in registry["connections"]
+    assert registry["connections"]["GROQ-01"]["status"] == "REMOVED"
     assert "GROQ-02" in registry["connections"]
     assert not store.has("GROQ-01")
     assert store.has("GROQ-02")
