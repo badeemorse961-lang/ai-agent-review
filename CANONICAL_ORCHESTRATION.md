@@ -17,6 +17,8 @@ WorkerExecutionBoundary
         ↓
 IndependentValidator
         ↓
+WorkerWorkProduct
+        ↓
 ExecutionAuthorizationBoundary
         ↓
 ExecutionGate
@@ -34,6 +36,7 @@ The provider/router smoke test remains separate and is intentionally not the can
 - `WorkerDispatcher` owns authoritative worker assignment and leases.
 - `WorkerExecutionBoundary` owns command-policy and process-sandbox admission.
 - `IndependentValidator` owns the independent execution verdict boundary.
+- `WorkerWorkProduct` records the validated, typed worker output bound to task/worker identity and checkpoint evidence.
 - `ExecutionAuthorizationBoundary` owns internal promotion to mutation authority.
 - `ExecutionGate` owns checkpoint/apply/test/approve-or-rollback semantics.
 - The coordinator owns only ordering, composition, and lease cleanup.
@@ -52,11 +55,13 @@ A `WorkerAdapter` returns a `WorkerExecutionSpec` containing:
 
 `changed_targets` must equal the `FileChange.path` set. The coordinator rejects mismatches before execution.
 
-The worker adapter also supplies validation evidence through the existing `IndependentValidator` hook. The validator adds the actual execution checkpoint identity to the evidence; callers cannot substitute a different checkpoint identity.
+After execution, the existing `IndependentValidator` must produce passed evidence bound to the execution checkpoint. The coordinator then creates the authoritative `WorkerWorkProduct`, which includes the exact command/targets/changes, required validation criteria, validation evidence, bounded execution result/status, and bounded failure metadata semantics. Raw stdout/stderr are not copied into this authoritative product.
+
+The detailed protocol is authoritative in `WORKER_WORK_PRODUCT_PROTOCOL.md`.
 
 ## Read-only tasks
 
-A worker task may declare no `changed_targets` and no `FileChange` records. Such a task still crosses worker execution and independent validation, but no mutation authorization or Execution Gate transaction is invoked because there is no mutation to authorize.
+A worker task may declare no `changed_targets` and no `FileChange` records. Such a task still crosses worker execution and independent validation, and its authoritative work product records the execution and validation evidence, but no mutation authorization or Execution Gate transaction is invoked because there is no mutation to authorize.
 
 ## Multi-task semantics
 
@@ -70,10 +75,10 @@ This preserves evidence and avoids adding an unproven cross-task transaction aut
 
 The coordinator does not embed provider SDK calls, secret loading, shell execution, or file mutation logic. A production integration must supply the leader transport through `CentralLeader` and a concrete `WorkerAdapter` implementation through dependency injection.
 
-Deterministic adapters are used by `test_orchestration.py` so the integration suite exercises the real routing, planning, dispatch, worker-execution, independent-validation, and execution-authorization boundaries without external provider calls.
+Deterministic adapters are used by `test_orchestration.py` so the integration suite exercises the real routing, planning, dispatch, worker-execution, independent-validation, work-product construction, and execution-authorization boundaries without external provider calls.
 
 ## Safety stops covered by the composition
 
 The integration suite covers unauthorized project state, live worker-lease rebinding immediately before launch, failed independent validation, changed-target mismatch, validation identity mismatch at mutation admission, truncated execution output, and missing execution checkpoint identity.
 
-Existing unit suites remain authoritative for the lower-level checkpoint, lease, target, Git, process, redaction, and rollback invariants.
+Existing unit suites remain authoritative for the lower-level checkpoint, lease, target, Git, process, redaction, work-product contract, and rollback invariants.
