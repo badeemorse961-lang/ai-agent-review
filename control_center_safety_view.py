@@ -59,6 +59,7 @@ def install_real_safety_view(app_class: Any) -> None:
                 if "SafetyStop" in error or "SAFE_STOP" in error
                 else str(event.get("status") or "BLOCKED")
             )
+            task_id = str(event.get("task_id") or "Not available in the current safety event record")
             summary = json.dumps(
                 data,
                 ensure_ascii=False,
@@ -90,7 +91,7 @@ def install_real_safety_view(app_class: Any) -> None:
             ).grid(row=3, column=0, sticky="w", padx=8, pady=4)
             self.ttk.Label(
                 frame,
-                text="Not available in the current safety event record",
+                text=task_id,
                 style="Subtitle.TLabel",
             ).grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
             self.ttk.Label(
