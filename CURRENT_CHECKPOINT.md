@@ -6,9 +6,9 @@
 
 Latest merged implementation baseline:
 
-`cacad462a62ffd584ef437e42015e34825bacfc3`
+`1188491d8ec502214d72fd677d312f765cfdd98e`
 
-This squash merge promotes PR #38, hardening the worker execution/orchestration boundary so process launch requires a current authoritative worker lease binding.
+This squash merge promotes PR #39, hardening the final execution-authorization boundary so a typed validation verdict cannot be promoted from header fields alone; validation evidence, task identity, worker identity, and targets must agree before mutation admission.
 
 ## Verified architecture
 
@@ -19,9 +19,13 @@ The repository includes registry-driven leader/worker routing, runtime connectio
 ```text
 Passed ValidationVerdict
         +
-Isolated checkpoint
+isolated checkpoint
         +
-Exact FileChange targets/content
+exact FileChange targets/content
+        +
+validation evidence explicitly attests passed=True
+        +
+verdict/evidence task+worker identity agreement
         ↓
 ExecutionAuthorizationBoundary
         ↓
@@ -95,6 +99,8 @@ The implementation preserves shared leader accounts across the configured primar
 
 Worker execution adds a second authority check at the process-launch boundary: serialized worker assignments are not proof of identity. The boundary requires an authoritative active lease lookup, matches task/role/worker identity, rejects standby leases from direct execution, and rechecks the live lease after checkpoint establishment immediately before process launch.
 
+The final mutation authorization boundary now also binds a passed `ValidationVerdict` to explicit positive validation evidence and matching task/worker identities before any Git mutation admission.
+
 N-driven pools, stable connection IDs, safe-stop behavior on required-role exhaustion, and local-only runtime state remain intact.
 
 ## Project and safety rules
@@ -137,6 +143,8 @@ PR #34 — machine-validated configuration registry authority.
 PR #36 — runtime health and lease state authority hardening.
 
 PR #38 — authoritative worker lease binding at the execution boundary.
+
+PR #39 — validation verdict authority binding at mutation admission.
 
 ## Validation record
 
@@ -185,6 +193,19 @@ git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #38; local Windows execution was therefore the promotion evidence.
+
+PR #39 was validated on the real Windows working tree before promotion:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_execution_authorization.py                  11 passed
+pytest -q                                                   268 passed, 1 skipped
+python repository_security_audit.py                        PASS
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
+
+No GitHub Actions workflow runs were configured/available for PR #39; local Windows execution was therefore the promotion evidence.
 
 ## Promotion rule
 
