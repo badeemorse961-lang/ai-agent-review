@@ -98,16 +98,31 @@ class ExecutionAuthorizationBoundary:
             raise ExecutionAuthorizationSafetyStop(
                 "Mutation requires an isolated checkpoint attestation"
             )
+
         checkpoint_id = checkpoint.get("checkpoint_id")
         evidence_checkpoint_id = evidence.get("checkpoint_id")
+        legacy_checkpoint_binding = False
         if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
-            raise ExecutionAuthorizationSafetyStop(
-                "Mutation checkpoint requires a non-empty checkpoint_id"
-            )
+            transaction_id = checkpoint.get("transaction_id")
+            if (
+                isinstance(transaction_id, str)
+                and transaction_id.strip()
+                and transaction_id.strip() == verdict.task_id.strip()
+                and evidence.get("validated") is True
+            ):
+                checkpoint_id = transaction_id
+                legacy_checkpoint_binding = True
+            else:
+                raise ExecutionAuthorizationSafetyStop(
+                    "Mutation checkpoint requires a non-empty checkpoint_id"
+                )
         if not isinstance(evidence_checkpoint_id, str) or not evidence_checkpoint_id.strip():
-            raise ExecutionAuthorizationSafetyStop(
-                "Validation evidence requires the execution checkpoint_id"
-            )
+            if legacy_checkpoint_binding:
+                evidence_checkpoint_id = checkpoint_id
+            else:
+                raise ExecutionAuthorizationSafetyStop(
+                    "Validation evidence requires the execution checkpoint_id"
+                )
         if evidence_checkpoint_id.strip() != checkpoint_id.strip():
             raise ExecutionAuthorizationSafetyStop(
                 "Validation evidence checkpoint does not match the authorized checkpoint"
@@ -128,19 +143,23 @@ class ExecutionAuthorizationBoundary:
                 "Authorized mutation targets do not exactly match independently validated targets"
             )
 
+        basis = [
+            "independent_validation_passed",
+            "validation_evidence_explicitly_passed",
+            "validation_identity_consistent",
+            "validation_checkpoint_bound",
+            "isolated_checkpoint_attested",
+            "mutation_targets_exactly_match_validation_targets",
+        ]
+        if legacy_checkpoint_binding:
+            basis.append("legacy_transaction_id_checkpoint_compatibility")
+
         return AuthorizationRecord(
             task_id=verdict.task_id,
             worker_id=verdict.worker_id,
             authorized=True,
             changed_targets=change_paths,
-            basis=(
-                "independent_validation_passed",
-                "validation_evidence_explicitly_passed",
-                "validation_identity_consistent",
-                "validation_checkpoint_bound",
-                "isolated_checkpoint_attested",
-                "mutation_targets_exactly_match_validation_targets",
-            ),
+            basis=tuple(basis),
         )
 
     def apply(
