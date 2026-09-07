@@ -101,7 +101,7 @@ def test_production_runtime_wires_canonical_boundaries(tmp_path: Path) -> None:
 
 def test_build_requires_explicit_worker_adapter(tmp_path: Path) -> None:
     leader_router, worker_router = routers()
-    with pytest.raises(ProductionRuntimeConfigurationError, match="WorkerAdapter"):
+    with pytest.raises(ProductionRuntimeConfigurationError, match="worker_adapter"):
         build_production_runtime(
             tmp_path,
             leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
