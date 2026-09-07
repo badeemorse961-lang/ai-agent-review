@@ -40,9 +40,11 @@ def test_windows_entry_point_is_non_console_launcher() -> None:
     assert "from control_center_language_runtime_v2 import install_bilingual_support" in entry_point
     assert "from control_center_window_runtime import install_responsive_window" in entry_point
     assert "from control_center_sidebar_runtime import install_scrollable_sidebar" in entry_point
+    assert "from control_center_visual_runtime import install_visual_runtime" in entry_point
     assert "install_bilingual_support(ControlCenterApp)" in entry_point
     assert "install_responsive_window(ControlCenterApp)" in entry_point
     assert "install_scrollable_sidebar(ControlCenterApp)" in entry_point
+    assert "install_visual_runtime(ControlCenterApp)" in entry_point
     assert "subprocess" not in entry_point
     assert "powershell" not in entry_point.lower()
 
@@ -135,3 +137,11 @@ def test_sidebar_runtime_is_integrated_and_keeps_navigation_accessible() -> None
     assert "<MouseWheel>" in source
     assert "place(" in source
     assert "self._cc_sidebar_nav" in source
+
+
+def test_visual_runtime_preserves_sidebar_readability_on_small_windows() -> None:
+    source = Path("control_center_visual_runtime.py").read_text(encoding="utf-8")
+    assert 'font=("Segoe UI", 11, "bold")' in source
+    assert 'self.root.grid_columnconfigure(0, minsize=220)' in source
+    assert 'wraplength=190' in source
+    assert 'sidebar.configure(width=220)' in source
