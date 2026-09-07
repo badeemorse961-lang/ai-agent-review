@@ -221,11 +221,17 @@ class ControlCenterApp:
         cards.grid(row=0, column=0, sticky="ew")
         for index in range(4):
             cards.columnconfigure(index, weight=1)
-        project = self._mapping(data.get("project"))
+        understanding = self._mapping(data.get("understanding"))
+        classification = self._mapping(understanding.get("classification"))
+        project = {
+            "state": classification.get("state", "UNKNOWN"),
+            "workspace": understanding.get("workspace", str(self.service.workspace_root or "")),
+            "confidence": classification.get("confidence"),
+        }
         leader = self._mapping(data.get("leader"))
         workers = self._mapping(data.get("workers"))
         git = self._mapping(data.get("git"))
-        self._card(cards, 0, "Project", str(project.get("state", "NOT SELECTED")), str(project.get("workspace", "Select a workspace")))
+        self._card(cards, 0, "Project", str(project.get("state", "UNKNOWN")), str(project.get("workspace", "Select a workspace")))
         self._card(cards, 1, "Leader", str(leader.get("active_account", leader.get("active_connection", "NOT CONFIGURED"))), str(leader.get("active_tier", "")))
         self._card(cards, 2, "Workers", str(len(workers.get("healthy", []))), f"{len(workers.get('failed', []))} failed")
         self._card(cards, 3, "Git", "CLEAN" if git.get("clean") else "DIRTY", str(git.get("branch", "unavailable")))
