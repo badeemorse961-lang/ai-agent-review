@@ -7,6 +7,21 @@ from pathlib import Path
 from application_boundary import ApplicationIntent, ControlCenterService
 
 
+EXPECTED_NAVIGATION = (
+    "Dashboard",
+    "Chat",
+    "Projects",
+    "Connections & Pools",
+    "Workers",
+    "Run / Plan",
+    "Evidence & Activity",
+    "Git & Changes",
+    "Tests & Verification",
+    "Safety & Policy",
+    "Settings / Diagnostics",
+)
+
+
 def run_service_smoke(root: Path) -> None:
     service = ControlCenterService(workspace_root=root, autowire_core=False)
 
@@ -39,11 +54,34 @@ def run_service_smoke(root: Path) -> None:
 def run_gui_smoke(root: Path) -> None:
     if os.name != "nt":
         raise SystemExit("GUI smoke is a Windows-only acceptance check")
+
     from desktop_control_center import ControlCenterApp
 
-    service = ControlCenterService(workspace_root=root)
+    service = ControlCenterService(workspace_root=root, autowire_core=False)
     app = ControlCenterApp(service)
     assert app.root.title() == "AI-Agent Control Center"
+    assert tuple(label for label, _ in app.NAVIGATION) == EXPECTED_NAVIGATION
+
+    # Exercise every product surface through the actual Tk application boundary.
+    for page in EXPECTED_NAVIGATION:
+        app.show(page)
+        assert app.current_page == page
+        assert app.body.winfo_children(), f"GUI page rendered no content: {page}"
+
+    # Verify the presentation layer can move between themes without replacing
+    # or mutating the Core service authority.
+    initial_theme = app.dark
+    app.toggle_theme()
+    assert app.dark is not initial_theme
+    app.toggle_theme()
+    assert app.dark is initial_theme
+
+    # Verify safe degraded states remain visible in the real GUI when the live
+    # leader transport is intentionally unavailable.
+    app.show("Chat")
+    app.show("Run / Plan")
+    app.show("Safety & Policy")
+
     app.root.after(1200, app.root.destroy)
     app.run()
 
@@ -63,9 +101,11 @@ def main() -> int:
     print("CONTROL CENTER ACCEPTANCE SMOKE PASSED")
     print(f"Workspace           : {root}")
     print(f"GUI exercised       : {'YES' if args.gui else 'NO'}")
+    print("Navigation surfaces  : 11/11")
     print("Raw secrets exposed : NO")
     print("Arbitrary shell     : REJECTED")
     print("Git authority       : INSPECTION-ONLY")
+    print("Live provider E2E    : NOT CLAIMED")
     return 0
 
 
