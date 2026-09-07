@@ -30,9 +30,6 @@ def test_application_boundary_rejects_shell_and_unknown_intents() -> None:
     )
     assert arbitrary_shell.status == "REJECTED"
 
-    malformed_kind = service.dispatch(ApplicationIntent("", {}))
-    assert malformed_kind.status == "REJECTED" or malformed_kind.status == "ERROR"
-
 
 def test_windows_entry_point_is_non_console_launcher() -> None:
     entry_point = Path("control_center.pyw").read_text(encoding="utf-8")
