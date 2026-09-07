@@ -85,8 +85,14 @@ class WorkerDispatcher:
 
         Execution code should pass this method to ``WorkerExecutionBoundary``
         instead of treating the serialized ``WorkerAssignment`` as proof of
-        worker identity. A fresh router snapshot is requested on each lookup.
+        worker identity. The router itself owns lease selection and validation.
         """
+        if not isinstance(task_id, str) or not task_id.strip():
+            return None
+        return self.router.active_leases().get(task_id)
+
+    def active_lease_for(self, task_id: str) -> Any:
+        """Return one authoritative live lease, avoiding a full snapshot when supported."""
         if not isinstance(task_id, str) or not task_id.strip():
             return None
         leases = self.router.active_leases()
