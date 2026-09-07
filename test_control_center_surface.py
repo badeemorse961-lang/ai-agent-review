@@ -93,7 +93,7 @@ def test_bilingual_support_has_real_arabic_translations_for_product_surface() ->
 
 
 def test_bilingual_runtime_is_reversible_visible_and_rtl_aware() -> None:
-    source = Path("control_center_language_runtime.py").read_text(encoding="utf-8")
+    source = Path("control_center_i18n.py").read_text(encoding="utf-8")
     runtime = Path("control_center_language_runtime_v2.py").read_text(encoding="utf-8")
     assert 'self.language = "ar" if getattr(self, "language", "en") == "en" else "en"' in source
     assert 'before=self.theme_button' in source
@@ -103,3 +103,12 @@ def test_bilingual_runtime_is_reversible_visible_and_rtl_aware() -> None:
     assert 'text="English"' in source
     assert '_install_base(app_class)' in runtime
     assert 'button.configure(text=_button_text(getattr(self, "language", "en")))' in runtime
+
+
+def test_safety_evidence_binds_affected_task_from_application_intent() -> None:
+    source = Path("application_boundary.py").read_text(encoding="utf-8")
+    safety_view = Path("control_center_safety_view.py").read_text(encoding="utf-8")
+    assert 'task_id = intent.payload.get("task_id")' in source
+    assert 'if isinstance(task_id, str) and task_id.strip()' in source
+    assert 'event["task_id"] = task_id.strip()' in source
+    assert 'event.get("task_id")' in safety_view
