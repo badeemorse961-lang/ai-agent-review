@@ -184,7 +184,7 @@ class ConnectionControlCenterApp(ControlCenterApp):
     def _connections(self) -> None:
         self._header(
             "Connections & Pools",
-            "Import sources are additive; credentials persist in protected Windows storage; registry assignments remain authoritative.",
+            "✓ READY = securely stored + assigned + active. Stored-only connections are not routed; assignment remains config/registry.json.",
             action=lambda: self.show("Connections & Pools"),
             action_text="Refresh",
         )
@@ -272,7 +272,12 @@ class ConnectionControlCenterApp(ControlCenterApp):
         runtime = str(item.get("runtime_status", "UNOBSERVED")).upper()
         connection_id = item.get("connection_id")
         assigned = isinstance(item.get("assignments"), list) and bool(item.get("assignments"))
-        credential_present = isinstance(connection_id, str) and self.service.secret_store.has(connection_id)
+        credential_present = False
+        if isinstance(connection_id, str):
+            try:
+                credential_present = self.service.secret_store.has(connection_id)
+            except Exception:
+                return "SETUP", "Protected store unavailable"
 
         if status == "REMOVED":
             return "REMOVED", "Removed"
