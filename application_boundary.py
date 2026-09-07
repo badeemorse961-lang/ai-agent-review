@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from central_leader import CentralLeader, LeaderResponse
+from config_registry import load_connections, load_registry as load_authoritative_registry
 from connection_manager import (
     PROVIDER_FILES,
     PROVIDER_PREFIXES,
     import_provider,
-    load_registry,
+    load_registry as load_connection_metadata,
     read_secret_source,
     resolve_secret_file,
     save_registry,
@@ -81,24 +82,22 @@ class SafeGitInspectionAdapter:
         git = shutil.which("git")
         if not git:
             raise RuntimeError("git executable is not available")
-        policy = WorkspaceResourcePolicy(root, allowed_tool_paths=[git])
+        self.git_executable = str(Path(git).resolve())
+        policy = WorkspaceResourcePolicy(root, allowed_tool_paths=[self.git_executable])
         sandbox = ProcessSandbox(policy, timeout_seconds=30, max_output_chars=20_000)
         self.executor = TerminalExecutor(sandbox)
 
     def snapshot(self) -> Mapping[str, Any]:
         commands = {
-            "branch": ("git", "rev-parse", "--abbrev-ref", "HEAD"),
-            "head": ("git", "rev-parse", "HEAD"),
-            "status": ("git", "status", "--short"),
+            "branch": (self.git_executable, "rev-parse", "--abbrev-ref", "HEAD"),
+            "head": (self.git_executable, "rev-parse", "HEAD"),
+            "status": (self.git_executable, "status", "--short"),
         }
         result: dict[str, Any] = {}
         for name, command in commands.items():
             process = self.executor.run(command)
             if process.returncode != 0:
-                return {
-                    "status": "UNKNOWN",
-                    "error": f"Git inspection failed for {name}",
-                }
+                return {"status": "UNKNOWN", "error": f"Git inspection failed for {name}"}
             result[name] = process.stdout.strip()
         result["clean"] = not bool(result.get("status"))
         result["authority"] = "inspection-only"
@@ -160,7 +159,7 @@ class ControlCenterService:
     def _dashboard(self, payload: Mapping[str, Any]) -> ApplicationResult:
         del payload
         if self.workspace_root is None:
-            return ApplicationResult("OK", {"project": None, "leader": {}, "workers": {}})
+            return ApplicationResult("OK", {"project": None, "leader": {}, "workers": {}, "git": {}})
         understanding = ProjectUnderstandingPipeline(self.workspace_root).analyze()
         return ApplicationResult(
             "OK",
@@ -185,7 +184,6 @@ class ControlCenterService:
             return ApplicationResult("REJECTED", {}, "No active project is selected")
         if self.leader_router is None or self.leader_transport is None:
             return ApplicationResult("BLOCKED", {}, "Leader transport/router is not configured")
-
         understanding = ProjectUnderstandingPipeline(self.workspace_root).analyze()
         context = dict(understanding.get("context", {}))
         context["operator_request"] = {"goal": goal.strip(), "task_id": task_id.strip()}
@@ -215,8 +213,9 @@ class ControlCenterService:
 
     def _connections(self, payload: Mapping[str, Any]) -> ApplicationResult:
         del payload
-        registry = load_registry()
-        connections_meta = registry.get("connections", {})
+        registry = load_authoritative_registry()
+        metadata = load_connections()
+        connections_meta = metadata.get("connections", {})
         authoritative = self._registry_assignments(registry)
         views: list[ConnectionView] = []
         for connection_id in sorted(authoritative | set(connections_meta)):
@@ -241,7 +240,7 @@ class ControlCenterService:
         if provider not in PROVIDER_FILES:
             return ApplicationResult("REJECTED", {}, "provider must be groq or openrouter")
         source = resolve_secret_file(provider)
-        registry = load_registry()
+        registry = load_connection_metadata()
         import_provider(provider, source, registry, PROVIDER_PREFIXES[provider])
         save_registry(registry)
         labeled, unlabeled = read_secret_source(source, PROVIDER_PREFIXES[provider])
