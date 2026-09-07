@@ -88,3 +88,11 @@ def test_bilingual_support_has_real_arabic_translations_for_product_surface() ->
         translated = _translate(text, "ar")
         assert translated != text
         assert translated.strip()
+
+
+def test_bilingual_layer_is_reversible_and_rtl_aware() -> None:
+    source = Path("control_center_i18n.py").read_text(encoding="utf-8")
+    assert 'self.language = "ar" if self.language == "en" else "en"' in source
+    assert '_SOURCE_TEXT' in source
+    assert 'anchor="e" if language == "ar" else "w"' in source
+    assert 'justify="right" if language == "ar" else "left"' in source
