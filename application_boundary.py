@@ -256,9 +256,12 @@ class ControlCenterService:
         registry = load_authoritative_registry()
         metadata = load_connections()
         connections_meta = metadata.get("connections", {})
+        if not isinstance(connections_meta, Mapping):
+            return ApplicationResult("ERROR", {}, "Connection metadata registry is invalid")
         authoritative = self._registry_assignments(registry)
+        all_connection_ids = set(authoritative) | set(connections_meta)
         views: list[ConnectionView] = []
-        for connection_id in sorted(authoritative | set(connections_meta)):
+        for connection_id in sorted(all_connection_ids):
             item = connections_meta.get(connection_id, {})
             provider = str(item.get("provider", "unknown")) if isinstance(item, Mapping) else "unknown"
             views.append(
