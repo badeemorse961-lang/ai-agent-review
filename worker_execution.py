@@ -90,10 +90,12 @@ class WorkerExecutionBoundary:
     ``subprocess`` execution.
 
     Execution also requires a live lease lookup supplied by the authoritative
-    worker router. The lookup is evaluated immediately before checkpointing so
-    the worker identity, role, and standby status cannot be supplied solely by
-    a caller-controlled assignment mapping. Router ``WorkerLease`` objects and
-    mapping-shaped lease adapters are both accepted at this boundary.
+    worker router. The lookup is evaluated during request validation and again
+    immediately before process launch so worker identity, role, and standby
+    status cannot be supplied solely by a caller-controlled assignment mapping,
+    and a lease release during checkpointing cannot authorize a stale launch.
+    Router ``WorkerLease`` objects and mapping-shaped lease adapters are both
+    accepted at this boundary.
     """
 
     _PATH_LIKE_SUFFIXES = {
@@ -200,6 +202,11 @@ class WorkerExecutionBoundary:
                 "Checkpoint must explicitly attest isolated execution"
             )
 
+        # The lease may have been released while the checkpoint was being
+        # established. Rebind to authoritative runtime state immediately before
+        # the process-launch capability is exercised.
+        self._assert_active_lease(request.task_id, request.role, request.worker_id)
+
         if self.executor is not None:
             returncode, stdout, stderr, timed_out = self.executor(request)
         else:
@@ -246,36 +253,7 @@ class WorkerExecutionBoundary:
                 "Standby worker assignments require an explicit promotion boundary before execution"
             )
 
-        if self.active_lease_lookup is None:
-            raise WorkerExecutionSafetyStop(
-                "Execution requires an authoritative active worker lease lookup"
-            )
-        try:
-            active_lease = self.active_lease_lookup(task_id)
-        except Exception as exc:
-            raise WorkerExecutionSafetyStop(
-                "Authoritative worker lease lookup failed safely"
-            ) from exc
-        if active_lease is None:
-            raise WorkerExecutionSafetyStop(
-                "No authoritative active worker lease exists for execution"
-            )
-        if self._lease_field(active_lease, "task_id") != task_id:
-            raise WorkerExecutionSafetyStop(
-                "Active worker lease task identity does not match the assignment"
-            )
-        if self._lease_field(active_lease, "role") != role:
-            raise WorkerExecutionSafetyStop(
-                "Active worker lease role does not match the assignment"
-            )
-        if self._lease_field(active_lease, "worker_id") != worker_id:
-            raise WorkerExecutionSafetyStop(
-                "Active worker lease identity does not match the assignment"
-            )
-        if self._lease_field(active_lease, "standby") is not False:
-            raise WorkerExecutionSafetyStop(
-                "Active worker lease is not eligible for direct execution"
-            )
+        self._assert_active_lease(task_id, role, worker_id)
 
         task_task_id = self._non_empty_string(task.get("task_id"), "task.task_id")
         task_role = self._non_empty_string(task.get("role"), "task.role")
@@ -321,6 +299,44 @@ class WorkerExecutionBoundary:
             external_reads=normalized_external_reads,
             external_writes=normalized_external_writes,
         )
+
+    def _assert_active_lease(
+        self,
+        task_id: str,
+        role: str,
+        worker_id: str,
+    ) -> None:
+        if self.active_lease_lookup is None:
+            raise WorkerExecutionSafetyStop(
+                "Execution requires an authoritative active worker lease lookup"
+            )
+
+        try:
+            active_lease = self.active_lease_lookup(task_id)
+        except Exception as exc:
+            raise WorkerExecutionSafetyStop(
+                "Authoritative worker lease lookup failed safely"
+            ) from exc
+        if active_lease is None:
+            raise WorkerExecutionSafetyStop(
+                "No authoritative active worker lease exists for execution"
+            )
+        if self._lease_field(active_lease, "task_id") != task_id:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease task identity does not match the assignment"
+            )
+        if self._lease_field(active_lease, "role") != role:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease role does not match the assignment"
+            )
+        if self._lease_field(active_lease, "worker_id") != worker_id:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease identity does not match the assignment"
+            )
+        if self._lease_field(active_lease, "standby") is not False:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease is not eligible for direct execution"
+            )
 
     @staticmethod
     def _lease_field(lease: Any, field: str) -> Any:
