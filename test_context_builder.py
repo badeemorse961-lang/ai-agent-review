@@ -191,6 +191,17 @@ class ContextBuilderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ContextBuilder().build(leaked)
 
+    def test_openrouter_key_pattern_is_redacted(self) -> None:
+        bundle = self._bundle()
+        bundle["specification"]["requirements"][0][
+            "text"
+        ] = "OpenRouter credential example: sk-or-v1-abcdefghijklmnopqrstuvwxyz123456"
+
+        context = ContextBuilder().build(bundle)
+
+        self.assertEqual(context["requirements"][0]["text"], "OpenRouter credential example: [REDACTED]")
+        ContextBuilder._assert_no_secrets(context)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
