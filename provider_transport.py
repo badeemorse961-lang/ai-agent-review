@@ -165,11 +165,14 @@ class OpenAICompatibleTransport:
         return None
 
     @staticmethod
-    def _parse_plan_content(content: str) -> Any:
+    def _parse_plan_content(content: str) -> Mapping[str, Any]:
         try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return {"goal": "provider_response", "tasks": []}
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ProviderTransportError("Provider planning content was not valid JSON") from exc
+        if not isinstance(parsed, Mapping):
+            raise ProviderTransportError("Provider planning content must be a JSON object")
+        return parsed
 
     @staticmethod
     def _planning_messages(context: Mapping[str, Any]) -> list[dict[str, str]]:
