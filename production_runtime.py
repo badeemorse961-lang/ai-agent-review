@@ -17,7 +17,7 @@ from orchestration import (
 from plan_decomposer import PlanDecomposer
 from project_understanding_pipeline import ProjectUnderstandingPipeline
 from worker_dispatch import WorkerDispatcher
-from worker_execution import WorkerExecutionBoundary
+from worker_execution import CheckpointHook, WorkerExecutionBoundary
 from worker_router import WorkerRouter
 from leader_router import LeaderRouter
 
@@ -57,9 +57,9 @@ class ProductionRuntimeConfig:
 class ProductionRuntime:
     """Construct the canonical orchestrator from real repository boundaries.
 
-    Provider transport and the concrete WorkerAdapter are explicit dependencies.
-    The runtime never invents worker commands, mutation targets, or execution
-    authority when those adapters are not configured.
+    Provider transport, worker checkpointing, and the concrete WorkerAdapter
+    remain explicit dependencies. The runtime never invents worker commands,
+    mutation targets, or execution authority.
     """
 
     def __init__(
@@ -68,6 +68,7 @@ class ProductionRuntime:
         *,
         leader_transport: Callable[[Any], Any],
         worker_adapter: WorkerAdapter,
+        checkpoint: CheckpointHook,
         leader_router: LeaderRouter | None = None,
         worker_router: WorkerRouter | None = None,
         understanding: ProjectUnderstandingAdapter | None = None,
@@ -81,6 +82,10 @@ class ProductionRuntime:
         if worker_adapter is None:
             raise ProductionRuntimeConfigurationError(
                 "A concrete WorkerAdapter is required; worker behavior must not be invented by the runtime"
+            )
+        if not callable(checkpoint):
+            raise ProductionRuntimeConfigurationError(
+                "A worker checkpoint hook is required; execution cannot proceed without explicit checkpoint authority"
             )
 
         root = config.workspace_root.resolve()
@@ -96,6 +101,7 @@ class ProductionRuntime:
         self.dispatcher = WorkerDispatcher(router=self.worker_router)
         self.worker_execution = WorkerExecutionBoundary(
             root,
+            checkpoint=checkpoint,
             active_lease_lookup=lambda task_id: self.worker_router.active_leases().get(task_id),
             timeout_seconds=config.worker_timeout_seconds,
             max_output_chars=config.worker_max_output_chars,
@@ -124,6 +130,7 @@ def build_production_runtime(
     *,
     leader_transport: Callable[[Any], Any],
     worker_adapter: WorkerAdapter,
+    checkpoint: CheckpointHook,
     max_tasks: int = 100,
     worker_timeout_seconds: float = 300.0,
     worker_max_output_chars: int = 20_000,
@@ -138,4 +145,5 @@ def build_production_runtime(
         ),
         leader_transport=leader_transport,
         worker_adapter=worker_adapter,
+        checkpoint=checkpoint,
     )
