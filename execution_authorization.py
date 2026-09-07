@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from execution_gate import ExecutionGate, FileChange
+from git_mutation_policy import GitMutationSafetyStop
 from independent_validation import ValidationVerdict
 
 SCHEMA_VERSION = 2
@@ -14,7 +15,7 @@ class ExecutionAuthorizationError(ValueError):
     """Base error for final authorization failures."""
 
 
-class ExecutionAuthorizationSafetyStop(ExecutionAuthorizationError):
+class ExecutionAuthorizationSafetyStop(ExecutionAuthorizationError, GitMutationSafetyStop):
     """Raised when a validated task cannot be safely promoted to mutation."""
 
 
