@@ -19,6 +19,8 @@ WorkerExecutionBoundary + explicit checkpoint hook
         ↓
 IndependentValidator
         ↓
+WorkerWorkProduct
+        ↓
 ExecutionAuthorizationBoundary
         ↓
 ExecutionGate
@@ -40,19 +42,29 @@ The transport deliberately does not use positional secret-list mapping. This pre
 
 Provider responses remain untrusted planning input. Invalid JSON or unusable response shapes fail closed. Provider errors expose only bounded non-secret diagnostics.
 
-## Remaining production gap
+## Worker work-product protocol
 
-The repository still does not define an authoritative model-output contract for a Worker to determine:
+The authoritative worker output contract is `WorkerWorkProduct`, documented in `WORKER_WORK_PRODUCT_PROTOCOL.md` and implemented by `worker_work_product.py`.
 
-- the exact command to execute;
-- execution-scope target paths;
+The contract binds:
+
+- task and leased worker identity;
+- the exact argument-array command;
+- bounded execution targets;
 - exact `changed_targets`;
-- exact `FileChange.old_text` / `new_text` content;
-- the validation evidence required for that work product.
+- matching `FileChange.path`, `old_text`, and `new_text`;
+- task-required validation criteria;
+- passed independent validation evidence bound to the execution checkpoint;
+- bounded execution result/status;
+- bounded failure metadata where execution fails or reaches a safety stop.
 
-The canonical orchestrator already enforces these fields when supplied, but inventing their model-level generation protocol would create new requirements rather than implement the existing specification.
+The work product is created by the Core only after worker execution and independent validation succeed. It is therefore evidence consumed by the existing authorization boundary, not a new authority. Raw stdout/stderr are intentionally excluded from the work-product schema.
 
-Therefore this milestone establishes the production bootstrap and provider boundary while leaving the Worker work-product protocol as an explicit **implementation/specification gap**.
+## Production completion status
+
+The production bootstrap and provider boundary are implemented. The Worker work-product protocol is now explicitly defined and integrated into canonical orchestration.
+
+A complete real production WorkerAdapter-driven run using the protocol still requires live provider/worker execution evidence. That live exercise is an acceptance/evidence gate, not a reason to bypass the deterministic contract tests.
 
 ## Release evidence
 
