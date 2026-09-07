@@ -5,7 +5,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Any
+from typing import Any, Iterable
 
 from protected_secret_store import SecretStore, WindowsProtectedSecretStore
 
@@ -14,8 +14,7 @@ REGISTRY_FILE = BASE_DIR / "connections.json"
 AUTHORITATIVE_REGISTRY_FILE = BASE_DIR / "config" / "registry.json"
 ROLE_SOURCE = "config/registry.json"
 SECRET_DIR_ENV = "AI_AGENT_SECRET_DIR"
-LEGACY_SECRET_FALLBACK_ENV = "AI_AGENT_ALLOW_LEGACY_SECRET_PATH"
-DEFAULT_SECRET_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "AI-Agent" / "secrets"
+DEFAULT_SECRET_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "AI-Agent" / "import-sources"
 
 PROVIDER_FILES = {"groq": "groq_keys.txt", "openrouter": "openrouter_keys.txt"}
 PROVIDER_PREFIXES = {"groq": "GROQ", "openrouter": "OR"}
@@ -64,21 +63,12 @@ def secret_file(provider: str) -> Path:
     return secret_dir() / PROVIDER_FILES[provider]
 
 
-def _legacy_secret_file(provider: str) -> Path:
-    if provider not in PROVIDER_FILES:
-        raise ValueError(f"Unsupported provider: {provider}")
-    return BASE_DIR / PROVIDER_FILES[provider]
-
-
 def resolve_secret_file(provider: str) -> Path:
-    external = secret_file(provider)
-    if external.exists():
-        return external
-    legacy = _legacy_secret_file(provider)
-    allow_legacy = os.environ.get(LEGACY_SECRET_FALLBACK_ENV, "").strip().lower()
-    if allow_legacy in {"1", "true", "yes"} and legacy.exists():
-        return legacy
-    raise FileNotFoundError(f"Import source not found: {external}. Set {SECRET_DIR_ENV} to the import-source directory.")
+    """Resolve only an external TXT import source; it is never credential persistence."""
+    path = secret_file(provider)
+    if not path.exists():
+        raise FileNotFoundError(f"Import source not found: {path}")
+    return path
 
 
 def load_registry() -> dict:
@@ -173,6 +163,7 @@ def import_provider(
         raise ValueError(f"Unsupported provider: {provider}")
     if keys_path.suffix.lower() != ".txt":
         raise ValueError("Import source must be a .txt file")
+
     connections = registry.setdefault("connections", {})
     store = secret_store or WindowsProtectedSecretStore()
     labeled, unlabeled = read_secret_source(keys_path, prefix)
