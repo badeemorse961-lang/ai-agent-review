@@ -6,9 +6,11 @@
 
 Latest merged implementation baseline:
 
-`c5dad608eaab7cee0c401902ee7f27cfc1767b49`
+`31cf39db845ec4487cecd8accdb46ccc69593cf3`
 
 PR #42 binds mutation authorization to the authoritative execution checkpoint identity: every independently validated `ExecutionResult` must carry a non-empty `checkpoint_id`; that identity is copied into `ValidationVerdict.evidence`; and `ExecutionAuthorizationBoundary` requires the isolated authorization checkpoint identity to match the validation evidence exactly. Missing/rebound checkpoint identities are safety stops. Existing legacy mutation fixtures remain compatible only when `transaction_id` exactly matches the verdict task identity and validation evidence explicitly attests `validated=True`.
+
+PR #43 restores the repository's GitHub Actions security-evidence path by installing the declared test dependency before the cross-process workspace-lock suite. The resulting workflow run passed dependency installation, Python compilation, repository security audit, and the cross-process mutation-lock tests.
 
 ## Verified architecture
 
@@ -130,6 +132,8 @@ PR #41 — live Central Leader lease rebinding after model transport.
 
 PR #42 — execution-checkpoint identity binding at mutation authorization.
 
+PR #43 — restored GitHub Actions security-audit test dependency.
+
 ## Validation record
 
 PR #33 — real Windows working tree:
@@ -229,6 +233,18 @@ git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #42; local Windows execution was therefore the promotion evidence.
+
+PR #43 — GitHub Actions security-audit evidence:
+
+```text
+Install test dependency                                 PASS
+python -m compileall -q .                               PASS
+python repository_security_audit.py                      PASS
+python -m pytest -q test_workspace_mutation_lock.py \
+  test_workspace_mutation_lock_multiprocess.py           PASS
+```
+
+PR #43 is evidence-pipeline hardening only; it does not replace the real Windows validation requirement for architectural/runtime milestones.
 
 ## Promotion rule
 
