@@ -81,8 +81,13 @@ def _status_is_eligible(item: dict[str, Any]) -> bool:
     active = item.get("active")
     if status in NON_ELIGIBLE_STATUSES:
         return False
-    if status in {"ACTIVE", "VALIDATED"}:
+    if status == "ACTIVE":
         return active is True
+    # VALIDATED is retained as a legacy-compatible eligible state. New lifecycle
+    # mutations use ACTIVE with active=True, while older metadata may contain
+    # VALIDATED records whose boolean active flag predates the lifecycle model.
+    if status == "VALIDATED":
+        return True
     return False
 
 
