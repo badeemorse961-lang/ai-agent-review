@@ -8,17 +8,16 @@ _INSTALLED = "_responsive_window_runtime_installed"
 
 def _install_scrollable_body(app: Any) -> None:
     """Replace the fixed body with a vertically scrollable content viewport."""
-    root = app.root
     old_body = app.body
     parent = old_body.master
 
     try:
-        old_body.grid_forget()
         grid_info = dict(old_body.grid_info())
     except Exception:
         grid_info = {"row": 1, "column": 0, "sticky": "nsew", "pady": (12, 0)}
 
     try:
+        old_body.grid_forget()
         old_body.destroy()
     except Exception:
         pass
@@ -43,6 +42,7 @@ def _install_scrollable_body(app: Any) -> None:
 
     def on_canvas_configure(event: Any) -> None:
         canvas.itemconfigure(window_id, width=max(event.width - 4, 1))
+        update_scrollregion()
 
     def on_mousewheel(event: Any) -> None:
         delta = int(-event.delta / 120) if event.delta else 0
@@ -88,8 +88,10 @@ def install_responsive_window(app_class: Any) -> None:
 
     def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
+        current_page = getattr(self, "current_page", "Dashboard")
         _fit_window_to_screen(self)
         _install_scrollable_body(self)
+        self.show(current_page)
         self.root.update_idletasks()
 
     app_class.__init__ = __init__
