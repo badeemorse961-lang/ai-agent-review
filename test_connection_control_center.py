@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from application_boundary import ApplicationIntent
-from connection_control_center import ConnectionControlCenterService
+from connection_control_center import ConnectionControlCenterApp, ConnectionControlCenterService
 from connection_manager import fingerprint
 from protected_secret_store import MemorySecretStore
 
@@ -92,3 +92,56 @@ def test_disable_enable_and_remove_are_explicit() -> None:
         result = service.dispatch(ApplicationIntent("remove_connection", {"connection_id": "GROQ-01", "confirmed": True}))
         assert result.status == "OK"
         remove.assert_called_once()
+
+
+def test_readiness_marker_requires_credential_assignment_and_eligible_status() -> None:
+    store = MemorySecretStore()
+    secret = "ready-secret"
+    store.put("GROQ-01", "groq", secret, fingerprint(secret))
+    service = ConnectionControlCenterService(secret_store=store, autowire_core=False)
+    app = object.__new__(ConnectionControlCenterApp)
+    app.service = service
+
+    base = {
+        "connection_id": "GROQ-01",
+        "provider": "groq",
+        "metadata_status": "ACTIVE",
+        "runtime_status": "UNOBSERVED",
+        "assignments": ["coder"],
+        "fingerprint_present": True,
+    }
+    readiness, reason = app._connection_readiness(base)
+    assert readiness == "READY"
+    assert reason == "Ready · automatic use"
+
+    stored = dict(base, assignments=[])
+    readiness, _ = app._connection_readiness(stored)
+    assert readiness == "STORED"
+
+    disabled = dict(base, metadata_status="DISABLED")
+    readiness, _ = app._connection_readiness(disabled)
+    assert readiness == "STORED"
+
+    failed = dict(base, runtime_status="FAILED")
+    readiness, _ = app._connection_readiness(failed)
+    assert readiness == "FAILED"
+
+    missing_credential = dict(base, connection_id="GROQ-02")
+    readiness, _ = app._connection_readiness(missing_credential)
+    assert readiness == "SETUP"
+
+
+def test_enable_reports_registry_assignment_block_without_ui_bypass() -> None:
+    registry = make_registry()
+    store = MemorySecretStore()
+    secret = "old-secret"
+    store.put("GROQ-01", "groq", secret, fingerprint(secret))
+    service = ConnectionControlCenterService(secret_store=store, autowire_core=False)
+
+    with patch("connection_control_center.load_registry", return_value=registry), \
+         patch("connection_control_center.enable_connection", side_effect=ValueError("Connection must be assigned in config/registry.json before it can be enabled")):
+        result = service.dispatch(ApplicationIntent("enable_connection", {"connection_id": "GROQ-01"}))
+
+    assert result.status == "BLOCKED"
+    assert result.data["setup_required"] == "REGISTRY_ASSIGNMENT"
+    assert "config/registry.json" in (result.error or "")
