@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -18,11 +17,13 @@ from connection_manager import (
     remove_connection,
 )
 from desktop_control_center import ControlCenterApp
+from leader_router import LeaderRouter
 from protected_secret_store import SecretStore, WindowsProtectedSecretStore
+from worker_router import WorkerRouter
 
 
 class ConnectionControlCenterService(ControlCenterService):
-    """Adds explicit connection lifecycle intents while preserving the Core boundary."""
+    """Adds explicit protected connection lifecycle intents over the existing Core routers."""
 
     def __init__(self, *, secret_store: SecretStore | None = None, **kwargs: Any) -> None:
         self.secret_store = secret_store or WindowsProtectedSecretStore()
@@ -31,6 +32,37 @@ class ConnectionControlCenterService(ControlCenterService):
 
     def dispatch(self, intent: ApplicationIntent) -> ApplicationResult:
         intent.validate()
+        if intent.kind == "refresh_connections":
+            result = super().dispatch(intent)
+            data = dict(result.data)
+            items = data.get("connections", [])
+            if isinstance(items, list):
+                changed = False
+                for item in items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    if item.get("runtime_status") != "FAILED":
+                        continue
+                    connection_id = item.get("connection_id")
+                    current_status = str(item.get("metadata_status", ""))
+                    if not isinstance(connection_id, str) or current_status in {"DISABLED", "FAILED", "INVALID"}:
+                        continue
+                    try:
+                        registry = load_registry()
+                        mark_connection_failed(
+                            connection_id,
+                            reason="runtime health validation reported the connection as unavailable",
+                            registry=registry,
+                        )
+                        changed = True
+                    except Exception:
+                        pass
+                if changed:
+                    refreshed = super().dispatch(intent)
+                    data = dict(refreshed.data)
+                    return ApplicationResult(refreshed.status, data, refreshed.error)
+            return result
+
         handler = {
             "import_provider_connections": self._import_provider_connections,
             "disable_connection": self._disable_connection,
@@ -50,6 +82,18 @@ class ConnectionControlCenterService(ControlCenterService):
         self.last_connection_operation = data
         return ApplicationResult(result.status, data, result.error)
 
+    def _reload_router_state(self) -> None:
+        if self.leader_router is not None:
+            try:
+                self.leader_router = LeaderRouter()
+            except Exception:
+                self.leader_router = None
+        if self.worker_router is not None:
+            try:
+                self.worker_router = WorkerRouter()
+            except Exception:
+                self.worker_router = None
+
     def _import_provider_connections(self, payload: Mapping[str, Any]) -> ApplicationResult:
         provider = payload.get("provider")
         source_path = payload.get("source_path")
@@ -68,8 +112,10 @@ class ConnectionControlCenterService(ControlCenterService):
             "GROQ" if provider == "groq" else "OR",
             secret_store=self.secret_store,
         )
-        status = "NO_CHANGES" if summary.imported_count == 0 and summary.rejected_count == 0 else "OK"
-        return ApplicationResult(status, summary.to_dict())
+        return ApplicationResult(
+            "NO_CHANGES" if summary.imported_count == 0 and summary.rejected_count == 0 else "OK",
+            summary.to_dict(),
+        )
 
     def _connection_from_payload(self, payload: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
         connection_id = payload.get("connection_id")
@@ -84,13 +130,19 @@ class ConnectionControlCenterService(ControlCenterService):
     def _disable_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
         connection_id, _, registry = self._connection_from_payload(payload)
         disable_connection(connection_id, registry)
+        self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": LIFECYCLE_DISABLED})
 
     def _enable_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
         connection_id, _, registry = self._connection_from_payload(payload)
         if not self.secret_store.has(connection_id):
-            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, "Protected credential is unavailable")
+            return ApplicationResult(
+                "BLOCKED",
+                {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)},
+                "Protected credential is unavailable",
+            )
         result = enable_connection(connection_id, registry)
+        self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"]})
 
     def _remove_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
@@ -98,6 +150,7 @@ class ConnectionControlCenterService(ControlCenterService):
         if payload.get("confirmed") is not True:
             return ApplicationResult("REJECTED", {"connection_id": connection_id}, "Explicit confirmation is required")
         remove_connection(connection_id, registry=registry, secret_store=self.secret_store)
+        self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": "REMOVED"})
 
     def _mark_connection_failed(self, payload: Mapping[str, Any]) -> ApplicationResult:
@@ -106,6 +159,7 @@ class ConnectionControlCenterService(ControlCenterService):
         reason = payload.get("reason")
         safe_reason = reason[:240] if isinstance(reason, str) else None
         result = mark_connection_failed(connection_id, invalid=invalid, reason=safe_reason, registry=registry)
+        self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"], "reason": result.get("failure_reason", "")})
 
 
@@ -131,15 +185,7 @@ class ConnectionControlCenterApp(ControlCenterApp):
             show="headings",
             selectmode="browse",
         )
-        labels = {
-            "id": "Connection ID",
-            "provider": "Provider",
-            "model": "Model",
-            "assignment": "Assignment",
-            "status": "Status",
-            "runtime": "Runtime / Health",
-            "fingerprint": "Fingerprint",
-        }
+        labels = {"id": "Connection ID", "provider": "Provider", "model": "Model", "assignment": "Assignment", "status": "Status", "runtime": "Runtime / Health", "fingerprint": "Fingerprint"}
         widths = {"id": 120, "provider": 110, "model": 260, "assignment": 170, "status": 120, "runtime": 140, "fingerprint": 110}
         for column in tree["columns"]:
             tree.heading(column, text=labels[column])
@@ -149,19 +195,12 @@ class ConnectionControlCenterApp(ControlCenterApp):
             item = self._mapping(item)
             raw_status = str(item.get("metadata_status", "UNKNOWN"))
             display_status = "ACTIVE" if raw_status == "VALIDATED" else raw_status
-            tree.insert(
-                "",
-                "end",
-                values=(
-                    item.get("connection_id", ""),
-                    item.get("provider", ""),
-                    item.get("model", ""),
-                    ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned",
-                    display_status,
-                    item.get("runtime_status", "UNOBSERVED"),
-                    "present" if item.get("fingerprint_present") else "absent",
-                ),
-            )
+            tree.insert("", "end", values=(
+                item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""),
+                ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned",
+                display_status, item.get("runtime_status", "UNOBSERVED"),
+                "present" if item.get("fingerprint_present") else "absent",
+            ))
         tree.grid(row=0, column=0, sticky="nsew")
         self.connection_tree = tree
 
@@ -189,18 +228,10 @@ class ConnectionControlCenterApp(ControlCenterApp):
 
     def _import(self, provider: str) -> None:
         from tkinter import filedialog
-        path = filedialog.askopenfilename(
-            title=f"Import {provider} TXT source",
-            filetypes=[("Text files", "*.txt")],
-        )
+        path = filedialog.askopenfilename(title=f"Import {provider} TXT source", filetypes=[("Text files", "*.txt")])
         if not path:
             return
-        result = self.service.dispatch(
-            ApplicationIntent(
-                "import_provider_connections",
-                {"provider": provider, "source_path": path},
-            )
-        )
+        result = self.service.dispatch(ApplicationIntent("import_provider_connections", {"provider": provider, "source_path": path}))
         self.show("Connections & Pools")
         self._set_status(result)
 
@@ -210,16 +241,12 @@ class ConnectionControlCenterApp(ControlCenterApp):
         if not connection_id:
             self._set_status(ApplicationResult("REJECTED", {}, "Select a connection first"))
             return
+        payload: dict[str, Any] = {"connection_id": connection_id}
         if action == "remove_connection":
-            confirmed = messagebox.askyesno(
-                "Remove connection",
-                f"Remove {connection_id}? The protected credential will be deleted.",
-            )
+            confirmed = messagebox.askyesno("Remove connection", f"Remove {connection_id}? The protected credential will be deleted.")
             if not confirmed:
                 return
-            payload = {"connection_id": connection_id, "confirmed": True}
-        else:
-            payload = {"connection_id": connection_id}
+            payload["confirmed"] = True
         result = self.service.dispatch(ApplicationIntent(action, payload))
         self.show("Connections & Pools")
         self._set_status(result)
