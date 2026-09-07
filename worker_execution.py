@@ -77,7 +77,7 @@ class ExecutionResult:
 
 CheckpointHook = Callable[[ExecutionRequest], Mapping[str, Any]]
 ExecutorHook = Callable[[ExecutionRequest], tuple[int, str, str, bool]]
-LeaseLookup = Callable[[str], Optional[Mapping[str, Any]]]
+LeaseLookup = Callable[[str], Any]
 
 
 class WorkerExecutionBoundary:
@@ -92,7 +92,8 @@ class WorkerExecutionBoundary:
     Execution also requires a live lease lookup supplied by the authoritative
     worker router. The lookup is evaluated immediately before checkpointing so
     the worker identity, role, and standby status cannot be supplied solely by
-    a caller-controlled assignment mapping.
+    a caller-controlled assignment mapping. Router ``WorkerLease`` objects and
+    mapping-shaped lease adapters are both accepted at this boundary.
     """
 
     _PATH_LIKE_SUFFIXES = {
@@ -255,23 +256,23 @@ class WorkerExecutionBoundary:
             raise WorkerExecutionSafetyStop(
                 "Authoritative worker lease lookup failed safely"
             ) from exc
-        if not isinstance(active_lease, Mapping):
+        if active_lease is None:
             raise WorkerExecutionSafetyStop(
                 "No authoritative active worker lease exists for execution"
             )
-        if active_lease.get("task_id") != task_id:
+        if self._lease_field(active_lease, "task_id") != task_id:
             raise WorkerExecutionSafetyStop(
                 "Active worker lease task identity does not match the assignment"
             )
-        if active_lease.get("role") != role:
+        if self._lease_field(active_lease, "role") != role:
             raise WorkerExecutionSafetyStop(
                 "Active worker lease role does not match the assignment"
             )
-        if active_lease.get("worker_id") != worker_id:
+        if self._lease_field(active_lease, "worker_id") != worker_id:
             raise WorkerExecutionSafetyStop(
                 "Active worker lease identity does not match the assignment"
             )
-        if active_lease.get("standby") is not False:
+        if self._lease_field(active_lease, "standby") is not False:
             raise WorkerExecutionSafetyStop(
                 "Active worker lease is not eligible for direct execution"
             )
@@ -320,6 +321,12 @@ class WorkerExecutionBoundary:
             external_reads=normalized_external_reads,
             external_writes=normalized_external_writes,
         )
+
+    @staticmethod
+    def _lease_field(lease: Any, field: str) -> Any:
+        if isinstance(lease, Mapping):
+            return lease.get(field)
+        return getattr(lease, field, None)
 
     def _validate_command(self, command: Sequence[str]) -> tuple[str, ...]:
         if isinstance(command, (str, bytes)) or not isinstance(command, Sequence):
