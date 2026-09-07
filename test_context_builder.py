@@ -179,11 +179,12 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertIn("credential policy", context["requirements"][0]["text"])
 
     def test_sensitive_keys_are_still_redacted_and_untrusted_secret_values_rejected(self) -> None:
-        bundle = self._bundle()
-        bundle["specification"]["requirements"][0]["api_key"] = "sk-test-not-a-real-key-but-sensitive"
-
-        context = ContextBuilder().build(bundle)
-        self.assertEqual(context["requirements"][0].get("api_key"), None)
+        redacted = ContextBuilder._redact(
+            {"api_key": "sk-test-not-a-real-key-but-sensitive", "nested": {"password": "value"}}
+        )
+        self.assertEqual(redacted["api_key"], "[REDACTED]")
+        self.assertEqual(redacted["nested"]["password"], "[REDACTED]")
+        ContextBuilder._assert_no_secrets(redacted)
 
         leaked = self._bundle()
         leaked["specification"]["requirements"][0]["text"] = "Bearer abcdefghijklmnopqrstuvwxyz123456"
