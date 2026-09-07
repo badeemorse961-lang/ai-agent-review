@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -68,21 +67,15 @@ def test_labeled_secret_mapping_uses_stable_connection_id(
     assert headers["Authorization"] == "Bearer key-three"
 
 
-def test_unlabeled_legacy_mapping_is_one_based(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unlabeled_secrets_are_not_positionally_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     write_secrets(tmp_path, "key-one\nkey-two\nkey-three\n", monkeypatch)
-    session = FakeSession(
-        FakeResponse(
-            200,
-            {"choices": [{"message": {"content": json.dumps({"plan": {"goal": "ok", "tasks": []}})}}]},
-        )
-    )
+    transport = OpenAICompatibleTransport(session=FakeSession(FakeResponse(200, {})))
 
-    transport = OpenAICompatibleTransport(session=session)
-    transport(leader_request("OR-03"))
-
-    headers = session.calls[0]["headers"]
-    assert isinstance(headers, dict)
-    assert headers["Authorization"] == "Bearer key-three"
+    with pytest.raises(ProviderTransportError, match="stable-ID"):
+        transport(leader_request("OR-03"))
 
 
 def test_http_error_does_not_expose_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,3 +89,17 @@ def test_http_error_does_not_expose_secret(tmp_path: Path, monkeypatch: pytest.M
 
     assert secret not in str(exc_info.value)
     assert "401" in str(exc_info.value)
+
+
+def test_malformed_planning_json_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_secrets(tmp_path, "OR-03=key-three\n", monkeypatch)
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {"choices": [{"message": {"content": "not-json"}}]},
+        )
+    )
+    transport = OpenAICompatibleTransport(session=session)
+
+    with pytest.raises(ProviderTransportError, match="valid JSON"):
+        transport(leader_request())
