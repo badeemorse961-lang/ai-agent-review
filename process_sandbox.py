@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -80,6 +81,7 @@ class ProcessSandbox:
         ".yaml",
         ".yml",
     }
+    _VERSIONED_PYTHON_RE = re.compile(r"^python(?:3(?:\.\d+)*)?$")
 
     def __init__(
         self,
@@ -206,9 +208,10 @@ class ProcessSandbox:
             raise ProcessSandboxSafetyStop("Shell wrappers are forbidden")
 
         inline_flags = {"-c", "-m"}
-        if executable_name in {"python", "python3", "pytest"} and any(
-            item.lower() in inline_flags for item in args[1:]
-        ):
+        if (
+            executable_name in {"pytest"}
+            or self._VERSIONED_PYTHON_RE.fullmatch(executable_name) is not None
+        ) and any(item.lower() in inline_flags for item in args[1:]):
             raise ProcessSandboxSafetyStop(
                 "Inline interpreter/module launchers are forbidden for Python/Pytest"
             )
@@ -328,7 +331,9 @@ class ProcessSandbox:
     def _bound(self, text: str) -> tuple[str, bool]:
         if len(text) <= self.max_output_chars:
             return text, False
-        return text[: self.max_output_chars], True
+        marker = "\n[OUTPUT TRUNCATED]"
+        limit = max(0, self.max_output_chars - len(marker))
+        return text[:limit] + marker, True
 
     @staticmethod
     def _to_text(value: object) -> str:
