@@ -347,18 +347,18 @@ class CanonicalOrchestrator:
             raise OrchestrationSafetyStop("Worker execution command must not be empty")
         if not isinstance(spec.targets, tuple) or not isinstance(spec.changed_targets, tuple):
             raise OrchestrationSafetyStop("Worker execution paths must use normalized tuples")
+        for change in spec.changes:
+            if not isinstance(change, FileChange):
+                raise OrchestrationSafetyStop("Worker changes must use FileChange records")
+        change_paths = {change.path for change in spec.changes}
         if not spec.changes and spec.changed_targets:
             raise OrchestrationSafetyStop(
                 "changed_targets cannot be declared without FileChange records"
             )
-        change_paths = {change.path for change in spec.changes}
         if change_paths != set(spec.changed_targets):
             raise OrchestrationSafetyStop(
                 f"Worker changes must exactly match changed_targets for {task.get('task_id')!r}"
             )
-        for change in spec.changes:
-            if not isinstance(change, FileChange):
-                raise OrchestrationSafetyStop("Worker changes must use FileChange records")
 
     def _request_from_execution(
         self,
