@@ -1,4 +1,4 @@
-from desktop_control_center import ControlCenterApp, main
+from connection_control_center import ConnectionControlCenterApp, main
 from control_center_language_runtime_v2 import install_bilingual_support
 from control_center_safety_view import install_real_safety_view
 from control_center_window_runtime import install_responsive_window
@@ -6,9 +6,9 @@ from control_center_sidebar_runtime import install_scrollable_sidebar
 from control_center_visual_runtime import install_visual_runtime
 
 
-install_real_safety_view(ControlCenterApp)
-install_bilingual_support(ControlCenterApp)
-install_responsive_window(ControlCenterApp)
-install_scrollable_sidebar(ControlCenterApp)
-install_visual_runtime(ControlCenterApp)
+install_real_safety_view(ConnectionControlCenterApp)
+install_bilingual_support(ConnectionControlCenterApp)
+install_responsive_window(ConnectionControlCenterApp)
+install_scrollable_sidebar(ConnectionControlCenterApp)
+install_visual_runtime(ConnectionControlCenterApp)
 raise SystemExit(main())
