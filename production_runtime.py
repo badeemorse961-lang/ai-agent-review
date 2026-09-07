@@ -7,6 +7,7 @@ from typing import Any, Callable
 from central_leader import CentralLeader
 from execution_authorization import ExecutionAuthorizationBoundary
 from independent_validation import IndependentValidator, ValidationHook
+from leader_router import LeaderRouter
 from orchestration import (
     CanonicalOrchestrator,
     OrchestrationResult,
@@ -19,7 +20,6 @@ from project_understanding_pipeline import ProjectUnderstandingPipeline
 from worker_dispatch import WorkerDispatcher
 from worker_execution import CheckpointHook, WorkerExecutionBoundary
 from worker_router import WorkerRouter
-from leader_router import LeaderRouter
 
 
 class ProductionRuntimeConfigurationError(ValueError):
@@ -55,11 +55,12 @@ class ProductionRuntimeConfig:
 
 
 class ProductionRuntime:
-    """Construct the canonical orchestrator from real repository boundaries.
+    """Construct the canonical orchestrator from explicit production dependencies.
 
-    Provider transport, worker checkpointing, and the concrete WorkerAdapter
-    remain explicit dependencies. The runtime never invents worker commands,
-    mutation targets, or execution authority.
+    Leader/worker routers carry runtime health and lease state and therefore are
+    supplied by the application's runtime/bootstrap layer rather than silently
+    instantiated here. Provider transport, worker checkpointing, and the
+    concrete WorkerAdapter are likewise explicit capabilities.
     """
 
     def __init__(
@@ -69,20 +70,27 @@ class ProductionRuntime:
         leader_transport: Callable[[Any], Any],
         worker_adapter: WorkerAdapter,
         checkpoint: CheckpointHook,
-        leader_router: LeaderRouter | None = None,
-        worker_router: WorkerRouter | None = None,
+        leader_router: LeaderRouter,
+        worker_router: WorkerRouter,
         understanding: ProjectUnderstandingAdapter | None = None,
         validator_factory: Callable[[ValidationHook], IndependentValidator] | None = None,
     ) -> None:
         config.validate()
+        dependencies = {
+            "leader_transport": leader_transport,
+            "worker_adapter": worker_adapter,
+            "checkpoint": checkpoint,
+            "leader_router": leader_router,
+            "worker_router": worker_router,
+        }
+        missing = [name for name, value in dependencies.items() if value is None]
+        if missing:
+            raise ProductionRuntimeConfigurationError(
+                "Production runtime requires explicit dependencies: "
+                + ", ".join(sorted(missing))
+            )
         if not callable(leader_transport):
-            raise ProductionRuntimeConfigurationError(
-                "leader_transport must be callable"
-            )
-        if worker_adapter is None:
-            raise ProductionRuntimeConfigurationError(
-                "A concrete WorkerAdapter is required; worker behavior must not be invented by the runtime"
-            )
+            raise ProductionRuntimeConfigurationError("leader_transport must be callable")
         if not callable(checkpoint):
             raise ProductionRuntimeConfigurationError(
                 "A worker checkpoint hook is required; execution cannot proceed without explicit checkpoint authority"
@@ -90,8 +98,8 @@ class ProductionRuntime:
 
         root = config.workspace_root.resolve()
         self.config = config
-        self.leader_router = leader_router or LeaderRouter()
-        self.worker_router = worker_router or WorkerRouter()
+        self.leader_router = leader_router
+        self.worker_router = worker_router
         self.understanding = understanding or ProjectUnderstandingPipeline(root)
         self.leader = CentralLeader(
             router=self.leader_router,
@@ -131,6 +139,8 @@ def build_production_runtime(
     leader_transport: Callable[[Any], Any],
     worker_adapter: WorkerAdapter,
     checkpoint: CheckpointHook,
+    leader_router: LeaderRouter,
+    worker_router: WorkerRouter,
     max_tasks: int = 100,
     worker_timeout_seconds: float = 300.0,
     worker_max_output_chars: int = 20_000,
@@ -146,4 +156,6 @@ def build_production_runtime(
         leader_transport=leader_transport,
         worker_adapter=worker_adapter,
         checkpoint=checkpoint,
+        leader_router=leader_router,
+        worker_router=worker_router,
     )
