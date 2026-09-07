@@ -98,6 +98,20 @@ class ExecutionAuthorizationBoundary:
             raise ExecutionAuthorizationSafetyStop(
                 "Mutation requires an isolated checkpoint attestation"
             )
+        checkpoint_id = checkpoint.get("checkpoint_id")
+        evidence_checkpoint_id = evidence.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
+            raise ExecutionAuthorizationSafetyStop(
+                "Mutation checkpoint requires a non-empty checkpoint_id"
+            )
+        if not isinstance(evidence_checkpoint_id, str) or not evidence_checkpoint_id.strip():
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation evidence requires the execution checkpoint_id"
+            )
+        if evidence_checkpoint_id.strip() != checkpoint_id.strip():
+            raise ExecutionAuthorizationSafetyStop(
+                "Validation evidence checkpoint does not match the authorized checkpoint"
+            )
 
         target_evidence = evidence.get("changed_targets")
         if not isinstance(target_evidence, list):
@@ -123,6 +137,7 @@ class ExecutionAuthorizationBoundary:
                 "independent_validation_passed",
                 "validation_evidence_explicitly_passed",
                 "validation_identity_consistent",
+                "validation_checkpoint_bound",
                 "isolated_checkpoint_attested",
                 "mutation_targets_exactly_match_validation_targets",
             ),
