@@ -36,12 +36,7 @@ def test_import_result_is_redacted_and_persistent(tmp_path: Path) -> None:
     service = ConnectionControlCenterService(secret_store=store, autowire_core=False)
     with patch("connection_control_center.load_registry", return_value=registry):
         with patch("connection_manager.save_registry"):
-            result = service.dispatch(
-                ApplicationIntent(
-                    "import_provider_connections",
-                    {"provider": "groq", "source_path": str(source)},
-                )
-            )
+            result = service.dispatch(ApplicationIntent("import_provider_connections", {"provider": "groq", "source_path": str(source)}))
 
     assert result.status == "OK"
     assert result.data["imported_count"] == 1
@@ -62,9 +57,7 @@ def test_no_changes_is_truthful(tmp_path: Path) -> None:
     service = ConnectionControlCenterService(secret_store=store, autowire_core=False)
     with patch("connection_control_center.load_registry", return_value=registry):
         with patch("connection_manager.save_registry"):
-            result = service.dispatch(
-                ApplicationIntent("import_provider_connections", {"provider": "groq", "source_path": str(source)})
-            )
+            result = service.dispatch(ApplicationIntent("import_provider_connections", {"provider": "groq", "source_path": str(source)}))
 
     assert result.status == "NO_CHANGES"
     assert result.data["already_present_count"] == 1
@@ -102,33 +95,39 @@ def test_readiness_marker_requires_credential_assignment_and_eligible_status() -
     app = object.__new__(ConnectionControlCenterApp)
     app.service = service
 
-    base = {
-        "connection_id": "GROQ-01",
-        "provider": "groq",
-        "metadata_status": "ACTIVE",
-        "runtime_status": "UNOBSERVED",
-        "assignments": ["coder"],
-        "fingerprint_present": True,
-    }
+    base = {"connection_id": "GROQ-01", "provider": "groq", "metadata_status": "ACTIVE", "runtime_status": "UNOBSERVED", "assignments": ["coder"], "fingerprint_present": True}
     readiness, reason = app._connection_readiness(base)
     assert readiness == "READY"
     assert reason == "Ready · automatic use"
-
     stored = dict(base, assignments=[])
     readiness, _ = app._connection_readiness(stored)
     assert readiness == "STORED"
-
     disabled = dict(base, metadata_status="DISABLED")
     readiness, _ = app._connection_readiness(disabled)
     assert readiness == "STORED"
-
     failed = dict(base, runtime_status="FAILED")
     readiness, _ = app._connection_readiness(failed)
     assert readiness == "FAILED"
-
     missing_credential = dict(base, connection_id="GROQ-02")
     readiness, _ = app._connection_readiness(missing_credential)
     assert readiness == "SETUP"
+
+
+def test_service_readiness_state_is_truthful_and_no_secret_is_exposed() -> None:
+    store = MemorySecretStore()
+    secret = "service-ready-secret"
+    store.put("GROQ-01", "groq", secret, fingerprint(secret))
+    service = ConnectionControlCenterService(secret_store=store, autowire_core=False)
+    authoritative = {"architecture": {"leader": {"primary_pool": [], "failover_pool": []}, "workers": {"roles": {"coder": ["GROQ-01"]}}}}
+    metadata = {"role_source": "config/registry.json", "connections": {"GROQ-01": {"connection_id": "GROQ-01", "provider": "groq", "key_fingerprint": fingerprint(secret), "status": "ACTIVE", "active": True}}}
+    with patch("application_boundary.load_authoritative_registry", return_value=authoritative), patch("application_boundary.load_connections", return_value=metadata):
+        service.worker_router = None
+        result = service.dispatch(ApplicationIntent("refresh_connections", {}))
+    item = result.data["connections"][0]
+    assert item["ready_state"] == "READY"
+    assert item["credential_present"] is True
+    assert item["configured"] is True
+    assert secret not in repr(item)
 
 
 def test_enable_reports_registry_assignment_block_without_ui_bypass() -> None:
@@ -137,11 +136,8 @@ def test_enable_reports_registry_assignment_block_without_ui_bypass() -> None:
     secret = "old-secret"
     store.put("GROQ-01", "groq", secret, fingerprint(secret))
     service = ConnectionControlCenterService(secret_store=store, autowire_core=False)
-
-    with patch("connection_control_center.load_registry", return_value=registry), \
-         patch("connection_control_center.enable_connection", side_effect=ValueError("Connection must be assigned in config/registry.json before it can be enabled")):
+    with patch("connection_control_center.load_registry", return_value=registry), patch("connection_control_center.enable_connection", side_effect=ValueError("Connection must be assigned in config/registry.json before it can be enabled")):
         result = service.dispatch(ApplicationIntent("enable_connection", {"connection_id": "GROQ-01"}))
-
     assert result.status == "BLOCKED"
     assert result.data["setup_required"] == "REGISTRY_ASSIGNMENT"
     assert "config/registry.json" in (result.error or "")
