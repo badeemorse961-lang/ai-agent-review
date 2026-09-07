@@ -49,7 +49,7 @@ def test_changed_target_set_must_match_file_changes() -> None:
 
 def test_failed_product_requires_structured_failure() -> None:
     try:
-        product(status="FAILED")
+        product(status="FAILED").to_dict()
     except WorkerWorkProductError as exc:
         assert "failure information" in str(exc)
     else:
