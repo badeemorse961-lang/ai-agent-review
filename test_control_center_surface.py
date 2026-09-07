@@ -99,7 +99,7 @@ def test_bilingual_support_has_real_arabic_translations_for_product_surface() ->
 
 
 def test_bilingual_runtime_is_reversible_visible_and_rtl_aware() -> None:
-    source = Path("control_center_i18n.py").read_text(encoding="utf-8")
+    source = Path("control_center_language_runtime.py").read_text(encoding="utf-8")
     runtime = Path("control_center_language_runtime_v2.py").read_text(encoding="utf-8")
     assert 'self.language = "ar" if getattr(self, "language", "en") == "en" else "en"' in source
     assert 'before=self.theme_button' in source
@@ -141,7 +141,8 @@ def test_sidebar_runtime_is_integrated_and_keeps_navigation_accessible() -> None
 
 def test_visual_runtime_preserves_sidebar_readability_on_small_windows() -> None:
     source = Path("control_center_visual_runtime.py").read_text(encoding="utf-8")
-    assert 'font=("Segoe UI", 11, "bold")' in source
-    assert 'self.root.grid_columnconfigure(0, minsize=220)' in source
-    assert 'wraplength=190' in source
-    assert 'sidebar.configure(width=220)' in source
+    assert 'font=("Segoe UI", 10, "bold")' in source
+    assert 'self.root.grid_columnconfigure(0, minsize=224)' in source
+    assert 'wraplength=198' in source
+    assert 'sidebar.configure(width=224)' in source
+    assert 'height=42' in source
