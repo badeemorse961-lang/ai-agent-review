@@ -24,10 +24,24 @@ def test_store_persists_without_raw_secret_on_disk(tmp_path: Path) -> None:
     store.put("GROQ-01", "groq", secret, "a" * 64)
 
     assert secret.encode("utf-8") not in path.read_bytes()
-
     restarted = WindowsProtectedSecretStore(path=path, backend=FakeCipher())
     assert restarted.get("GROQ-01", "groq") == secret
     assert restarted.has("GROQ-01")
+
+
+def test_real_windows_dpapi_survives_store_reconstruction(tmp_path: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows DPAPI acceptance test")
+    secret = "dpapi-persistence-secret"
+    path = tmp_path / "dpapi.bin"
+    first = WindowsProtectedSecretStore(path=path)
+    first.put("GROQ-01", "groq", secret, "b" * 64)
+    ciphertext = path.read_bytes()
+    assert secret.encode("utf-8") not in ciphertext
+
+    second = WindowsProtectedSecretStore(path=path)
+    assert second.get("GROQ-01", "groq") == secret
+    assert second.list_ids() == ["GROQ-01"]
 
 
 def test_real_backend_requires_windows() -> None:
