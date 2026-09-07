@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import shutil
-from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Protocol
 
 from central_leader import CentralLeader, LeaderResponse
 from config_registry import load_connections, load_registry as load_authoritative_registry
@@ -59,6 +58,9 @@ class ConnectionView:
     metadata_status: str
     runtime_status: str
     fingerprint_present: bool
+    credential_present: bool
+    ready_state: str
+    ready_reason: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +72,9 @@ class ConnectionView:
             "metadata_status": self.metadata_status,
             "runtime_status": self.runtime_status,
             "fingerprint_present": self.fingerprint_present,
+            "credential_present": self.credential_present,
+            "ready_state": self.ready_state,
+            "ready_reason": self.ready_reason,
         }
 
 
@@ -264,19 +269,72 @@ class ControlCenterService:
         for connection_id in sorted(all_connection_ids):
             item = connections_meta.get(connection_id, {})
             provider = str(item.get("provider", "unknown")) if isinstance(item, Mapping) else "unknown"
+            metadata_status = str(item.get("status", "UNKNOWN")) if isinstance(item, Mapping) else "UNKNOWN"
+            assignments = tuple(sorted(authoritative.get(connection_id, set())))
+            configured = connection_id in authoritative
+            runtime_status = self._connection_runtime_status(connection_id)
+            fingerprint_present = isinstance(item, Mapping) and isinstance(item.get("key_fingerprint"), str)
+            credential_present = self._credential_present(connection_id)
+            ready_state, ready_reason = self._connection_ready_state(
+                metadata_status=metadata_status,
+                configured=configured,
+                assignments=assignments,
+                runtime_status=runtime_status,
+                fingerprint_present=fingerprint_present,
+                credential_present=credential_present,
+            )
             views.append(
                 ConnectionView(
                     connection_id=connection_id,
                     provider=provider,
                     model=self._model_for_connection(registry, connection_id),
-                    assignments=tuple(sorted(authoritative.get(connection_id, set()))),
-                    configured=connection_id in authoritative,
-                    metadata_status=str(item.get("status", "UNKNOWN")) if isinstance(item, Mapping) else "UNKNOWN",
-                    runtime_status=self._connection_runtime_status(connection_id),
-                    fingerprint_present=isinstance(item, Mapping) and isinstance(item.get("key_fingerprint"), str),
+                    assignments=assignments,
+                    configured=configured,
+                    metadata_status=metadata_status,
+                    runtime_status=runtime_status,
+                    fingerprint_present=fingerprint_present,
+                    credential_present=credential_present,
+                    ready_state=ready_state,
+                    ready_reason=ready_reason,
                 )
             )
         return ApplicationResult("OK", {"connections": [item.to_dict() for item in views]})
+
+    def _credential_present(self, connection_id: str) -> bool:
+        store = getattr(self, "secret_store", None)
+        if store is None:
+            return False
+        try:
+            return bool(store.has(connection_id))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _connection_ready_state(
+        *,
+        metadata_status: str,
+        configured: bool,
+        assignments: tuple[str, ...],
+        runtime_status: str,
+        fingerprint_present: bool,
+        credential_present: bool,
+    ) -> tuple[str, str]:
+        status = metadata_status.upper()
+        if status == "REMOVED":
+            return "REMOVED", "Connection has been removed"
+        if status in {"FAILED", "INVALID"} or runtime_status == "FAILED":
+            return "FAILED", "Connection is not eligible because validation/runtime reported failure"
+        if not fingerprint_present or not credential_present:
+            return "SETUP", "Protected credential and fingerprint must both be present"
+        if status == "DISABLED":
+            return "STORED", "Credential is securely stored but the connection is disabled"
+        if not configured or not assignments:
+            return "STORED", "Credential is securely stored but the connection is not assigned by config/registry.json"
+        if status not in {"ACTIVE", "VALIDATED"}:
+            return "SETUP", "Connection lifecycle state is not eligible for routing"
+        if runtime_status not in {"HEALTHY", "LEASED", "UNOBSERVED"}:
+            return "SETUP", "Runtime health is not in an eligible state"
+        return "READY", "Securely stored, assigned, and lifecycle-eligible for routing"
 
     def _import_provider_connections(self, payload: Mapping[str, Any]) -> ApplicationResult:
         provider = payload.get("provider")
@@ -390,8 +448,5 @@ class ControlCenterService:
                 return " / ".join(str(model) for model in models if model) or None
         workers = architecture.get("workers", {})
         if isinstance(workers, Mapping):
-            roles = workers.get("roles", {})
-            if isinstance(roles, Mapping) and any(isinstance(ids, list) and connection_id in ids for ids in roles.values()):
-                model = workers.get("model")
-                return str(model) if model else None
+            return str(workers.get("model")) if workers.get("model") else None
         return None
