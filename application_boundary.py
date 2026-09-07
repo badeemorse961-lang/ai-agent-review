@@ -16,6 +16,8 @@ from connection_manager import (
     resolve_secret_file,
     save_registry,
 )
+from orchestration import CanonicalOrchestrator
+from plan_decomposer import PlanDecomposer
 from process_sandbox import ProcessSandbox
 from project_understanding_pipeline import ProjectUnderstandingPipeline
 from secret_redaction import SecretRedactor
@@ -114,14 +116,17 @@ class ControlCenterService:
         leader_transport: Callable[[Any], Any] | None = None,
         leader_router: LeaderRouter | None = None,
         worker_router: WorkerRouter | None = None,
+        orchestrator: CanonicalOrchestrator | None = None,
         git_inspector: GitInspectionAdapter | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve() if workspace_root else None
         self.leader_router = leader_router
         self.worker_router = worker_router
         self.leader_transport = leader_transport
+        self.orchestrator = orchestrator
         self.git_inspector = git_inspector
         self.last_plan: Mapping[str, Any] | None = None
+        self.last_run: Mapping[str, Any] | None = None
         self.events: list[dict[str, Any]] = []
 
     def dispatch(self, intent: ApplicationIntent) -> ApplicationResult:
@@ -130,6 +135,7 @@ class ControlCenterService:
             "select_project": self._select_project,
             "refresh_dashboard": self._dashboard,
             "send_leader_goal": self._send_leader_goal,
+            "run_task": self._run_task,
             "refresh_connections": self._connections,
             "import_provider_connections": self._import_provider_connections,
             "git_snapshot": self._git_snapshot,
@@ -159,7 +165,10 @@ class ControlCenterService:
     def _dashboard(self, payload: Mapping[str, Any]) -> ApplicationResult:
         del payload
         if self.workspace_root is None:
-            return ApplicationResult("OK", {"project": None, "leader": {}, "workers": {}, "git": {}})
+            return ApplicationResult(
+                "OK",
+                {"project": None, "leader": {}, "workers": {}, "git": {}, "last_run": None},
+            )
         understanding = ProjectUnderstandingPipeline(self.workspace_root).analyze()
         return ApplicationResult(
             "OK",
@@ -170,6 +179,7 @@ class ControlCenterService:
                 "workers": self._safe_router_snapshot(self.worker_router),
                 "git": self.git_inspector.snapshot() if self.git_inspector else {},
                 "last_plan": dict(self.last_plan) if isinstance(self.last_plan, Mapping) else None,
+                "last_run": dict(self.last_run) if isinstance(self.last_run, Mapping) else None,
             },
         )
 
@@ -195,21 +205,39 @@ class ControlCenterService:
                 leader.release(task_id.strip())
             except Exception:
                 pass
+        plan = PlanDecomposer().decompose(response.payload, context=context)
         redactor = SecretRedactor()
         payload_value = redactor.redact_value(response.payload)
-        data = {
-            "task_id": task_id.strip(),
-            "goal": goal.strip(),
-            "leader_response": {
-                "payload": payload_value,
-                "account_id": response.account_id,
-                "model": response.model,
-                "tier": response.tier,
+        self.last_plan = dict(plan)
+        return ApplicationResult(
+            "OK",
+            {
+                "task_id": task_id.strip(),
+                "goal": goal.strip(),
+                "leader_response": {
+                    "payload": payload_value,
+                    "account_id": response.account_id,
+                    "model": response.model,
+                    "tier": response.tier,
+                },
+                "plan": dict(plan),
             },
-        }
-        if isinstance(payload_value, Mapping) and isinstance(payload_value.get("plan"), Mapping):
-            self.last_plan = dict(payload_value["plan"])
-        return ApplicationResult("OK", data)
+        )
+
+    def _run_task(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return ApplicationResult("REJECTED", {}, "task_id is required")
+        if self.orchestrator is None:
+            return ApplicationResult(
+                "BLOCKED",
+                {},
+                "Canonical production orchestrator is not configured; no task was executed",
+            )
+        result = self.orchestrator.run(task_id.strip())
+        self.last_run = result.to_dict()
+        self.last_plan = dict(result.plan)
+        return ApplicationResult("OK", self.last_run)
 
     def _connections(self, payload: Mapping[str, Any]) -> ApplicationResult:
         del payload
@@ -221,6 +249,7 @@ class ControlCenterService:
         for connection_id in sorted(authoritative | set(connections_meta)):
             item = connections_meta.get(connection_id, {})
             provider = str(item.get("provider", "unknown")) if isinstance(item, Mapping) else "unknown"
+            runtime_status = self._connection_runtime_status(connection_id)
             views.append(
                 ConnectionView(
                     connection_id=connection_id,
@@ -229,7 +258,7 @@ class ControlCenterService:
                     assignments=tuple(sorted(authoritative.get(connection_id, set()))),
                     configured=connection_id in authoritative,
                     metadata_status=str(item.get("status", "UNKNOWN")) if isinstance(item, Mapping) else "UNKNOWN",
-                    runtime_status="UNOBSERVED",
+                    runtime_status=runtime_status,
                     fingerprint_present=isinstance(item, Mapping) and isinstance(item.get("key_fingerprint"), str),
                 )
             )
@@ -270,7 +299,14 @@ class ControlCenterService:
 
     def _session_evidence(self, payload: Mapping[str, Any]) -> ApplicationResult:
         del payload
-        return ApplicationResult("OK", {"events": list(self.events), "last_plan": self.last_plan})
+        return ApplicationResult(
+            "OK",
+            {
+                "events": list(self.events),
+                "last_plan": self.last_plan,
+                "last_run": self.last_run,
+            },
+        )
 
     def _record_event(self, intent: ApplicationIntent, result: ApplicationResult) -> None:
         redactor = SecretRedactor()
@@ -284,6 +320,24 @@ class ControlCenterService:
         )
         if len(self.events) > 100:
             del self.events[:-100]
+
+    def _connection_runtime_status(self, connection_id: str) -> str:
+        for router in (self.leader_router, self.worker_router):
+            if router is None:
+                continue
+            snapshot = self._safe_router_snapshot(router)
+            failed = set(snapshot.get("runtime_failed", [])) | set(snapshot.get("failed", []))
+            healthy = set(snapshot.get("healthy", []))
+            if connection_id in failed:
+                return "FAILED"
+            if connection_id in healthy:
+                return "HEALTHY"
+            leases = snapshot.get("leases", {})
+            if isinstance(leases, Mapping):
+                for lease in leases.values():
+                    if isinstance(lease, Mapping) and lease.get("worker_id", lease.get("account_id")) == connection_id:
+                        return "LEASED"
+        return "UNOBSERVED"
 
     @staticmethod
     def _safe_router_snapshot(router: Any) -> dict[str, Any]:
