@@ -317,14 +317,16 @@ class ControlCenterService:
 
     def _record_event(self, intent: ApplicationIntent, result: ApplicationResult) -> None:
         redactor = SecretRedactor()
-        self.events.append(
-            {
-                "intent": intent.kind,
-                "status": result.status,
-                "data": redactor.redact_value(result.data),
-                "error": redactor.redact_text(result.error) if result.error else None,
-            }
-        )
+        event: dict[str, Any] = {
+            "intent": intent.kind,
+            "status": result.status,
+            "data": redactor.redact_value(result.data),
+            "error": redactor.redact_text(result.error) if result.error else None,
+        }
+        task_id = intent.payload.get("task_id") if isinstance(intent.payload, Mapping) else None
+        if isinstance(task_id, str) and task_id.strip():
+            event["task_id"] = task_id.strip()
+        self.events.append(event)
         if len(self.events) > 100:
             del self.events[:-100]
 
