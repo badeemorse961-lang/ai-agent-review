@@ -53,3 +53,11 @@ def test_control_center_service_exposes_only_structured_ui_actions() -> None:
     for kind in handlers:
         result = service.dispatch(ApplicationIntent(kind, {}))
         assert result.status in {"OK", "REJECTED", "BLOCKED", "NOT_CONFIGURED", "ERROR"}
+
+
+def test_dashboard_binds_project_card_to_core_understanding_state() -> None:
+    source = Path("desktop_control_center.py").read_text(encoding="utf-8")
+    assert 'understanding = self._mapping(data.get("understanding"))' in source
+    assert 'classification = self._mapping(understanding.get("classification"))' in source
+    assert '"state": classification.get("state", "UNKNOWN")' in source
+    assert '"workspace": understanding.get("workspace"' in source
