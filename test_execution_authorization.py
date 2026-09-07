@@ -23,14 +23,18 @@ class ExecutionAuthorizationTests(unittest.TestCase):
             self.temp_dir.cleanup()
 
     @staticmethod
-    def _verdict(targets=None, passed=True) -> ValidationVerdict:
+    def _verdict(targets=None, passed=True, evidence_passed=None, task_id="TASK-1", worker_id="GROQ-01") -> ValidationVerdict:
+        if evidence_passed is None:
+            evidence_passed = passed
         return ValidationVerdict(
-            task_id="TASK-1",
-            worker_id="GROQ-01",
+            task_id=task_id,
+            worker_id=worker_id,
             passed=passed,
             reasons=(),
             evidence={
-                "passed": passed,
+                "passed": evidence_passed,
+                "task_id": task_id,
+                "worker_id": worker_id,
                 "changed_targets": targets or ["target.txt"],
             },
         )
@@ -52,6 +56,49 @@ class ExecutionAuthorizationTests(unittest.TestCase):
                 changes=[self._change()],
             )
 
+    def test_authorization_requires_explicit_positive_evidence(self) -> None:
+        root = self._workspace()
+        boundary = ExecutionAuthorizationBoundary(root)
+        with self.assertRaises(ExecutionAuthorizationSafetyStop):
+            boundary.authorize(
+                self._verdict(passed=True, evidence_passed=False),
+                checkpoint=self._checkpoint(),
+                changes=[self._change()],
+            )
+
+    def test_authorization_requires_non_empty_verdict_identity(self) -> None:
+        root = self._workspace()
+        boundary = ExecutionAuthorizationBoundary(root)
+        for field, value in (("task_id", ""), ("worker_id", "")):
+            verdict = self._verdict()
+            object.__setattr__(verdict, field, value)
+            with self.subTest(field=field), self.assertRaises(ExecutionAuthorizationSafetyStop):
+                boundary.authorize(
+                    verdict,
+                    checkpoint=self._checkpoint(),
+                    changes=[self._change()],
+                )
+
+    def test_authorization_rejects_conflicting_evidence_identity(self) -> None:
+        root = self._workspace()
+        boundary = ExecutionAuthorizationBoundary(root)
+        for field, value in (("task_id", "TASK-OTHER"), ("worker_id", "GROQ-99")):
+            evidence = {
+                "passed": True,
+                "task_id": "TASK-1",
+                "worker_id": "GROQ-01",
+                "changed_targets": ["target.txt"],
+            }
+            evidence[field] = value
+            verdict = self._verdict()
+            object.__setattr__(verdict, "evidence", evidence)
+            with self.subTest(field=field), self.assertRaises(ExecutionAuthorizationSafetyStop):
+                boundary.authorize(
+                    verdict,
+                    checkpoint=self._checkpoint(),
+                    changes=[self._change()],
+                )
+
     def test_authorization_requires_isolated_checkpoint(self) -> None:
         root = self._workspace()
         boundary = ExecutionAuthorizationBoundary(root)
@@ -72,6 +119,8 @@ class ExecutionAuthorizationTests(unittest.TestCase):
         )
         self.assertTrue(record.authorized)
         self.assertIn("independent_validation_passed", record.basis)
+        self.assertIn("validation_evidence_explicitly_passed", record.basis)
+        self.assertIn("validation_identity_consistent", record.basis)
 
     def test_targets_must_match_validation_evidence_exactly(self) -> None:
         root = self._workspace()
