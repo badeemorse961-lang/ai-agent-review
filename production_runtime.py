@@ -32,6 +32,7 @@ class ProductionRuntimeConfig:
     max_tasks: int = 100
     worker_timeout_seconds: float = 300.0
     worker_max_output_chars: int = 20_000
+    require_work_product: bool = True
 
     def validate(self) -> None:
         root = self.workspace_root.resolve()
@@ -42,26 +43,13 @@ class ProductionRuntimeConfig:
         if not isinstance(self.max_tasks, int) or self.max_tasks < 1:
             raise ProductionRuntimeConfigurationError("max_tasks must be positive")
         if self.worker_timeout_seconds <= 0:
-            raise ProductionRuntimeConfigurationError(
-                "worker_timeout_seconds must be positive"
-            )
-        if (
-            not isinstance(self.worker_max_output_chars, int)
-            or self.worker_max_output_chars < 256
-        ):
-            raise ProductionRuntimeConfigurationError(
-                "worker_max_output_chars must be >= 256"
-            )
+            raise ProductionRuntimeConfigurationError("worker_timeout_seconds must be positive")
+        if not isinstance(self.worker_max_output_chars, int) or self.worker_max_output_chars < 256:
+            raise ProductionRuntimeConfigurationError("worker_max_output_chars must be >= 256")
 
 
 class ProductionRuntime:
-    """Construct the canonical orchestrator from explicit production dependencies.
-
-    Leader/worker routers carry runtime health and lease state and therefore are
-    supplied by the application's runtime/bootstrap layer rather than silently
-    instantiated here. Provider transport, worker checkpointing, and the
-    concrete WorkerAdapter are likewise explicit capabilities.
-    """
+    """Construct the canonical orchestrator from explicit production dependencies."""
 
     def __init__(
         self,
@@ -101,10 +89,7 @@ class ProductionRuntime:
         self.leader_router = leader_router
         self.worker_router = worker_router
         self.understanding = understanding or ProjectUnderstandingPipeline(root)
-        self.leader = CentralLeader(
-            router=self.leader_router,
-            transport=leader_transport,
-        )
+        self.leader = CentralLeader(router=self.leader_router, transport=leader_transport)
         self.decomposer = PlanDecomposer(max_tasks=config.max_tasks)
         self.dispatcher = WorkerDispatcher(router=self.worker_router)
         self.worker_execution = WorkerExecutionBoundary(
@@ -127,6 +112,7 @@ class ProductionRuntime:
             worker_adapter=self.worker_adapter,
             validator_factory=self.validator_factory,
             authorization=self.authorization,
+            allow_legacy_worker_spec=not config.require_work_product,
         )
 
     def run(self, task_id: str) -> OrchestrationResult:
@@ -144,14 +130,15 @@ def build_production_runtime(
     max_tasks: int = 100,
     worker_timeout_seconds: float = 300.0,
     worker_max_output_chars: int = 20_000,
+    require_work_product: bool = True,
 ) -> ProductionRuntime:
-    """Build the canonical production runtime without hidden policy shortcuts."""
     return ProductionRuntime(
         ProductionRuntimeConfig(
             workspace_root=workspace_root,
             max_tasks=max_tasks,
             worker_timeout_seconds=worker_timeout_seconds,
             worker_max_output_chars=worker_max_output_chars,
+            require_work_product=require_work_product,
         ),
         leader_transport=leader_transport,
         worker_adapter=worker_adapter,
