@@ -11,7 +11,19 @@ def test_connection_ui_uses_file_picker_and_lifecycle_actions() -> None:
     assert "enable_connection" in source
     assert "remove_connection" in source
     assert "confirmed" in source
+    assert "imported_count" in source
+    assert "already_present_count" in source
+    assert "rejected_count" in source
+    assert "NO_CHANGES" in source
+    assert "Connection must be assigned in config/registry.json before it can be enabled" in source or "Awaiting registry assignment" in source
     assert "raw secret" not in source.lower()
+
+
+def test_connection_ui_does_not_offer_assignment_authority() -> None:
+    source = Path("connection_control_center.py").read_text(encoding="utf-8")
+    assert "auto-assign" not in source.lower()
+    assert "assign_connection" not in source
+    assert "config/registry.json" in source
 
 
 def test_user_entry_point_uses_connection_aware_app() -> None:
