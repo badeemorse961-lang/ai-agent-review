@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from application_boundary import ApplicationIntent, ApplicationResult, ControlCenterService
+from connection_manager import (
+    LIFECYCLE_ACTIVE,
+    LIFECYCLE_DISABLED,
+    LIFECYCLE_FAILED,
+    LIFECYCLE_INVALID,
+    disable_connection,
+    enable_connection,
+    get_connection_status,
+    import_provider,
+    load_registry,
+    mark_connection_failed,
+    remove_connection,
+)
+from desktop_control_center import ControlCenterApp
+from protected_secret_store import SecretStore, WindowsProtectedSecretStore
+
+
+class ConnectionControlCenterService(ControlCenterService):
+    """Adds explicit connection lifecycle intents while preserving the Core boundary."""
+
+    CONNECTION_INTENTS = {
+        "import_provider_connections",
+        "disable_connection",
+        "enable_connection",
+        "remove_connection",
+        "mark_connection_failed",
+    }
+
+    def __init__(self, *, secret_store: SecretStore | None = None, **kwargs: Any) -> None:
+        self.secret_store = secret_store or WindowsProtectedSecretStore()
+        self.last_connection_operation: Mapping[str, Any] | None = None
+        super().__init__(**kwargs)
+
+    def dispatch(self, intent: ApplicationIntent) -> ApplicationResult:
+        intent.validate()
+        handler = {
+            "import_provider_connections": self._import_provider_connections,
+            "disable_connection": self._disable_connection,
+            "enable_connection": self._enable_connection,
+            "remove_connection": self._remove_connection,
+            "mark_connection_failed": self._mark_connection_failed,
+        }.get(intent.kind)
+        if handler is None:
+            return super().dispatch(intent)
+        try:
+            result = handler(intent.payload)
+        except Exception as exc:
+            result = ApplicationResult("ERROR", {}, f"{type(exc).__name__}: {exc}")
+        self._record_event(intent, result)
+        self.last_connection_operation = dict(result.data)
+        return result
+
+    def _import_provider_connections(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        provider = payload.get("provider")
+        source_path = payload.get("source_path")
+        if provider not in {"groq", "openrouter"}:
+            return ApplicationResult("REJECTED", {}, "provider must be groq or openrouter")
+        if not isinstance(source_path, str) or not source_path.strip():
+            return ApplicationResult("REJECTED", {}, "TXT import source is required")
+        path = Path(source_path).expanduser().resolve()
+        if path.suffix.lower() != ".txt" or not path.is_file():
+            return ApplicationResult("REJECTED", {}, "Selected import source must be an existing .txt file")
+        registry = load_registry()
+        summary = import_provider(
+            provider,
+            path,
+            registry,
+            "GROQ" if provider == "groq" else "OR",
+            secret_store=self.secret_store,
+        )
+        data = summary.to_dict()
+        status = "NO_CHANGES" if summary.imported_count == 0 and summary.rejected_count == 0 else "OK"
+        return ApplicationResult(status, data)
+
+    def _connection_from_payload(self, payload: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        connection_id = payload.get("connection_id")
+        if not isinstance(connection_id, str) or not connection_id.strip():
+            raise ValueError("connection_id is required")
+        registry = load_registry()
+        item = registry.get("connections", {}).get(connection_id)
+        if not isinstance(item, dict):
+            raise KeyError(f"Connection not found: {connection_id}")
+        return connection_id, item, registry
+
+    def _disable_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        connection_id, _, registry = self._connection_from_payload(payload)
+        disable_connection(connection_id, registry)
+        return ApplicationResult("OK", {"connection_id": connection_id, "status": LIFECYCLE_DISABLED})
+
+    def _enable_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        connection_id, item, registry = self._connection_from_payload(payload)
+        if not self.secret_store.has(connection_id):
+            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, "Protected credential is unavailable")
+        result = enable_connection(connection_id, registry)
+        return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"]})
+
+    def _remove_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        connection_id, _, registry = self._connection_from_payload(payload)
+        if payload.get("confirmed") is not True:
+            return ApplicationResult("REJECTED", {"connection_id": connection_id}, "Explicit confirmation is required")
+        remove_connection(connection_id, registry=registry, secret_store=self.secret_store)
+        return ApplicationResult("OK", {"connection_id": connection_id, "status": "REMOVED"})
+
+    def _mark_connection_failed(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        connection_id, _, registry = self._connection_from_payload(payload)
+        invalid = bool(payload.get("invalid"))
+        reason = payload.get("reason")
+        safe_reason = reason[:240] if isinstance(reason, str) else None
+        result = mark_connection_failed(connection_id, invalid=invalid, reason=safe_reason, registry=registry)
+        return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"], "reason": result.get("failure_reason", "")})
+
+
+class ConnectionControlCenterApp(ControlCenterApp):
+    """Same Control Center shell with the protected connection lifecycle surface."""
+
+    def __init__(self) -> None:
+        super().__init__(service=ConnectionControlCenterService())
+        self.connection_tree: Any | None = None
+
+    def _connections(self) -> None:
+        self._header(
+            "Connections & Pools",
+            "Import sources are additive; credentials persist in protected Windows storage; registry assignments remain authoritative.",
+            action=lambda: self.show("Connections & Pools"),
+            action_text="Refresh",
+        )
+        result = self.service.dispatch(ApplicationIntent("refresh_connections", {}))
+        self.body.rowconfigure(0, weight=1)
+        tree = self.ttk.Treeview(
+            self.body,
+            columns=("id", "provider", "model", "assignment", "status", "runtime", "fingerprint"),
+            show="headings",
+            selectmode="browse",
+        )
+        labels = {
+            "id": "Connection ID",
+            "provider": "Provider",
+            "model": "Model",
+            "assignment": "Assignment",
+            "status": "Status",
+            "runtime": "Runtime / Health",
+            "fingerprint": "Fingerprint",
+        }
+        widths = {"id": 120, "provider": 110, "model": 260, "assignment": 170, "status": 120, "runtime": 140, "fingerprint": 110}
+        for column in tree["columns"]:
+            tree.heading(column, text=labels[column])
+            tree.column(column, width=widths[column], anchor="w")
+        connections = result.data.get("connections", []) if isinstance(result.data, Mapping) else []
+        for item in connections:
+            item = self._mapping(item)
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    item.get("connection_id", ""),
+                    item.get("provider", ""),
+                    item.get("model", ""),
+                    ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned",
+                    item.get("metadata_status", "UNKNOWN"),
+                    item.get("runtime_status", "UNOBSERVED"),
+                    "present" if item.get("fingerprint_present") else "absent",
+                ),
+            )
+        tree.grid(row=0, column=0, sticky="nsew")
+        self.connection_tree = tree
+
+        toolbar = self.ttk.Frame(self.body)
+        toolbar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for provider, label in (("openrouter", "Import OpenRouter TXT"), ("groq", "Import Groq TXT")):
+            self.ttk.Button(toolbar, text=label, command=lambda p=provider: self._import(p)).pack(side="left", padx=(0, 8))
+        for action, label in (("disable_connection", "Disable"), ("enable_connection", "Enable"), ("remove_connection", "Remove")):
+            self.ttk.Button(toolbar, text=label, command=lambda a=action: self._connection_action(a)).pack(side="left", padx=(0, 8))
+
+        operation = getattr(self.service, "last_connection_operation", None)
+        if isinstance(operation, Mapping):
+            self._show_connection_operation(toolbar, operation)
+        else:
+            self._set_status(result, "Connection registry refreshed")
+
+    def _selected_connection_id(self) -> str | None:
+        if self.connection_tree is None:
+            return None
+        selection = self.connection_tree.selection()
+        if not selection:
+            return None
+        values = self.connection_tree.item(selection[0], "values")
+        return str(values[0]) if values else None
+
+    def _import(self, provider: str) -> None:
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title=f"Import {provider} TXT source",
+            filetypes=[("Text files", "*.txt")],
+        )
+        if not path:
+            return
+        result = self.service.dispatch(
+            ApplicationIntent(
+                "import_provider_connections",
+                {"provider": provider, "source_path": path},
+            )
+        )
+        self.show("Connections & Pools")
+        self._set_status(result)
+
+    def _connection_action(self, action: str) -> None:
+        from tkinter import messagebox
+        connection_id = self._selected_connection_id()
+        if not connection_id:
+            self._set_status(ApplicationResult("REJECTED", {}, "Select a connection first"))
+            return
+        if action == "remove_connection":
+            confirmed = messagebox.askyesno(
+                "Remove connection",
+                f"Remove {connection_id}? The protected credential will be deleted.",
+            )
+            if not confirmed:
+                return
+            payload = {"connection_id": connection_id, "confirmed": True}
+        else:
+            payload = {"connection_id": connection_id}
+        result = self.service.dispatch(ApplicationIntent(action, payload))
+        self.show("Connections & Pools")
+        self._set_status(result)
+
+    def _show_connection_operation(self, parent: Any, data: Mapping[str, Any]) -> None:
+        provider = str(data.get("provider", ""))
+        if "imported_count" in data:
+            status = str(data.get("status", ""))
+            summary = (
+                f"{provider}: imported={data.get('imported_count', 0)} | "
+                f"already present={data.get('already_present_count', 0)} | "
+                f"rejected={data.get('rejected_count', 0)} | "
+                f"persistence={data.get('persistence_status', 'UNKNOWN')}"
+            )
+            if status == "NO_CHANGES":
+                summary = f"{provider}: NO CHANGES | already present={data.get('already_present_count', 0)}"
+            self.ttk.Label(parent, text=summary, style="Status.TLabel").pack(side="left", padx=(12, 0))
+            self.status.configure(text=summary, foreground=self.palette[self.dark]["good"])
+        else:
+            self._set_status(ApplicationResult("OK", data), str(data.get("status", "Updated")))
+
+
+def main() -> int:
+    ConnectionControlCenterApp().run()
+    return 0
