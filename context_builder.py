@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
 
 
 SCHEMA_VERSION = 1
@@ -13,7 +13,7 @@ SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 SENSITIVE_VALUE_RE = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})",
+    r"(?:sk-or-v1-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})",
     re.IGNORECASE,
 )
 REDACTED_VALUE = "[REDACTED]"
