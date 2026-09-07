@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from worker_router import ConfigurationError, LeaseError, NoWorkerAvailable, WorkerRouter
 
@@ -79,6 +79,22 @@ class WorkerDispatcher:
             raise
 
         return assignments
+
+    def active_lease_lookup(self, task_id: str) -> Any:
+        """Return the router's authoritative live lease for an execution task.
+
+        Execution code should pass this method to ``WorkerExecutionBoundary``
+        instead of treating the serialized ``WorkerAssignment`` as proof of
+        worker identity. A fresh router snapshot is requested on each lookup.
+        """
+        if not isinstance(task_id, str) or not task_id.strip():
+            return None
+        leases = self.router.active_leases()
+        if not isinstance(leases, Mapping):
+            raise WorkerDispatchSafetyStop(
+                "Worker router returned invalid active lease state"
+            )
+        return leases.get(task_id)
 
     def release_all(self, assignments: Iterable[WorkerAssignment]) -> None:
         for assignment in assignments:
