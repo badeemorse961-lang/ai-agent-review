@@ -77,10 +77,13 @@ def _validate_connection_metadata(connection_id: str, item: Any) -> None:
 
 
 def _status_is_eligible(item: dict[str, Any]) -> bool:
-    status = str(item.get("status", ""))
-    if status == "VALIDATED":
-        return True
-    return status not in NON_ELIGIBLE_STATUSES
+    status = str(item.get("status", "")).upper()
+    active = item.get("active")
+    if status in NON_ELIGIBLE_STATUSES:
+        return False
+    if status in {"ACTIVE", "VALIDATED"}:
+        return active is True
+    return False
 
 
 def validate_registry() -> dict[str, Any]:
@@ -150,9 +153,6 @@ def validate_registry() -> dict[str, Any]:
         if connections[connection_id]["provider"] != worker_provider:
             raise RegistryError(f"Worker connection {connection_id} has provider {connections[connection_id]['provider']!r}, expected {worker_provider!r}")
 
-    # Return an effective in-memory routing view. The on-disk registry remains
-    # authoritative configuration; non-eligible lifecycle states are filtered
-    # only for consumers that use validate_registry().
     effective = copy.deepcopy(registry)
     effective_leader = effective["architecture"]["leader"]
     effective_workers = effective["architecture"]["workers"]
