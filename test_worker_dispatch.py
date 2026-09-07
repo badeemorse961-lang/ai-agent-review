@@ -65,6 +65,22 @@ class WorkerDispatchTests(unittest.TestCase):
         self.assertEqual(router.acquire.call_args_list[0].args, ("coder", "TASK-1"))
         self.assertEqual(router.acquire.call_args_list[1].args, ("tester", "TASK-2"))
 
+    def test_dispatcher_exposes_authoritative_live_lease_lookup(self) -> None:
+        router = self._router()
+        expected = WorkerLease("GROQ-01", "coder", "TASK-1", 3.0, False)
+        router.active_leases.return_value = {"TASK-1": expected}
+        dispatcher = WorkerDispatcher(router)
+
+        self.assertIs(dispatcher.active_lease_lookup("TASK-1"), expected)
+        router.active_leases.assert_called_once_with()
+
+    def test_dispatcher_returns_none_for_unknown_lookup_task(self) -> None:
+        router = self._router()
+        router.active_leases.return_value = {}
+        dispatcher = WorkerDispatcher(router)
+        self.assertIsNone(dispatcher.active_lease_lookup("TASK-unknown"))
+        router.active_leases.assert_not_called()
+
     def test_dispatch_rejects_execution_authority(self) -> None:
         plan = self._plan()
         plan["authority"]["execution_authorized"] = True
