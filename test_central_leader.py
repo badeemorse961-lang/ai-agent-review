@@ -29,6 +29,14 @@ class FakeRouter:
         self.leases[task_id] = lease
         return lease
 
+    def snapshot(self) -> dict:
+        return {
+            "leases": {
+                task_id: lease.to_dict()
+                for task_id, lease in self.leases.items()
+            }
+        }
+
     def release(self, task_id: str) -> LeaderLease:
         lease = self.leases.pop(task_id)
         self.released.append(task_id)
@@ -99,6 +107,50 @@ class CentralLeaderTests(unittest.TestCase):
 
         self.assertEqual(router.failures, [("task-3", "TimeoutError")])
         self.assertNotIn("task-3", router.leases)
+
+    def test_live_lease_disappearance_after_transport_is_safety_stop(self) -> None:
+        router = FakeRouter()
+
+        def transport(_: LeaderRequest) -> object:
+            router.leases.clear()
+            return {"proposal": "stale"}
+
+        leader = CentralLeader(router=router, transport=transport)
+
+        with self.assertRaises(CentralLeaderError):
+            leader.plan("task-live-disappeared", self._context())
+
+    def test_live_lease_rebind_after_transport_is_safety_stop(self) -> None:
+        router = FakeRouter()
+
+        def transport(_: LeaderRequest) -> object:
+            router.leases["task-live-rebound"] = LeaderLease(
+                provider="openrouter",
+                account_id="OR-28",
+                model="nvidia/test-model",
+                tier="ULTRA",
+                task_id="task-live-rebound",
+                leased_at=2.0,
+            )
+            return {"proposal": "stale leader result"}
+
+        leader = CentralLeader(router=router, transport=transport)
+
+        with self.assertRaises(CentralLeaderError):
+            leader.plan("task-live-rebound", self._context())
+
+    def test_live_lease_identity_remains_bound_to_original_request(self) -> None:
+        router = FakeRouter()
+        leader = CentralLeader(
+            router=router,
+            transport=lambda _: {"proposal": "keep"},
+        )
+
+        response = leader.plan("task-stable", self._context())
+
+        self.assertEqual(response.account_id, "OR-27")
+        self.assertEqual(response.model, "nvidia/test-model")
+        self.assertEqual(response.tier, "ULTRA")
 
     def test_unknown_and_conflict_states_are_safety_stops(self) -> None:
         leader = CentralLeader(router=FakeRouter(), transport=lambda _: None)
