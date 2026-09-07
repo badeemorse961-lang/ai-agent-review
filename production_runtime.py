@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from central_leader import CentralLeader
 from execution_authorization import ExecutionAuthorizationBoundary
@@ -96,7 +96,7 @@ class ProductionRuntime:
         self.dispatcher = WorkerDispatcher(router=self.worker_router)
         self.worker_execution = WorkerExecutionBoundary(
             root,
-            active_lease_lookup=self.worker_router.active_lease_for,
+            active_lease_lookup=lambda task_id: self.worker_router.active_leases().get(task_id),
             timeout_seconds=config.worker_timeout_seconds,
             max_output_chars=config.worker_max_output_chars,
         )
