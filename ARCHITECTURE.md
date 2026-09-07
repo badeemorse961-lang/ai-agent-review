@@ -184,6 +184,42 @@ The architecture is N-driven.
 Examples:
 `11 → 21` leadership, `4 → 10` coder, or any other pool expansion must be resource/configuration expansion, not an architecture rewrite.
 
+## Professional desktop UI / Control Center
+
+The production product surface is a professional Windows desktop **Control Center**. PowerShell, Python entry points, and other command-line interfaces are development, diagnostics, and advanced-operator interfaces; they are not the primary end-user operating surface.
+
+The UI is a thin application boundary over the existing Core and must never become a second execution authority or a second source of truth.
+
+```text
+Professional Desktop UI / Control Center
+              ↓
+      Application/UI Service Boundary
+              ↓
+            AI-Agent Core
+              ↓
+ Leader / Workers / Validation / Authorization
+              ↓
+ Execution Gate / Sandbox / Git Mutation Control Plane
+```
+
+The UI must expose, at minimum:
+
+- Dashboard with active project, project state, run phase, leader/failover status, worker-pool availability, current task, validation status, tests, Git state, safety stops, and recent runs.
+- Written natural-language chat with the Central Leader, including interpreted objective, plan, progress, evidence, and completion result.
+- Project/workspace management with bounded resource authorization, project classification, repository/branch identity, project health, and detected specifications.
+- Connections & Pools management for adding/importing, rotating, enabling/disabling, health-checking, and reviewing provider connections without rendering raw secrets.
+- Leader/worker fleet state showing role, connection ID, provider/model, lease/runtime health, workload, and recent result.
+- Canonical task/run timeline covering discovery through planning, worker execution, independent validation, authorization, execution gate, tests, verification, and APPROVE/SAFE_STOP/ROLLBACK outcomes.
+- Evidence/activity views with redacted execution, validation, checkpoint, Git mutation, test, security, and failover evidence.
+- Git/Changes inspection with exact validated target set, mutation/checkpoint state, and exact committed-target verification, without unrestricted Git controls.
+- Tests & Verification with compile, targeted, regression, smoke/integration, security, and Windows acceptance evidence.
+- Safety & Policy center explaining UNKNOWN/CONFLICT stops, resource authorization, sandbox mode, redaction, mutation locks, and rejected operations.
+- Settings/Diagnostics with non-secret runtime/configuration information and safe redacted diagnostic export.
+
+The detailed functional, security, UX, and Windows acceptance requirements are authoritative in `PRODUCT_UI_SPEC.md`.
+
+The UI must use structured application intents and typed request/response contracts. It must not execute arbitrary shell strings, bypass Core validation/authorization, invent routing policy, or expose unrestricted filesystem/Git/remote authority.
+
 ## Invariants
 1. No secret values enter Git.
 2. No routing logic depends on a fixed maximum connection ID.
@@ -207,3 +243,7 @@ Examples:
 20. Credential-like commit messages are rejected before entering repository history.
 21. Final target/content validation occurs while the workspace mutation lock is held immediately before staging.
 22. Successful mutation must prove a stable pre-mutation HEAD and a distinct post-commit HEAD that matches the verified commit object.
+23. The primary end-user operating surface is the professional desktop Control Center described by `PRODUCT_UI_SPEC.md`; command-line interfaces remain secondary operational tools.
+24. UI actions must cross the same Core authority boundaries as non-UI operation; the UI cannot create a parallel execution or mutation path.
+25. UI-visible credentials, diagnostics, activity, and errors must cross centralized redaction before becoming observable or persistent.
+26. GUI completion requires real Windows end-to-end acceptance; a mockup or static dashboard is not sufficient evidence.
