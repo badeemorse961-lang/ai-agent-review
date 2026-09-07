@@ -46,9 +46,8 @@ class OpenAICompatibleTransport:
     """Provider transport for the existing OpenAI-compatible provider APIs.
 
     Routing identity comes from the authoritative lease passed by CentralLeader.
-    Secrets are resolved by stable connection ID and never returned in errors.
-    The transport only returns parsed provider output; it does not grant any
-    execution or mutation authority.
+    Production secret lookup is keyed by the stable connection ID; positional
+    secret-list mapping is intentionally unsupported here.
     """
 
     def __init__(
@@ -138,22 +137,12 @@ class OpenAICompatibleTransport:
     @staticmethod
     def _resolve_key(provider: str, prefix: str, account_id: str) -> str:
         path = resolve_secret_file(provider)
-        labeled, unlabeled = read_secret_source(path, prefix)
-        if account_id in labeled:
-            return labeled[account_id]
-
-        # Preserve compatibility with the existing unlabeled secret format,
-        # but map only by the stable numeric suffix; routing itself stays ID-based.
-        suffix = account_id.split("-", 1)[1]
-        try:
-            index = int(suffix) - 1
-        except ValueError as exc:
-            raise ProviderTransportError("Provider account identity is malformed") from exc
-        if 0 <= index < len(unlabeled):
-            return unlabeled[index]
-        raise ProviderTransportError(
-            f"No secret mapping exists for {provider}/{account_id}"
-        )
+        labeled, _ = read_secret_source(path, prefix)
+        if account_id not in labeled:
+            raise ProviderTransportError(
+                f"No stable-ID secret mapping exists for {provider}/{account_id}"
+            )
+        return labeled[account_id]
 
     @staticmethod
     def _extract_content(data: Any) -> str | None:
@@ -178,10 +167,9 @@ class OpenAICompatibleTransport:
     @staticmethod
     def _parse_plan_content(content: str) -> Any:
         try:
-            parsed = json.loads(content)
+            return json.loads(content)
         except json.JSONDecodeError:
-            return {"goal": "provider_response", "tasks": [], "raw_text": content}
-        return parsed
+            return {"goal": "provider_response", "tasks": []}
 
     @staticmethod
     def _planning_messages(context: Mapping[str, Any]) -> list[dict[str, str]]:
