@@ -243,19 +243,28 @@ class CanonicalOrchestrator:
                 }
 
                 if spec.changes:
-                    transaction = self.authorization.apply(
+                    authorization_result = self.authorization.apply(
                         verdict,
                         checkpoint=result.checkpoint,
                         changes=spec.changes,
                     )
-                    if not isinstance(transaction, Mapping):
+                    if not isinstance(authorization_result, Mapping):
                         raise OrchestrationSafetyStop(
-                            f"Execution authorization returned invalid transaction for {current_task_id!r}"
+                            f"Execution authorization returned invalid result for {current_task_id!r}"
                         )
-                    if transaction.get("status") != "APPROVED":
+                    transaction_value = authorization_result.get("transaction")
+                    if not isinstance(transaction_value, Mapping):
                         raise OrchestrationSafetyStop(
-                            f"Task {current_task_id!r} did not reach APPROVED state: {transaction.get('status')!r}"
+                            f"Execution authorization returned no transaction for {current_task_id!r}"
                         )
+                    if transaction_value.get("status") != "APPROVED":
+                        raise OrchestrationSafetyStop(
+                            f"Task {current_task_id!r} did not reach APPROVED state: {transaction_value.get('status')!r}"
+                        )
+                    authorization_value = authorization_result.get("authorization")
+                    if isinstance(authorization_value, Mapping):
+                        authorization = dict(authorization_value)
+                    transaction = dict(transaction_value)
                 else:
                     transaction = {
                         "status": "NO_MUTATION",
@@ -270,7 +279,7 @@ class CanonicalOrchestrator:
                         execution_result=result,
                         validation=verdict,
                         authorization=authorization,
-                        transaction=dict(transaction),
+                        transaction=transaction,
                     )
                 )
 
@@ -345,19 +354,15 @@ class CanonicalOrchestrator:
             )
         if not spec.command:
             raise OrchestrationSafetyStop("Worker execution command must not be empty")
-        if not isinstance(spec.targets, tuple) or not isinstance(spec.changed_targets, tuple):
-            raise OrchestrationSafetyStop("Worker execution paths must use normalized tuples")
-        for change in spec.changes:
-            if not isinstance(change, FileChange):
-                raise OrchestrationSafetyStop("Worker changes must use FileChange records")
-        change_paths = {change.path for change in spec.changes}
+        if set(spec.changes) and set(spec.changed_targets) != {
+            change.path for change in spec.changes
+        }:
+            raise OrchestrationSafetyStop(
+                f"Worker changes must exactly match changed_targets for {task.get('task_id')!r}"
+            )
         if not spec.changes and spec.changed_targets:
             raise OrchestrationSafetyStop(
                 "changed_targets cannot be declared without FileChange records"
-            )
-        if change_paths != set(spec.changed_targets):
-            raise OrchestrationSafetyStop(
-                f"Worker changes must exactly match changed_targets for {task.get('task_id')!r}"
             )
 
     def _request_from_execution(
@@ -366,11 +371,12 @@ class CanonicalOrchestrator:
         assignment: Mapping[str, Any],
         spec: WorkerExecutionSpec,
     ) -> ExecutionRequest:
+        workspace_root = str(self.workspace_root)
         return ExecutionRequest(
             task_id=str(task["task_id"]),
             role=str(task["role"]),
             worker_id=str(assignment["worker_id"]),
-            workspace_root=str(self.workspace_root),
+            workspace_root=workspace_root,
             command=tuple(spec.command),
             targets=tuple(spec.targets),
             timeout_seconds=self.worker_execution.timeout_seconds,
