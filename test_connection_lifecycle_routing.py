@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -7,7 +8,7 @@ from unittest.mock import patch
 from config_registry import validate_registry
 
 
-def write_fixture(tmp_path: Path, status: str) -> None:
+def write_fixture(tmp_path: Path, status: str) -> tuple[Path, Path]:
     config = {
         "architecture": {
             "leader": {
@@ -20,7 +21,14 @@ def write_fixture(tmp_path: Path, status: str) -> None:
             "workers": {
                 "provider": "groq",
                 "model": "g1",
-                "roles": {"coder": ["GROQ-01"], "debugger": ["GROQ-02"], "tester": ["GROQ-03"], "architect": ["GROQ-04"], "reviewer": ["GROQ-05"], "standby": ["GROQ-06"]},
+                "roles": {
+                    "coder": ["GROQ-01"],
+                    "debugger": ["GROQ-02"],
+                    "tester": ["GROQ-03"],
+                    "architect": ["GROQ-04"],
+                    "reviewer": ["GROQ-05"],
+                    "standby": ["GROQ-06"],
+                },
             },
         }
     }
@@ -28,9 +36,21 @@ def write_fixture(tmp_path: Path, status: str) -> None:
         "version": 2,
         "role_source": "config/registry.json",
         "connections": {
-            "OR-01": {"connection_id": "OR-01", "provider": "openrouter", "key_fingerprint": "a" * 64, "status": "VALIDATED", "active": False},
+            "OR-01": {
+                "connection_id": "OR-01",
+                "provider": "openrouter",
+                "key_fingerprint": hashlib.sha256(b"OR-01").hexdigest(),
+                "status": "VALIDATED",
+                "active": False,
+            },
             **{
-                f"GROQ-{i:02d}": {"connection_id": f"GROQ-{i:02d}", "provider": "groq", "key_fingerprint": chr(97 + i) * 64, "status": status if i == 1 else "VALIDATED", "active": status == "ACTIVE" if i == 1 else False}
+                f"GROQ-{i:02d}": {
+                    "connection_id": f"GROQ-{i:02d}",
+                    "provider": "groq",
+                    "key_fingerprint": hashlib.sha256(f"GROQ-{i:02d}".encode()).hexdigest(),
+                    "status": status if i == 1 else "VALIDATED",
+                    "active": status == "ACTIVE" if i == 1 else False,
+                }
                 for i in range(1, 7)
             },
         },
