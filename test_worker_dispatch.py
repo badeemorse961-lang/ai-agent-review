@@ -79,7 +79,7 @@ class WorkerDispatchTests(unittest.TestCase):
         router.active_leases.return_value = {}
         dispatcher = WorkerDispatcher(router)
         self.assertIsNone(dispatcher.active_lease_lookup("TASK-unknown"))
-        router.active_leases.assert_not_called()
+        router.active_leases.assert_called_once_with()
 
     def test_dispatch_rejects_execution_authority(self) -> None:
         plan = self._plan()
