@@ -354,9 +354,9 @@ class CanonicalOrchestrator:
             )
         if not spec.command:
             raise OrchestrationSafetyStop("Worker execution command must not be empty")
-        if set(spec.changes) and set(spec.changed_targets) != {
+        if spec.changes and {
             change.path for change in spec.changes
-        }:
+        } != set(spec.changed_targets):
             raise OrchestrationSafetyStop(
                 f"Worker changes must exactly match changed_targets for {task.get('task_id')!r}"
             )
