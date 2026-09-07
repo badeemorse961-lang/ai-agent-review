@@ -71,11 +71,16 @@ class StubWorkerAdapter:
         return {"passed": True}
 
 
+def checkpoint(request: Any) -> dict[str, Any]:
+    return {"isolated": True, "checkpoint_id": str(request.task_id) + ":cp"}
+
+
 def test_production_runtime_wires_canonical_boundaries(tmp_path: Path) -> None:
     runtime = ProductionRuntime(
         ProductionRuntimeConfig(workspace_root=tmp_path),
         leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
         worker_adapter=StubWorkerAdapter(),
+        checkpoint=checkpoint,
         leader_router=StubLeaderRouter(),
         worker_router=StubWorkerRouter(),
         understanding=StubUnderstanding(),
@@ -95,6 +100,17 @@ def test_build_requires_explicit_worker_adapter(tmp_path: Path) -> None:
             tmp_path,
             leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
             worker_adapter=None,  # type: ignore[arg-type]
+            checkpoint=checkpoint,
+        )
+
+
+def test_build_requires_explicit_checkpoint(tmp_path: Path) -> None:
+    with pytest.raises(ProductionRuntimeConfigurationError, match="checkpoint"):
+        build_production_runtime(
+            tmp_path,
+            leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
+            worker_adapter=StubWorkerAdapter(),
+            checkpoint=None,  # type: ignore[arg-type]
         )
 
 
@@ -104,6 +120,7 @@ def test_invalid_runtime_configuration_stops_early(tmp_path: Path) -> None:
             ProductionRuntimeConfig(workspace_root=tmp_path, max_tasks=0),
             leader_transport=lambda request: {},
             worker_adapter=StubWorkerAdapter(),
+            checkpoint=checkpoint,
             leader_router=StubLeaderRouter(),
             worker_router=StubWorkerRouter(),
             understanding=StubUnderstanding(),
