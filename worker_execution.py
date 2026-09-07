@@ -77,6 +77,7 @@ class ExecutionResult:
 
 CheckpointHook = Callable[[ExecutionRequest], Mapping[str, Any]]
 ExecutorHook = Callable[[ExecutionRequest], tuple[int, str, str, bool]]
+LeaseLookup = Callable[[str], Optional[Mapping[str, Any]]]
 
 
 class WorkerExecutionBoundary:
@@ -87,6 +88,11 @@ class WorkerExecutionBoundary:
     A custom ``executor`` may still be injected as a narrow test or integration
     adapter, but the default production path never falls back to raw
     ``subprocess`` execution.
+
+    Execution also requires a live lease lookup supplied by the authoritative
+    worker router. The lookup is evaluated immediately before checkpointing so
+    the worker identity, role, and standby status cannot be supplied solely by
+    a caller-controlled assignment mapping.
     """
 
     _PATH_LIKE_SUFFIXES = {
@@ -110,6 +116,7 @@ class WorkerExecutionBoundary:
         executor: Optional[ExecutorHook] = None,
         process_sandbox: Optional[ProcessSandbox] = None,
         terminal_executor: Optional[TerminalExecutor] = None,
+        active_lease_lookup: Optional[LeaseLookup] = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     ) -> None:
@@ -123,6 +130,8 @@ class WorkerExecutionBoundary:
             raise WorkerExecutionError("timeout_seconds must be positive")
         if not isinstance(max_output_chars, int) or max_output_chars < 256:
             raise WorkerExecutionError("max_output_chars must be an integer >= 256")
+        if active_lease_lookup is not None and not callable(active_lease_lookup):
+            raise WorkerExecutionError("active_lease_lookup must be callable when provided")
 
         normalized = {
             str(item).strip().lower()
@@ -137,6 +146,7 @@ class WorkerExecutionBoundary:
         self.executor = executor
         self.process_sandbox = process_sandbox
         self.terminal_executor = terminal_executor
+        self.active_lease_lookup = active_lease_lookup
         self.timeout_seconds = float(timeout_seconds)
         self.max_output_chars = max_output_chars
 
@@ -172,6 +182,11 @@ class WorkerExecutionBoundary:
             external_reads=external_reads,
             external_writes=external_writes,
         )
+
+        if self.active_lease_lookup is None:
+            raise WorkerExecutionSafetyStop(
+                "Execution requires an authoritative active worker lease lookup"
+            )
 
         if self.checkpoint is None:
             raise WorkerExecutionSafetyStop(
@@ -228,6 +243,37 @@ class WorkerExecutionBoundary:
         if assignment.get("standby") is True:
             raise WorkerExecutionSafetyStop(
                 "Standby worker assignments require an explicit promotion boundary before execution"
+            )
+
+        if self.active_lease_lookup is None:
+            raise WorkerExecutionSafetyStop(
+                "Execution requires an authoritative active worker lease lookup"
+            )
+        try:
+            active_lease = self.active_lease_lookup(task_id)
+        except Exception as exc:
+            raise WorkerExecutionSafetyStop(
+                "Authoritative worker lease lookup failed safely"
+            ) from exc
+        if not isinstance(active_lease, Mapping):
+            raise WorkerExecutionSafetyStop(
+                "No authoritative active worker lease exists for execution"
+            )
+        if active_lease.get("task_id") != task_id:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease task identity does not match the assignment"
+            )
+        if active_lease.get("role") != role:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease role does not match the assignment"
+            )
+        if active_lease.get("worker_id") != worker_id:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease identity does not match the assignment"
+            )
+        if active_lease.get("standby") is not False:
+            raise WorkerExecutionSafetyStop(
+                "Active worker lease is not eligible for direct execution"
             )
 
         task_task_id = self._non_empty_string(task.get("task_id"), "task.task_id")
@@ -416,6 +462,7 @@ def execute_worker_task(
     executor: Optional[ExecutorHook] = None,
     process_sandbox: Optional[ProcessSandbox] = None,
     terminal_executor: Optional[TerminalExecutor] = None,
+    active_lease_lookup: Optional[LeaseLookup] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
 ) -> ExecutionResult:
@@ -426,6 +473,7 @@ def execute_worker_task(
         executor=executor,
         process_sandbox=process_sandbox,
         terminal_executor=terminal_executor,
+        active_lease_lookup=active_lease_lookup,
         timeout_seconds=timeout_seconds,
         max_output_chars=max_output_chars,
     )
