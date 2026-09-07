@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import shutil
+from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -139,7 +142,6 @@ class ControlCenterService:
             self._autowire_read_models()
 
     def _autowire_read_models(self) -> None:
-        """Attach safe Core read/planning dependencies without inventing Worker execution."""
         if self.leader_router is None:
             try:
                 self.leader_router = LeaderRouter()
