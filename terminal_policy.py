@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -72,6 +73,7 @@ class TerminalPolicy:
             ".rst",
         }
     )
+    _VERSIONED_PYTHON_RE = re.compile(r"^python(?:3(?:\.\d+)*)?$")
 
     def __init__(
         self,
@@ -120,6 +122,10 @@ class TerminalPolicy:
             normalized = normalized[:-4]
 
         policy = self._policies.get(normalized)
+        if policy is None and self._VERSIONED_PYTHON_RE.fullmatch(normalized):
+            policy = self._policies.get("python")
+            if policy is not None:
+                normalized = "python"
         if policy is None:
             raise ProcessSandboxSafetyStop(
                 f"Terminal executable is not allowlisted: {args[0]!r}"

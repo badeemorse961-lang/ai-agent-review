@@ -242,7 +242,7 @@ The UI must use structured application intents and typed request/response contra
 19. Git mutation cannot commit file content that differs from the validated `FileChange.new_text`.
 20. Credential-like commit messages are rejected before entering repository history.
 21. Final target/content validation occurs while the workspace mutation lock is held immediately before staging.
-22. Successful mutation must prove a stable pre-mutation HEAD and a distinct post-commit HEAD that matches the verified commit object.
+22. Successful mutation must prove a stable pre-mutation HEAD and a distinct post-mutation HEAD that matches the verified commit object.
 23. The primary end-user operating surface is the professional desktop Control Center described by `PRODUCT_UI_SPEC.md`; command-line interfaces remain secondary operational tools.
 24. UI actions must cross the same Core authority boundaries as non-UI operation; the UI cannot create a parallel execution or mutation path.
 25. UI-visible credentials, diagnostics, activity, and errors must cross centralized redaction before becoming observable or persistent.

@@ -1,4 +1,4 @@
-name: Repository Security Audit
+name: Windows Regression Gate
 
 on:
   pull_request:
@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  security-audit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  windows-regression:
+    runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -24,9 +24,14 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Compile Python sources
         run: python -m compileall -q .
-      - name: Run security invariant audit
-        run: python repository_security_audit.py
-      - name: Verify cross-process workspace mutation lock
-        run: python -m pytest -q test_workspace_mutation_lock.py test_workspace_mutation_lock_multiprocess.py
+      - name: Run canonical orchestration integration suite
+        run: python -m pytest -q test_orchestration.py test_production_runtime.py test_provider_transport.py
       - name: Run full regression suite
         run: python -m pytest -q
+      - name: Run repository security audit
+        run: python repository_security_audit.py
+      - name: Verify diff whitespace
+        shell: pwsh
+        run: |
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
