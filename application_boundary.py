@@ -32,8 +32,6 @@ from leader_router import LeaderRouter
 
 @dataclass(frozen=True)
 class ApplicationIntent:
-    """Typed, structured user intent crossing the desktop application boundary."""
-
     kind: str
     payload: Mapping[str, Any]
 
@@ -61,9 +59,9 @@ class ConnectionView:
     metadata_status: str
     runtime_status: str
     fingerprint_present: bool
-    credential_present: bool
-    ready_state: str
-    ready_reason: str
+    credential_present: bool = False
+    ready_state: str = "SETUP"
+    ready_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,8 +84,6 @@ class GitInspectionAdapter(Protocol):
 
 
 class SafeGitInspectionAdapter:
-    """Uses the existing inspection-only TerminalExecutor/GitSafetyPolicy path."""
-
     def __init__(self, workspace_root: Path) -> None:
         root = workspace_root.resolve()
         git = shutil.which("git")
@@ -116,8 +112,6 @@ class SafeGitInspectionAdapter:
 
 
 class ControlCenterService:
-    """Application layer over authoritative Core services and read models."""
-
     def __init__(
         self,
         *,
@@ -229,23 +223,9 @@ class ControlCenterService:
             except Exception:
                 pass
         plan = PlanDecomposer().decompose(response.payload, context=context)
-        redactor = SecretRedactor()
-        payload_value = redactor.redact_value(response.payload)
+        payload_value = SecretRedactor().redact_value(response.payload)
         self.last_plan = dict(plan)
-        return ApplicationResult(
-            "OK",
-            {
-                "task_id": task_id.strip(),
-                "goal": goal.strip(),
-                "leader_response": {
-                    "payload": payload_value,
-                    "account_id": response.account_id,
-                    "model": response.model,
-                    "tier": response.tier,
-                },
-                "plan": dict(plan),
-            },
-        )
+        return ApplicationResult("OK", {"task_id": task_id.strip(), "goal": goal.strip(), "leader_response": {"payload": payload_value, "account_id": response.account_id, "model": response.model, "tier": response.tier}, "plan": dict(plan)})
 
     def _run_task(self, payload: Mapping[str, Any]) -> ApplicationResult:
         task_id = payload.get("task_id")
@@ -277,29 +257,8 @@ class ControlCenterService:
             runtime_status = self._connection_runtime_status(connection_id)
             fingerprint_present = isinstance(item, Mapping) and isinstance(item.get("key_fingerprint"), str)
             credential_present = self._credential_present(connection_id)
-            ready_state, ready_reason = self._connection_ready_state(
-                metadata_status=metadata_status,
-                configured=configured,
-                assignments=assignments,
-                runtime_status=runtime_status,
-                fingerprint_present=fingerprint_present,
-                credential_present=credential_present,
-            )
-            views.append(
-                ConnectionView(
-                    connection_id=connection_id,
-                    provider=provider,
-                    model=self._model_for_connection(registry, connection_id),
-                    assignments=assignments,
-                    configured=configured,
-                    metadata_status=metadata_status,
-                    runtime_status=runtime_status,
-                    fingerprint_present=fingerprint_present,
-                    credential_present=credential_present,
-                    ready_state=ready_state,
-                    ready_reason=ready_reason,
-                )
-            )
+            ready_state, ready_reason = self._connection_ready_state(metadata_status=metadata_status, configured=configured, assignments=assignments, runtime_status=runtime_status, fingerprint_present=fingerprint_present, credential_present=credential_present)
+            views.append(ConnectionView(connection_id=connection_id, provider=provider, model=self._model_for_connection(registry, connection_id), assignments=assignments, configured=configured, metadata_status=metadata_status, runtime_status=runtime_status, fingerprint_present=fingerprint_present, credential_present=credential_present, ready_state=ready_state, ready_reason=ready_reason))
         return ApplicationResult("OK", {"connections": [item.to_dict() for item in views]})
 
     def _credential_present(self, connection_id: str) -> bool:
@@ -312,15 +271,7 @@ class ControlCenterService:
             return False
 
     @staticmethod
-    def _connection_ready_state(
-        *,
-        metadata_status: str,
-        configured: bool,
-        assignments: tuple[str, ...],
-        runtime_status: str,
-        fingerprint_present: bool,
-        credential_present: bool,
-    ) -> tuple[str, str]:
+    def _connection_ready_state(*, metadata_status: str, configured: bool, assignments: tuple[str, ...], runtime_status: str, fingerprint_present: bool, credential_present: bool) -> tuple[str, str]:
         status = metadata_status.upper()
         if status == "REMOVED":
             return "REMOVED", "Connection has been removed"
@@ -347,15 +298,7 @@ class ControlCenterService:
         import_provider(provider, source, registry, PROVIDER_PREFIXES[provider])
         save_registry(registry)
         labeled, unlabeled = read_secret_source(source, PROVIDER_PREFIXES[provider])
-        return ApplicationResult(
-            "OK",
-            {
-                "provider": provider,
-                "imported_labeled": sorted(labeled),
-                "imported_unlabeled_count": len(unlabeled),
-                "raw_secrets_returned": False,
-            },
-        )
+        return ApplicationResult("OK", {"provider": provider, "imported_labeled": sorted(labeled), "imported_unlabeled_count": len(unlabeled), "raw_secrets_returned": False})
 
     def _git_snapshot(self, payload: Mapping[str, Any]) -> ApplicationResult:
         del payload
@@ -377,12 +320,7 @@ class ControlCenterService:
 
     def _record_event(self, intent: ApplicationIntent, result: ApplicationResult) -> None:
         redactor = SecretRedactor()
-        event: dict[str, Any] = {
-            "intent": intent.kind,
-            "status": result.status,
-            "data": redactor.redact_value(result.data),
-            "error": redactor.redact_text(result.error) if result.error else None,
-        }
+        event: dict[str, Any] = {"intent": intent.kind, "status": result.status, "data": redactor.redact_value(result.data), "error": redactor.redact_text(result.error) if result.error else None}
         task_id = intent.payload.get("task_id") if isinstance(intent.payload, Mapping) else None
         if isinstance(task_id, str) and task_id.strip():
             event["task_id"] = task_id.strip()
