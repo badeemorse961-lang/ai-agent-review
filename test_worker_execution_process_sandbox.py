@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from process_sandbox import ProcessSandboxSafetyStop
 from process_sandbox import ProcessSandbox
+from process_sandbox import ProcessSandboxSafetyStop
 from sandbox_policy import ExternalResource, WorkspaceResourcePolicy
 from worker_execution import WorkerExecutionBoundary, WorkerExecutionSafetyStop
+from worker_router import WorkerLease
 
 
 def build_boundary(
@@ -26,6 +27,14 @@ def build_boundary(
         external_resources=external_resources or [],
     )
     process_sandbox = ProcessSandbox(policy, timeout_seconds=3)
+    lease = WorkerLease(
+        worker_id="coder-01",
+        role="coder",
+        task_id="task-1",
+        leased_at=1.0,
+        standby=False,
+    )
+    leases = {lease.task_id: lease}
     boundary = WorkerExecutionBoundary(
         workspace,
         checkpoint=lambda request: {
@@ -33,6 +42,7 @@ def build_boundary(
             "task_id": request.task_id,
         },
         process_sandbox=process_sandbox,
+        active_lease_lookup=leases.get,
         timeout_seconds=3,
     )
     return boundary, script, executable
@@ -75,6 +85,16 @@ def test_worker_can_read_explicit_external_resource(tmp_path: Path) -> None:
         f"from pathlib import Path\nprint(Path(r'{asset}').read_text(encoding='utf-8').strip())\n",
         encoding="utf-8",
     )
+
+    # Rebind the test fixture to the same task ID used by this invocation.
+    lease = WorkerLease(
+        worker_id="coder-01",
+        role="coder",
+        task_id="task-2",
+        leased_at=1.0,
+        standby=False,
+    )
+    boundary.active_lease_lookup = {lease.task_id: lease}.get
 
     result = boundary.execute(
         {

@@ -10,6 +10,7 @@ from sandbox_policy import WorkspaceResourcePolicy
 from terminal_executor import TerminalExecutor
 from terminal_policy import TerminalCommandPolicy, TerminalPolicy
 from worker_execution import WorkerExecutionBoundary, WorkerExecutionSafetyStop
+from worker_router import WorkerLease
 
 
 class WorkerExecutionBoundaryTests(unittest.TestCase):
@@ -44,6 +45,12 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
     def _checkpoint(request):
         return {"checkpoint_id": "CP-1", "isolated": True}
 
+    @staticmethod
+    def _lease_lookup(task_id: str):
+        if task_id != "TASK-1":
+            return None
+        return WorkerLease("GROQ-01", "coder", "TASK-1", 1.0, False)
+
     def _script(self, root: Path, name: str, body: str) -> Path:
         script = root / name
         script.write_text(body, encoding="utf-8")
@@ -63,12 +70,31 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             checkpoint=self._checkpoint,
             allowed_commands=[sys.executable],
             process_sandbox=self._sandbox(root, timeout=timeout),
+            active_lease_lookup=self._lease_lookup,
             timeout_seconds=timeout,
         )
 
     def test_execution_requires_checkpoint(self) -> None:
         root = self._workspace()
-        boundary = WorkerExecutionBoundary(root)
+        boundary = WorkerExecutionBoundary(
+            root,
+            active_lease_lookup=self._lease_lookup,
+        )
+        with self.assertRaises(WorkerExecutionSafetyStop):
+            boundary.execute(
+                self._assignment(),
+                self._task(),
+                command=[sys.executable, "worker.py"],
+            )
+
+    def test_execution_requires_live_lease_lookup(self) -> None:
+        root = self._workspace()
+        boundary = WorkerExecutionBoundary(
+            root,
+            checkpoint=self._checkpoint,
+            allowed_commands=[sys.executable],
+            process_sandbox=self._sandbox(root),
+        )
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
                 self._assignment(),
@@ -84,6 +110,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             checkpoint=lambda request: {"checkpoint_id": "CP-1", "isolated": False},
             allowed_commands=[sys.executable],
             process_sandbox=self._sandbox(root),
+            active_lease_lookup=self._lease_lookup,
         )
         with self.assertRaises(WorkerExecutionSafetyStop):
             boundary.execute(
@@ -106,6 +133,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             checkpoint=checkpoint,
             allowed_commands=[sys.executable],
             process_sandbox=self._sandbox(root),
+            active_lease_lookup=self._lease_lookup,
         )
         result = boundary.execute(
             self._assignment(),
@@ -141,6 +169,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
                 sandbox,
                 terminal_policy=terminal_policy,
             ),
+            active_lease_lookup=self._lease_lookup,
         )
 
         with self.assertRaises(WorkerExecutionSafetyStop):
@@ -210,6 +239,68 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
                 command=[sys.executable, "worker.py"],
             )
 
+    def test_active_standby_lease_cannot_execute_directly(self) -> None:
+        root = self._workspace()
+        self._script(root, "worker.py", "print('ok')\n")
+        boundary = WorkerExecutionBoundary(
+            root,
+            checkpoint=self._checkpoint,
+            allowed_commands=[sys.executable],
+            process_sandbox=self._sandbox(root),
+            active_lease_lookup=lambda task_id: WorkerLease(
+                "GROQ-15", "coder", task_id, 1.0, True
+            ),
+        )
+        with self.assertRaises(WorkerExecutionSafetyStop):
+            boundary.execute(
+                self._assignment(),
+                self._task(),
+                command=[sys.executable, "worker.py"],
+            )
+
+    def test_forged_worker_identity_is_rejected_by_live_lease(self) -> None:
+        root = self._workspace()
+        self._script(root, "worker.py", "print('ok')\n")
+        boundary = self._boundary(root)
+        forged = self._assignment()
+        forged["worker_id"] = "GROQ-02"
+        with self.assertRaises(WorkerExecutionSafetyStop):
+            boundary.execute(
+                forged,
+                self._task(),
+                command=[sys.executable, "worker.py"],
+            )
+
+    def test_forged_role_is_rejected_by_live_lease(self) -> None:
+        root = self._workspace()
+        self._script(root, "worker.py", "print('ok')\n")
+        boundary = self._boundary(root)
+        forged = self._assignment()
+        forged["role"] = "tester"
+        with self.assertRaises(WorkerExecutionSafetyStop):
+            boundary.execute(
+                forged,
+                self._task(),
+                command=[sys.executable, "worker.py"],
+            )
+
+    def test_missing_live_lease_is_rejected(self) -> None:
+        root = self._workspace()
+        self._script(root, "worker.py", "print('ok')\n")
+        boundary = WorkerExecutionBoundary(
+            root,
+            checkpoint=self._checkpoint,
+            allowed_commands=[sys.executable],
+            process_sandbox=self._sandbox(root),
+            active_lease_lookup=lambda task_id: None,
+        )
+        with self.assertRaises(WorkerExecutionSafetyStop):
+            boundary.execute(
+                self._assignment(),
+                self._task(),
+                command=[sys.executable, "worker.py"],
+            )
+
     def test_timeout_is_safe_stop(self) -> None:
         root = self._workspace()
         self._script(root, "worker.py", "import time; time.sleep(2)\n")
@@ -229,6 +320,7 @@ class WorkerExecutionBoundaryTests(unittest.TestCase):
             checkpoint=self._checkpoint,
             allowed_commands=[sys.executable],
             process_sandbox=self._sandbox(root),
+            active_lease_lookup=self._lease_lookup,
             timeout_seconds=3,
             max_output_chars=256,
         )
