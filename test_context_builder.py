@@ -166,6 +166,30 @@ class ContextBuilderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ContextBuilder(max_requirements=0)
 
+    def test_prose_terms_are_not_treated_as_secret_leaks(self) -> None:
+        bundle = self._bundle()
+        bundle["specification"]["requirements"][0][
+            "text"
+        ] = "The application must document its secret handling, token lifecycle, and credential policy."
+
+        context = ContextBuilder().build(bundle)
+
+        self.assertIn("secret handling", context["requirements"][0]["text"])
+        self.assertIn("token lifecycle", context["requirements"][0]["text"])
+        self.assertIn("credential policy", context["requirements"][0]["text"])
+
+    def test_sensitive_keys_are_still_redacted_and_untrusted_secret_values_rejected(self) -> None:
+        bundle = self._bundle()
+        bundle["specification"]["requirements"][0]["api_key"] = "sk-test-not-a-real-key-but-sensitive"
+
+        context = ContextBuilder().build(bundle)
+        self.assertEqual(context["requirements"][0].get("api_key"), None)
+
+        leaked = self._bundle()
+        leaked["specification"]["requirements"][0]["text"] = "Bearer abcdefghijklmnopqrstuvwxyz123456"
+        with self.assertRaises(ValueError):
+            ContextBuilder().build(leaked)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
