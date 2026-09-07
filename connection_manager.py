@@ -12,6 +12,7 @@ from protected_secret_store import SecretStore, WindowsProtectedSecretStore
 
 BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_FILE = BASE_DIR / "connections.json"
+AUTHORITATIVE_REGISTRY_FILE = BASE_DIR / "config" / "registry.json"
 ROLE_SOURCE = "config/registry.json"
 SECRET_DIR_ENV = "AI_AGENT_SECRET_DIR"
 LEGACY_SECRET_FALLBACK_ENV = "AI_AGENT_ALLOW_LEGACY_SECRET_PATH"
@@ -37,6 +38,7 @@ LIFECYCLE_VALUES = {
     LIFECYCLE_INVALID,
     LIFECYCLE_REMOVED,
 }
+NON_ELIGIBLE = {LIFECYCLE_DISABLED, LIFECYCLE_FAILED, LIFECYCLE_INVALID, LIFECYCLE_REMOVED}
 
 
 @dataclass(frozen=True)
@@ -70,35 +72,28 @@ def secret_dir() -> Path:
 
 
 def secret_file(provider: str) -> Path:
-    try:
-        filename = PROVIDER_FILES[provider]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported provider: {provider}") from exc
-    return secret_dir() / filename
+    if provider not in PROVIDER_FILES:
+        raise ValueError(f"Unsupported provider: {provider}")
+    return secret_dir() / PROVIDER_FILES[provider]
 
 
 def _legacy_secret_file(provider: str) -> Path:
-    try:
-        return BASE_DIR / PROVIDER_FILES[provider]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported provider: {provider}") from exc
+    if provider not in PROVIDER_FILES:
+        raise ValueError(f"Unsupported provider: {provider}")
+    return BASE_DIR / PROVIDER_FILES[provider]
 
 
 def resolve_secret_file(provider: str) -> Path:
-    """Resolve a TXT import source; it is never used as persistent secret storage."""
+    """Resolve a TXT import source only; it is never the credential store."""
     external = secret_file(provider)
     if external.exists():
         return external
-
     legacy = _legacy_secret_file(provider)
     allow_legacy = os.environ.get(LEGACY_SECRET_FALLBACK_ENV, "").strip().lower()
     if allow_legacy in {"1", "true", "yes"} and legacy.exists():
         return legacy
-
     raise FileNotFoundError(
-        f"Import source not found outside repository: {external}. "
-        f"Set {SECRET_DIR_ENV} to the protected import-source directory. "
-        f"Legacy repo-relative fallback requires {LEGACY_SECRET_FALLBACK_ENV}=1."
+        f"Import source not found: {external}. Set {SECRET_DIR_ENV} to the protected import-source directory."
     )
 
 
@@ -106,11 +101,8 @@ def load_registry() -> dict:
     if not REGISTRY_FILE.exists():
         return {"version": 2, "role_source": ROLE_SOURCE, "connections": {}}
     data = json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("Connection registry root must be an object")
-    connections = data.get("connections")
-    if not isinstance(connections, dict):
-        raise ValueError("Connection registry must contain an object named 'connections'")
+    if not isinstance(data, dict) or not isinstance(data.get("connections"), dict):
+        raise ValueError("Connection registry must contain a 'connections' object")
     data["role_source"] = ROLE_SOURCE
     return data
 
@@ -158,10 +150,9 @@ def read_secret_source(path: Path, prefix: str) -> tuple[dict[str, str], list[st
 
 
 def _connection_ids_for_provider(registry: dict, provider: str) -> list[str]:
-    connections = registry["connections"]
     values = [
         connection_id
-        for connection_id, item in connections.items()
+        for connection_id, item in registry.get("connections", {}).items()
         if isinstance(item, dict) and item.get("provider") == provider
     ]
     return sorted(values, key=lambda value: int(value.split("-", 1)[1]))
@@ -174,33 +165,15 @@ def _next_connection_id(used_ids: set[str], prefix: str) -> str:
     return f"{prefix}-{number:02d}"
 
 
-def _normalize_status(item: dict[str, Any]) -> str:
-    status = str(item.get("status", ""))
-    if status == "VALIDATED":
-        return LIFECYCLE_ACTIVE if bool(item.get("active")) else LIFECYCLE_DISABLED
-    if status == "KEY_ROTATED":
+def _status(item: dict[str, Any]) -> str:
+    raw = str(item.get("status", ""))
+    if raw == "VALIDATED":
+        return LIFECYCLE_ACTIVE if bool(item.get("active")) else LIFECYCLE_ACTIVE
+    if raw == "KEY_ROTATED":
         return LIFECYCLE_DISABLED
-    if status in LIFECYCLE_VALUES:
-        return status
+    if raw in LIFECYCLE_VALUES:
+        return raw
     return LIFECYCLE_DISABLED
-
-
-def _metadata_status(item: dict[str, Any]) -> str:
-    status = _normalize_status(item)
-    item["status"] = status
-    item["active"] = status == LIFECYCLE_ACTIVE
-    return status
-
-
-def _default_connection(connection_id: str, provider: str, fp: str) -> dict[str, Any]:
-    return {
-        "connection_id": connection_id,
-        "provider": provider,
-        "key_fingerprint": fp,
-        "role": None,
-        "status": LIFECYCLE_DISABLED,
-        "active": False,
-    }
 
 
 def import_provider(
@@ -211,7 +184,7 @@ def import_provider(
     *,
     secret_store: SecretStore | None = None,
 ) -> ImportSummary:
-    """Additively import secrets into protected storage; never remove by omission."""
+    """Additive import into protected storage. TXT omission never removes a prior connection."""
     if provider not in PROVIDER_FILES:
         raise ValueError(f"Unsupported provider: {provider}")
     if keys_path.suffix.lower() != ".txt":
@@ -220,45 +193,46 @@ def import_provider(
     connections = registry.setdefault("connections", {})
     store = secret_store or WindowsProtectedSecretStore()
     labeled, unlabeled = read_secret_source(keys_path, prefix)
-
     by_fingerprint = {
         item.get("key_fingerprint"): connection_id
         for connection_id, item in connections.items()
-        if isinstance(item, dict)
-        and item.get("provider") == provider
-        and isinstance(item.get("key_fingerprint"), str)
+        if isinstance(item, dict) and item.get("provider") == provider and isinstance(item.get("key_fingerprint"), str)
     }
     used_ids = {
         connection_id
         for connection_id, item in connections.items()
         if isinstance(item, dict) and item.get("provider") == provider
     }
-
     imported = 0
     already_present = 0
     rejected = 0
     touched: list[str] = []
-    seen_fingerprints: set[str] = set()
+    seen: set[str] = set()
 
-    def add_secret(connection_id: str, secret: str, *, allow_rotation: bool) -> None:
+    def ingest(connection_id: str, secret: str) -> None:
         nonlocal imported, already_present, rejected
         fp = fingerprint(secret)
-        if fp in seen_fingerprints:
+        if fp in seen:
             already_present += 1
             return
-        seen_fingerprints.add(fp)
-
-        existing_id = by_fingerprint.get(fp)
-        if existing_id and existing_id != connection_id:
+        seen.add(fp)
+        duplicate_id = by_fingerprint.get(fp)
+        if duplicate_id is not None and duplicate_id != connection_id:
             already_present += 1
             return
 
         existing = connections.get(connection_id)
         if existing is None:
-            existing = _default_connection(connection_id, provider, fp)
-            connections[connection_id] = existing
-            by_fingerprint[fp] = connection_id
+            connections[connection_id] = {
+                "connection_id": connection_id,
+                "provider": provider,
+                "key_fingerprint": fp,
+                "role": None,
+                "status": LIFECYCLE_DISABLED,
+                "active": False,
+            }
             store.put(connection_id, provider, secret, fp)
+            by_fingerprint[fp] = connection_id
             imported += 1
             touched.append(connection_id)
             return
@@ -269,58 +243,62 @@ def import_provider(
 
         current_fp = existing.get("key_fingerprint")
         if current_fp == fp:
-            if not store.has(connection_id):
+            if store.has(connection_id):
+                already_present += 1
+            else:
                 store.put(connection_id, provider, secret, fp)
                 imported += 1
                 touched.append(connection_id)
-            else:
-                already_present += 1
             return
 
-        if not allow_rotation:
-            rejected += 1
-            return
-
-        old_status = _normalize_status(existing)
+        previous_status = _status(existing)
         store.put(connection_id, provider, secret, fp)
         existing["key_fingerprint"] = fp
-        existing["status"] = old_status if old_status in {LIFECYCLE_ACTIVE, LIFECYCLE_DISABLED} else LIFECYCLE_DISABLED
+        existing["status"] = previous_status if previous_status in {LIFECYCLE_ACTIVE, LIFECYCLE_DISABLED} else LIFECYCLE_DISABLED
         existing["active"] = existing["status"] == LIFECYCLE_ACTIVE
-        by_fingerprint.pop(current_fp, None)
+        if current_fp:
+            by_fingerprint.pop(current_fp, None)
         by_fingerprint[fp] = connection_id
         imported += 1
         touched.append(connection_id)
 
     for connection_id, secret in labeled.items():
-        add_secret(connection_id, secret, allow_rotation=True)
-
+        ingest(connection_id, secret)
     for secret in unlabeled:
         fp = fingerprint(secret)
         existing_id = by_fingerprint.get(fp)
         if existing_id is not None:
-            add_secret(existing_id, secret, allow_rotation=False)
+            ingest(existing_id, secret)
             continue
         connection_id = _next_connection_id(used_ids | set(connections), prefix)
         used_ids.add(connection_id)
-        add_secret(connection_id, secret, allow_rotation=False)
+        ingest(connection_id, secret)
 
+    # No stale pass here: omission from an import file has no lifecycle effect.
     save_registry(registry)
-    return ImportSummary(
-        provider=provider,
-        imported_count=imported,
-        already_present_count=already_present,
-        rejected_count=rejected,
-        persistence_status="PERSISTED",
-        connection_ids=tuple(touched),
-    )
+    return ImportSummary(provider, imported, already_present, rejected, "PERSISTED", tuple(touched))
+
+
+def _assigned_connections(authoritative: dict) -> set[str]:
+    ids: set[str] = set()
+    architecture = authoritative.get("architecture", {})
+    leader = architecture.get("leader", {}) if isinstance(architecture, dict) else {}
+    if isinstance(leader, dict):
+        for key in ("primary_pool", "failover_pool"):
+            ids.update(item for item in leader.get(key, []) if isinstance(item, str))
+    workers = architecture.get("workers", {}) if isinstance(architecture, dict) else {}
+    roles = workers.get("roles", {}) if isinstance(workers, dict) else {}
+    if isinstance(roles, dict):
+        for values in roles.values():
+            if isinstance(values, list):
+                ids.update(item for item in values if isinstance(item, str))
+    return ids
 
 
 def get_connection_status(connection_id: str, registry: dict | None = None) -> str:
     data = registry or load_registry()
-    item = data.get("connections", {}).get(connection_id, {})
-    if not isinstance(item, dict):
-        return LIFECYCLE_REMOVED
-    return _metadata_status(item)
+    item = data.get("connections", {}).get(connection_id)
+    return _status(item) if isinstance(item, dict) else LIFECYCLE_REMOVED
 
 
 def set_connection_status(connection_id: str, status: str, registry: dict | None = None) -> dict[str, Any]:
@@ -330,8 +308,14 @@ def set_connection_status(connection_id: str, status: str, registry: dict | None
     item = data.get("connections", {}).get(connection_id)
     if not isinstance(item, dict):
         raise KeyError(f"Connection not found: {connection_id}")
+    if status == LIFECYCLE_ACTIVE:
+        authoritative = json.loads(AUTHORITATIVE_REGISTRY_FILE.read_text(encoding="utf-8"))
+        if connection_id not in _assigned_connections(authoritative):
+            raise ValueError("Connection must be assigned in config/registry.json before it can be enabled")
     item["status"] = status
     item["active"] = status == LIFECYCLE_ACTIVE
+    if status in {LIFECYCLE_FAILED, LIFECYCLE_INVALID} and "failure_reason" not in item:
+        item["failure_reason"] = "runtime validation reported the connection as unavailable"
     save_registry(data)
     return item
 
@@ -347,8 +331,9 @@ def enable_connection(connection_id: str, registry: dict | None = None) -> dict[
 def mark_connection_failed(connection_id: str, *, invalid: bool = False, reason: str | None = None, registry: dict | None = None) -> dict[str, Any]:
     item = set_connection_status(connection_id, LIFECYCLE_INVALID if invalid else LIFECYCLE_FAILED, registry)
     if reason:
+        data = registry or load_registry()
         item["failure_reason"] = reason[:240]
-        save_registry(registry or load_registry())
+        save_registry(data)
     return item
 
 
@@ -359,13 +344,34 @@ def remove_connection(
     secret_store: SecretStore | None = None,
 ) -> bool:
     data = registry or load_registry()
-    connections = data.get("connections", {})
-    item = connections.get(connection_id)
+    item = data.get("connections", {}).get(connection_id)
     if not isinstance(item, dict):
         raise KeyError(f"Connection not found: {connection_id}")
+    authoritative = json.loads(AUTHORITATIVE_REGISTRY_FILE.read_text(encoding="utf-8"))
+    architecture = authoritative.get("architecture", {})
+    leader = architecture.get("leader", {}) if isinstance(architecture, dict) else {}
+    workers = architecture.get("workers", {}) if isinstance(architecture, dict) else {}
+    if isinstance(leader, dict):
+        for key in ("primary_pool", "failover_pool"):
+            pool = leader.get(key)
+            if isinstance(pool, list) and connection_id in pool:
+                remaining = [item for item in pool if item != connection_id]
+                if not remaining:
+                    raise ValueError("Cannot remove the final connection from a leader pool")
+                leader[key] = remaining
+    roles = workers.get("roles", {}) if isinstance(workers, dict) else {}
+    if isinstance(roles, dict):
+        for role, pool in roles.items():
+            if not isinstance(pool, list) or connection_id not in pool:
+                continue
+            remaining = [item for item in pool if item != connection_id]
+            if role != "standby" and not remaining:
+                raise ValueError(f"Cannot remove the final connection from worker role: {role}")
+            roles[role] = remaining
     store = secret_store or WindowsProtectedSecretStore()
     store.delete(connection_id)
-    del connections[connection_id]
+    del data["connections"][connection_id]
+    AUTHORITATIVE_REGISTRY_FILE.write_text(json.dumps(authoritative, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     save_registry(data)
     return True
 
@@ -375,22 +381,21 @@ def connection_is_eligible(connection_id: str, registry: dict | None = None) -> 
     item = data.get("connections", {}).get(connection_id)
     if not isinstance(item, dict):
         return False
-    return _metadata_status(item) == LIFECYCLE_ACTIVE
+    return _status(item) not in NON_ELIGIBLE
 
 
 def get_secret(connection_id: str, provider: str | None = None, *, secret_store: SecretStore | None = None) -> str:
-    store = secret_store or WindowsProtectedSecretStore()
-    return store.get(connection_id, provider)
+    return (secret_store or WindowsProtectedSecretStore()).get(connection_id, provider)
 
 
 def main() -> int:
     registry = load_registry()
     print("Connection metadata registry loaded.")
-    print(f"Protected secret store : {secret_dir()}")
-    for provider in PROVIDER_FILES:
-        print(f"{provider} connections     : {len(_connection_ids_for_provider(registry, provider))}")
-    print("Raw secrets printed      : NO")
-    print("TXT import semantics     : ADDITIVE")
+    print("Protected secret store: Windows user-scoped DPAPI")
+    print("TXT import semantics : ADDITIVE")
+    print("Raw secrets printed  : NO")
+    print(f"Groq connections     : {len(_connection_ids_for_provider(registry, 'groq'))}")
+    print(f"OpenRouter connections: {len(_connection_ids_for_provider(registry, 'openrouter'))}")
     return 0
 
 
