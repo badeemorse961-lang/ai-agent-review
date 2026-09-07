@@ -37,7 +37,7 @@ def test_windows_entry_point_is_non_console_launcher() -> None:
     entry_point = Path("control_center.pyw").read_text(encoding="utf-8")
     assert "from desktop_control_center import ControlCenterApp, main" in entry_point
     assert "from control_center_safety_view import install_real_safety_view" in entry_point
-    assert "from control_center_language_runtime import install_bilingual_support" in entry_point
+    assert "from control_center_language_runtime_v2 import install_bilingual_support" in entry_point
     assert "install_bilingual_support(ControlCenterApp)" in entry_point
     assert "subprocess" not in entry_point
     assert "powershell" not in entry_point.lower()
@@ -94,9 +94,12 @@ def test_bilingual_support_has_real_arabic_translations_for_product_surface() ->
 
 def test_bilingual_runtime_is_reversible_visible_and_rtl_aware() -> None:
     source = Path("control_center_language_runtime.py").read_text(encoding="utf-8")
+    runtime = Path("control_center_language_runtime_v2.py").read_text(encoding="utf-8")
     assert 'self.language = "ar" if getattr(self, "language", "en") == "en" else "en"' in source
     assert 'before=self.theme_button' in source
     assert 'anchor="e", justify="right"' in source
     assert 'anchor="w", justify="left"' in source
     assert 'text="العربية"' in source
     assert 'text="English"' in source
+    assert '_install_base(app_class)' in runtime
+    assert 'button.configure(text=_button_text(getattr(self, "language", "en")))' in runtime
