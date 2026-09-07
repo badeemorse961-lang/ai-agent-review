@@ -38,7 +38,9 @@ def test_windows_entry_point_is_non_console_launcher() -> None:
     assert "from desktop_control_center import ControlCenterApp, main" in entry_point
     assert "from control_center_safety_view import install_real_safety_view" in entry_point
     assert "from control_center_language_runtime_v2 import install_bilingual_support" in entry_point
+    assert "from control_center_window_runtime import install_responsive_window" in entry_point
     assert "install_bilingual_support(ControlCenterApp)" in entry_point
+    assert "install_responsive_window(ControlCenterApp)" in entry_point
     assert "subprocess" not in entry_point
     assert "powershell" not in entry_point.lower()
 
@@ -112,3 +114,12 @@ def test_safety_evidence_binds_affected_task_from_application_intent() -> None:
     assert 'if isinstance(task_id, str) and task_id.strip()' in source
     assert 'event["task_id"] = task_id.strip()' in source
     assert 'event.get("task_id")' in safety_view
+
+
+def test_responsive_window_runtime_is_integrated() -> None:
+    source = Path("control_center_window_runtime.py").read_text(encoding="utf-8")
+    assert "winfo_screenwidth" in source
+    assert "winfo_screenheight" in source
+    assert "root.resizable(True, True)" in source
+    assert "_install_scrollable_body" in source
+    assert "Scrollbar" in source
