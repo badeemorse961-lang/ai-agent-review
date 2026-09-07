@@ -6,26 +6,22 @@
 
 Latest merged implementation baseline:
 
-`f7aa233dac8ca0e038923858c9cca1287d110e93`
+`fd5deca992798d0e519027c2f25f77ed07ee1d2f`
 
-This merge promotes PR #40, hardening the Central Leader boundary so an evidence context cannot authorize autonomous planning merely because its project state is in an allowed state set. Autonomous leader start now requires explicit positive authorization in `project.autonomous_start_allowed`.
+PR #41 hardens the Central Leader planning boundary: after model transport returns, the authoritative router snapshot is re-read and the original leader lease must still exist with the exact provider, account, model, tier, and task identity. A disappeared or rebound lease is a safety stop; the model result is never accepted under a new leader identity.
 
 ## Verified architecture
 
-The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, machine-validated configuration authority, and registry-bound runtime health/lease state.
+The repository includes registry-driven leader/worker routing, runtime connection resilience, project understanding, context building, central leadership, plan/decomposition, worker dispatch, guarded worker execution, independent validation, internal execution authorization, resource/process sandboxing, policy-first terminal execution, inspection-only Git terminal safety, centralized secret/log redaction, the task-scoped Git mutation control plane, the Execution Gate process boundary, strict persisted mutation-result restoration, immutable transaction attestation, live evidence rebinding, machine-validated configuration authority, registry-bound runtime health/lease state, authoritative worker lease binding, validation verdict authority binding, and explicit autonomous leader start authorization.
 
 ## Git mutation trust chain
 
 ```text
 Passed ValidationVerdict
-        +
-isolated checkpoint
-        +
-exact FileChange targets/content
-        +
-validation evidence explicitly attests passed=True
-        +
-verdict/evidence task+worker identity agreement
+        + isolated checkpoint
+        + exact FileChange targets/content
+        + validation evidence explicitly attests passed=True
+        + verdict/evidence task+worker identity agreement
         ↓
 ExecutionAuthorizationBoundary
         ↓
@@ -60,56 +56,33 @@ The mutation control plane exposes only local `stage` and `commit`. Remote mutat
 
 ## Configuration authority
 
-`config/registry.json` is the authoritative source for leader pools, worker roles, and connection assignment.
+`config/registry.json` is authoritative for leader pools, worker roles, and connection assignment. `connections.json` is connection metadata only; its role-source marker is aligned to the registry and is not routing authority.
 
-`connections.json` is connection metadata only. Its role-source marker is aligned to `config/registry.json` and is not used as routing authority.
-
-`config_registry.py` fails closed when:
-
-- leader or worker assignments are duplicated or overlap;
-- a registry connection has no matching metadata;
-- metadata contains an unassigned connection;
-- a metadata key disagrees with the embedded connection ID;
-- provider, status, active flag, or SHA-256 fingerprint shapes are malformed;
-- an assigned connection has a provider inconsistent with its registry pool.
-
-`connection_manager.py` preserves the authoritative role-source marker and continues to keep raw provider secrets outside the repository by default; only one-way fingerprints are stored in `connections.json`.
-
-Legacy role/profile structures are no longer routing authorities. Compatibility names may remain in routers, but routing decisions are driven by `config/registry.json`.
+`config_registry.py` fails closed on duplicate/overlapping assignments, missing or unassigned metadata, metadata-key/embedded-ID disagreement, malformed provider/status/active/fingerprint fields, and provider mismatch with the assigned registry pool. Raw provider secrets remain outside the repository by default; only one-way fingerprints are stored in `connections.json`.
 
 ## Runtime health/state boundary
 
-The runtime health/state boundary is now promoted and tested.
-
 ```text
-Authoritative registry
-        +
-Runtime health observations
-        +
-Local lease/failure state
+Authoritative registry + runtime health observations + local lease/failure state
         ↓
 validated effective availability
         ↓
 LeaderRouter / WorkerRouter
 ```
 
-Health/state input remains observation data, not configuration truth. Unknown connection IDs are ignored; wrong-provider health observations are rejected or ignored according to the component contract; model/tier mismatches do not become valid routing state; malformed and non-finite lease state is discarded; leader leases must match configured tier, model, provider, account, and task identity; worker leases must match configured role membership and standby semantics.
+Health/state input is observation data, not configuration truth. Unknown IDs are ignored; wrong-provider observations are rejected/ignored according to component contract; model/tier mismatches do not become routing state; malformed/non-finite leases are discarded. Leader leases must match configured tier/model/provider/account/task identity. Worker leases must match configured role membership and standby semantics.
 
-The implementation preserves shared leader accounts across the configured primary/failover pools: a connection may legitimately appear in both tiers, while each persisted lease must still bind to the tier/model actually recorded for that lease.
-
-Worker execution adds a second authority check at the process-launch boundary: serialized worker assignments are not proof of identity. The boundary requires an authoritative active lease lookup, matches task/role/worker identity, rejects standby leases from direct execution, and rechecks the live lease after checkpoint establishment immediately before process launch.
-
-The final mutation authorization boundary now also binds a passed `ValidationVerdict` to explicit positive validation evidence and matching task/worker identities before any Git mutation admission.
+Worker execution requires an authoritative active lease lookup, matches task/role/worker identity, rejects standby leases from direct execution, and rechecks the live lease after checkpoint establishment immediately before process launch. Mutation authorization also binds a passed `ValidationVerdict` to explicit positive evidence and matching task/worker identities before Git mutation admission.
 
 ## Central Leader authority boundary
 
-Central Leader planning treats model/evidence context as untrusted input. A project state in the allowed planning set is not sufficient to grant autonomous start authority.
+`CentralLeader` treats model/evidence context as untrusted input. A project state in the allowed planning set does not itself grant autonomous start authority. `project.autonomous_start_allowed` must be explicitly `True`; missing/false is a safety stop, and this authority remains distinct from execution and mutation authority.
 
-`CentralLeader` now fails closed unless `project.autonomous_start_allowed` is explicitly `True`. Missing or false autonomous-start authority is a safety stop. This authority remains distinct from execution and mutation authority, which the context can never grant.
+During planning, the original `LeaderRequest` identity is re-bound against a fresh authoritative router snapshot after transport. Disappearance or any provider/account/model/tier/task rebind invalidates the model output.
 
 ## Project and safety rules
 
-UNKNOWN and unresolved CONFLICT are safety stops. Confirmed breakage means REPAIR. Model output is untrusted. Local tests determine executable reality. Secrets remain outside Git history and normal child environments. Generic terminal Git access remains inspection-only. Normal development is autonomous inside the active workspace; high-risk authority is separated explicitly.
+UNKNOWN and unresolved CONFLICT are safety stops. Confirmed breakage means REPAIR. Model output is untrusted. Local tests determine executable reality. Secrets remain outside Git history and normal child environments. Generic terminal Git access remains inspection-only. High-risk authority is separated explicitly.
 
 Never use destructive synchronization such as `git clean -fd` or `git reset --hard`.
 
@@ -152,79 +125,94 @@ PR #39 — validation verdict authority binding at mutation admission.
 
 PR #40 — explicit autonomous leader start authorization at the Central Leader boundary.
 
+PR #41 — live Central Leader lease rebinding after model transport.
+
 ## Validation record
 
-PR #33 was validated on the real Windows working tree before promotion:
+PR #33 — real Windows working tree:
 
 ```text
 python -m compileall -q .                                  PASS
-focused live-rebind/mutation suites                         62 passed, 1 skipped
-python repository_security_audit.py                        PASS
+focused live-rebind/mutation suites                        62 passed, 1 skipped
+python repository_security_audit.py                         PASS
 pytest -q                                                   247 passed, 1 skipped
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
-PR #34 was validated on the real Windows working tree before promotion:
+PR #34 — real Windows working tree:
 
 ```text
 python -m compileall -q .                                  PASS
 pytest -q test_config_registry.py test_connection_manager.py 13 passed
 pytest -q                                                   251 passed, 1 skipped
-python repository_security_audit.py                        PASS
+python repository_security_audit.py                         PASS
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
-PR #36 was validated on the real Windows working tree before promotion:
+PR #36 — real Windows working tree:
 
 ```text
 python -m compileall -q .                                  PASS
 pytest -q test_registry_routers.py                          13 passed
 pytest -q                                                   258 passed, 1 skipped
-python repository_security_audit.py                        PASS
+python repository_security_audit.py                         PASS
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
-PR #38 was validated on the real Windows working tree before promotion:
+PR #38 — real Windows working tree:
 
 ```text
 python -m compileall -q .                                  PASS
 pytest -q test_worker_dispatch.py test_worker_execution.py test_worker_execution_process_sandbox.py 27 passed
 pytest -q                                                   265 passed, 1 skipped
-python repository_security_audit.py                        PASS
+python repository_security_audit.py                         PASS
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #38; local Windows execution was therefore the promotion evidence.
 
-PR #39 was validated on the real Windows working tree before promotion:
+PR #39 — real Windows working tree:
 
 ```text
 python -m compileall -q .                                  PASS
-pytest -q test_execution_authorization.py                  11 passed
+pytest -q test_execution_authorization.py                   11 passed
 pytest -q                                                   268 passed, 1 skipped
-python repository_security_audit.py                        PASS
+python repository_security_audit.py                         PASS
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #39; local Windows execution was therefore the promotion evidence.
 
-PR #40 was validated on the real Windows working tree before promotion:
+PR #40 — real Windows working tree:
 
 ```text
 python -m compileall -q .                                  PASS
 pytest -q test_central_leader.py                            7 passed
 pytest -q                                                   269 passed, 1 skipped
-python repository_security_audit.py                        PASS
+python repository_security_audit.py                         PASS
 git diff --check                                            PASS
 git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #40; local Windows execution was therefore the promotion evidence.
+
+PR #41 — real Windows working tree:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_central_leader.py                            10 passed
+pytest -q                                                   272 passed, 1 skipped
+python repository_security_audit.py                         PASS
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
+
+No GitHub Actions workflow runs were configured/available for PR #41; local Windows execution was therefore the promotion evidence.
 
 ## Promotion rule
 
