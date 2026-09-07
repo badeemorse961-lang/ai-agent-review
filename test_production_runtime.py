@@ -75,14 +75,19 @@ def checkpoint(request: Any) -> dict[str, Any]:
     return {"isolated": True, "checkpoint_id": str(request.task_id) + ":cp"}
 
 
+def routers() -> tuple[StubLeaderRouter, StubWorkerRouter]:
+    return StubLeaderRouter(), StubWorkerRouter()
+
+
 def test_production_runtime_wires_canonical_boundaries(tmp_path: Path) -> None:
+    leader_router, worker_router = routers()
     runtime = ProductionRuntime(
         ProductionRuntimeConfig(workspace_root=tmp_path),
         leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
         worker_adapter=StubWorkerAdapter(),
         checkpoint=checkpoint,
-        leader_router=StubLeaderRouter(),
-        worker_router=StubWorkerRouter(),
+        leader_router=leader_router,
+        worker_router=worker_router,
         understanding=StubUnderstanding(),
     )
 
@@ -95,33 +100,52 @@ def test_production_runtime_wires_canonical_boundaries(tmp_path: Path) -> None:
 
 
 def test_build_requires_explicit_worker_adapter(tmp_path: Path) -> None:
+    leader_router, worker_router = routers()
     with pytest.raises(ProductionRuntimeConfigurationError, match="WorkerAdapter"):
         build_production_runtime(
             tmp_path,
             leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
             worker_adapter=None,  # type: ignore[arg-type]
             checkpoint=checkpoint,
+            leader_router=leader_router,
+            worker_router=worker_router,
         )
 
 
 def test_build_requires_explicit_checkpoint(tmp_path: Path) -> None:
+    leader_router, worker_router = routers()
     with pytest.raises(ProductionRuntimeConfigurationError, match="checkpoint"):
         build_production_runtime(
             tmp_path,
             leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
             worker_adapter=StubWorkerAdapter(),
             checkpoint=None,  # type: ignore[arg-type]
+            leader_router=leader_router,
+            worker_router=worker_router,
+        )
+
+
+def test_build_requires_explicit_routers(tmp_path: Path) -> None:
+    with pytest.raises(ProductionRuntimeConfigurationError, match="leader_router"):
+        build_production_runtime(
+            tmp_path,
+            leader_transport=lambda request: {"plan": {"goal": "x", "tasks": []}},
+            worker_adapter=StubWorkerAdapter(),
+            checkpoint=checkpoint,
+            leader_router=None,  # type: ignore[arg-type]
+            worker_router=StubWorkerRouter(),
         )
 
 
 def test_invalid_runtime_configuration_stops_early(tmp_path: Path) -> None:
+    leader_router, worker_router = routers()
     with pytest.raises(ProductionRuntimeConfigurationError, match="max_tasks"):
         ProductionRuntime(
             ProductionRuntimeConfig(workspace_root=tmp_path, max_tasks=0),
             leader_transport=lambda request: {},
             worker_adapter=StubWorkerAdapter(),
             checkpoint=checkpoint,
-            leader_router=StubLeaderRouter(),
-            worker_router=StubWorkerRouter(),
+            leader_router=leader_router,
+            worker_router=worker_router,
             understanding=StubUnderstanding(),
         )
