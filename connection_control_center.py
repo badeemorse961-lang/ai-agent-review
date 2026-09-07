@@ -220,29 +220,36 @@ class ConnectionControlCenterApp(ControlCenterApp):
             tree.heading(column, text=labels[column])
             tree.column(column, width=widths[column], anchor="w")
         connections = result.data.get("connections", []) if isinstance(result.data, Mapping) else []
+        palette = self.palette[self.dark]
+        tree.tag_configure("READY", foreground=palette["good"])
+        tree.tag_configure("STORED", foreground=palette["muted"])
+        tree.tag_configure("SETUP", foreground=palette["warn"])
+        tree.tag_configure("FAILED", foreground=palette["bad"])
+        tree.tag_configure("REMOVED", foreground=palette["muted"])
         for item in connections:
             item = self._mapping(item)
-            readiness, readiness_reason = self._connection_readiness(item)
+            readiness, _reason = self._connection_readiness(item)
+            ready_label = {
+                "READY": "✓ READY",
+                "STORED": "● STORED",
+                "SETUP": "⚠ SETUP",
+                "FAILED": "✕ FAILED",
+                "REMOVED": "— REMOVED",
+            }.get(readiness, "? UNKNOWN")
             raw_status = str(item.get("metadata_status", "UNKNOWN"))
             display_status = "ACTIVE" if raw_status == "VALIDATED" else raw_status
-            tree.insert("", "end", values=(
-                item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""),
-                ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned",
+            assignment = ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned"
+            values = (
+                item.get("connection_id", ""),
+                item.get("provider", ""),
+                item.get("model", ""),
+                assignment,
                 display_status,
-                readiness,
+                ready_label,
                 item.get("runtime_status", "UNOBSERVED"),
                 "present" if item.get("fingerprint_present") else "absent",
-            ))
-            item_id = tree.get_children()[-1]
-            tree.item(item_id, tags=(readiness,))
-            tree.tag_configure("READY", foreground=self.palette[self.dark]["good"])
-            tree.tag_configure("STORED", foreground=self.palette[self.dark]["muted"])
-            tree.tag_configure("SETUP", foreground=self.palette[self.dark]["warn"])
-            tree.tag_configure("FAILED", foreground=self.palette[self.dark]["bad"])
-            tree.tag_configure("REMOVED", foreground=self.palette[self.dark]["muted"])
-            tree.item(item_id, tags=(readiness,))
-            tree.item(item_id, values=tree.item(item_id, "values")[0:6] + (readiness_reason,) + (tree.item(item_id, "values")[6],))
-
+            )
+            tree.insert("", "end", values=values, tags=(readiness,))
         tree.grid(row=0, column=0, sticky="nsew")
         self.connection_tree = tree
 
@@ -278,7 +285,7 @@ class ConnectionControlCenterApp(ControlCenterApp):
         if status == "DISABLED":
             return "STORED", "Stored · manually disabled"
         if status in {"ACTIVE", "VALIDATED"} and runtime != "FAILED":
-            return "READY", "✓ Ready · automatic use"
+            return "READY", "Ready · automatic use"
         return "SETUP", "Needs validation"
 
     def _selected_connection_id(self) -> str | None:
