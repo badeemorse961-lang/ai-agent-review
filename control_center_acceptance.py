@@ -6,7 +6,7 @@ from pathlib import Path
 
 from application_boundary import ApplicationIntent
 from connection_control_center import ConnectionControlCenterApp, ConnectionControlCenterService
-from protected_secret_store import WindowsProtectedSecretStore
+from protected_secret_store import MemorySecretStore, WindowsProtectedSecretStore
 
 EXPECTED_NAVIGATION = (
     "Dashboard",
@@ -24,8 +24,12 @@ EXPECTED_NAVIGATION = (
 
 
 def run_service_smoke(root: Path) -> None:
-    service = ConnectionControlCenterService(workspace_root=root, autowire_core=False)
-    assert isinstance(service.secret_store, WindowsProtectedSecretStore)
+    store = WindowsProtectedSecretStore() if os.name == "nt" else MemorySecretStore()
+    service = ConnectionControlCenterService(workspace_root=root, autowire_core=False, secret_store=store)
+    if os.name == "nt":
+        assert isinstance(service.secret_store, WindowsProtectedSecretStore)
+    else:
+        assert isinstance(service.secret_store, MemorySecretStore)
 
     selected = service.dispatch(ApplicationIntent("select_project", {"workspace_root": str(root)}))
     assert selected.status == "OK", selected.error
@@ -55,6 +59,7 @@ def run_gui_smoke(root: Path) -> None:
         raise SystemExit("GUI smoke is a Windows-only acceptance check")
     app = ConnectionControlCenterApp()
     app.service.workspace_root = root
+    assert isinstance(app.service.secret_store, WindowsProtectedSecretStore)
     assert app.root.title() == "AI-Agent Control Center"
     assert tuple(label for label, _ in app.NAVIGATION) == EXPECTED_NAVIGATION
 
