@@ -20,9 +20,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Run security invariant audit
         run: python repository_security_audit.py
       - name: Verify cross-process workspace mutation lock
-        run: pytest -q test_workspace_mutation_lock.py test_workspace_mutation_lock_multiprocess.py
+        run: python -m pytest -q test_workspace_mutation_lock.py test_workspace_mutation_lock_multiprocess.py
