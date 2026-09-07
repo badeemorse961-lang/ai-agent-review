@@ -6,9 +6,9 @@
 
 Latest merged implementation baseline:
 
-`1188491d8ec502214d72fd677d312f765cfdd98e`
+`f7aa233dac8ca0e038923858c9cca1287d110e93`
 
-This squash merge promotes PR #39, hardening the final execution-authorization boundary so a typed validation verdict cannot be promoted from header fields alone; validation evidence, task identity, worker identity, and targets must agree before mutation admission.
+This merge promotes PR #40, hardening the Central Leader boundary so an evidence context cannot authorize autonomous planning merely because its project state is in an allowed state set. Autonomous leader start now requires explicit positive authorization in `project.autonomous_start_allowed`.
 
 ## Verified architecture
 
@@ -101,7 +101,11 @@ Worker execution adds a second authority check at the process-launch boundary: s
 
 The final mutation authorization boundary now also binds a passed `ValidationVerdict` to explicit positive validation evidence and matching task/worker identities before any Git mutation admission.
 
-N-driven pools, stable connection IDs, safe-stop behavior on required-role exhaustion, and local-only runtime state remain intact.
+## Central Leader authority boundary
+
+Central Leader planning treats model/evidence context as untrusted input. A project state in the allowed planning set is not sufficient to grant autonomous start authority.
+
+`CentralLeader` now fails closed unless `project.autonomous_start_allowed` is explicitly `True`. Missing or false autonomous-start authority is a safety stop. This authority remains distinct from execution and mutation authority, which the context can never grant.
 
 ## Project and safety rules
 
@@ -145,6 +149,8 @@ PR #36 — runtime health and lease state authority hardening.
 PR #38 — authoritative worker lease binding at the execution boundary.
 
 PR #39 — validation verdict authority binding at mutation admission.
+
+PR #40 — explicit autonomous leader start authorization at the Central Leader boundary.
 
 ## Validation record
 
@@ -206,6 +212,19 @@ git status --short --branch                                 CLEAN
 ```
 
 No GitHub Actions workflow runs were configured/available for PR #39; local Windows execution was therefore the promotion evidence.
+
+PR #40 was validated on the real Windows working tree before promotion:
+
+```text
+python -m compileall -q .                                  PASS
+pytest -q test_central_leader.py                            7 passed
+pytest -q                                                   269 passed, 1 skipped
+python repository_security_audit.py                        PASS
+git diff --check                                            PASS
+git status --short --branch                                 CLEAN
+```
+
+No GitHub Actions workflow runs were configured/available for PR #40; local Windows execution was therefore the promotion evidence.
 
 ## Promotion rule
 
