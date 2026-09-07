@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from central_leader import CentralLeader, LeaderResponse
 from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
-from independent_validation import IndependentValidator, ValidationVerdict, ValidationHook
+from independent_validation import IndependentValidator, ValidationHook, ValidationVerdict
 from plan_decomposer import PlanDecomposer
 from worker_dispatch import WorkerAssignment, WorkerDispatcher
 from worker_execution import ExecutionRequest, ExecutionResult, WorkerExecutionBoundary
@@ -129,7 +129,7 @@ class CanonicalOrchestrator:
         dispatcher: WorkerDispatcher,
         worker_execution: WorkerExecutionBoundary,
         worker_adapter: WorkerAdapter,
-        validator_factory: Any,
+        validator_factory: Callable[[ValidationHook], IndependentValidator],
         authorization: ExecutionAuthorizationBoundary,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
@@ -189,8 +189,8 @@ class CanonicalOrchestrator:
             assignment_by_task = {item.task_id: item for item in assignments}
 
             tasks = plan.get("tasks")
-            if not isinstance(tasks, list):
-                raise OrchestrationSafetyStop("Decomposed plan is missing tasks")
+            if not isinstance(tasks, list) or not tasks:
+                raise OrchestrationSafetyStop("Decomposed plan must contain a non-empty task list")
 
             task_records: list[TaskExecutionRecord] = []
             for task in self._ordered_tasks(tasks):
@@ -238,7 +238,7 @@ class CanonicalOrchestrator:
                 authorization = {
                     "task_id": verdict.task_id,
                     "worker_id": verdict.worker_id,
-                    "authorized": True,
+                    "authorized": bool(spec.changes),
                     "changed_targets": list(spec.changed_targets),
                 }
 
@@ -299,6 +299,8 @@ class CanonicalOrchestrator:
             task_id = item.get("task_id")
             if not isinstance(task_id, str) or not task_id.strip():
                 raise OrchestrationSafetyStop("Every plan task requires task_id")
+            if task_id in by_id:
+                raise OrchestrationSafetyStop(f"Duplicate task_id: {task_id}")
             by_id[task_id] = item
 
         indegree = {task_id: 0 for task_id in by_id}
@@ -310,7 +312,7 @@ class CanonicalOrchestrator:
                     f"Task {task_id!r} dependencies must be a list"
                 )
             for dependency in dependencies:
-                if dependency not in by_id:
+                if not isinstance(dependency, str) or dependency not in by_id:
                     raise OrchestrationSafetyStop(
                         f"Task {task_id!r} references unknown dependency {dependency!r}"
                     )
@@ -343,16 +345,20 @@ class CanonicalOrchestrator:
             )
         if not spec.command:
             raise OrchestrationSafetyStop("Worker execution command must not be empty")
-        if set(spec.changes) and set(spec.changed_targets) != {
-            change.path for change in spec.changes
-        }:
-            raise OrchestrationSafetyStop(
-                f"Worker changes must exactly match changed_targets for {task.get('task_id')!r}"
-            )
+        if not isinstance(spec.targets, tuple) or not isinstance(spec.changed_targets, tuple):
+            raise OrchestrationSafetyStop("Worker execution paths must use normalized tuples")
         if not spec.changes and spec.changed_targets:
             raise OrchestrationSafetyStop(
                 "changed_targets cannot be declared without FileChange records"
             )
+        change_paths = {change.path for change in spec.changes}
+        if change_paths != set(spec.changed_targets):
+            raise OrchestrationSafetyStop(
+                f"Worker changes must exactly match changed_targets for {task.get('task_id')!r}"
+            )
+        for change in spec.changes:
+            if not isinstance(change, FileChange):
+                raise OrchestrationSafetyStop("Worker changes must use FileChange records")
 
     def _request_from_execution(
         self,
@@ -360,12 +366,11 @@ class CanonicalOrchestrator:
         assignment: Mapping[str, Any],
         spec: WorkerExecutionSpec,
     ) -> ExecutionRequest:
-        workspace_root = str(self.workspace_root)
         return ExecutionRequest(
             task_id=str(task["task_id"]),
             role=str(task["role"]),
             worker_id=str(assignment["worker_id"]),
-            workspace_root=workspace_root,
+            workspace_root=str(self.workspace_root),
             command=tuple(spec.command),
             targets=tuple(spec.targets),
             timeout_seconds=self.worker_execution.timeout_seconds,
