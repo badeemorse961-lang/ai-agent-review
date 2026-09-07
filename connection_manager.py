@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Any
+
+from protected_secret_store import SecretStore, WindowsProtectedSecretStore
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -12,9 +15,7 @@ REGISTRY_FILE = BASE_DIR / "connections.json"
 ROLE_SOURCE = "config/registry.json"
 SECRET_DIR_ENV = "AI_AGENT_SECRET_DIR"
 LEGACY_SECRET_FALLBACK_ENV = "AI_AGENT_ALLOW_LEGACY_SECRET_PATH"
-DEFAULT_SECRET_DIR = Path(
-    os.environ.get("LOCALAPPDATA", Path.home() / ".local")
-) / "AI-Agent" / "secrets"
+DEFAULT_SECRET_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "AI-Agent" / "secrets"
 
 PROVIDER_FILES = {
     "groq": "groq_keys.txt",
@@ -24,6 +25,39 @@ PROVIDER_PREFIXES = {
     "groq": "GROQ",
     "openrouter": "OR",
 }
+LIFECYCLE_ACTIVE = "ACTIVE"
+LIFECYCLE_DISABLED = "DISABLED"
+LIFECYCLE_FAILED = "FAILED"
+LIFECYCLE_INVALID = "INVALID"
+LIFECYCLE_REMOVED = "REMOVED"
+LIFECYCLE_VALUES = {
+    LIFECYCLE_ACTIVE,
+    LIFECYCLE_DISABLED,
+    LIFECYCLE_FAILED,
+    LIFECYCLE_INVALID,
+    LIFECYCLE_REMOVED,
+}
+
+
+@dataclass(frozen=True)
+class ImportSummary:
+    provider: str
+    imported_count: int
+    already_present_count: int
+    rejected_count: int
+    persistence_status: str
+    connection_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "imported_count": self.imported_count,
+            "already_present_count": self.already_present_count,
+            "rejected_count": self.rejected_count,
+            "persistence_status": self.persistence_status,
+            "connection_ids": list(self.connection_ids),
+            "raw_secrets_returned": False,
+        }
 
 
 def fingerprint(secret: str) -> str:
@@ -51,7 +85,7 @@ def _legacy_secret_file(provider: str) -> Path:
 
 
 def resolve_secret_file(provider: str) -> Path:
-    """Resolve the external secret file; legacy repo-relative use is opt-in only."""
+    """Resolve a TXT import source; it is never used as persistent secret storage."""
     external = secret_file(provider)
     if external.exists():
         return external
@@ -62,8 +96,8 @@ def resolve_secret_file(provider: str) -> Path:
         return legacy
 
     raise FileNotFoundError(
-        f"Secret file not found outside repository: {external}. "
-        f"Set {SECRET_DIR_ENV} to the protected external secret directory. "
+        f"Import source not found outside repository: {external}. "
+        f"Set {SECRET_DIR_ENV} to the protected import-source directory. "
         f"Legacy repo-relative fallback requires {LEGACY_SECRET_FALLBACK_ENV}=1."
     )
 
@@ -71,7 +105,6 @@ def resolve_secret_file(provider: str) -> Path:
 def load_registry() -> dict:
     if not REGISTRY_FILE.exists():
         return {"version": 2, "role_source": ROLE_SOURCE, "connections": {}}
-
     data = json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Connection registry root must be an object")
@@ -86,22 +119,16 @@ def save_registry(data: dict) -> None:
     if not isinstance(data, dict):
         raise ValueError("Connection registry root must be an object")
     data["role_source"] = ROLE_SOURCE
-    REGISTRY_FILE.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    REGISTRY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _parse_secret_lines(lines: Iterable[str], prefix: str) -> tuple[dict[str, str], list[str]]:
-    """Parse canonical ID=secret lines plus legacy unlabeled secret lines."""
     labeled: dict[str, str] = {}
     unlabeled: list[str] = []
-
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-
         if "=" in line:
             connection_id, secret = line.split("=", 1)
             connection_id = connection_id.strip()
@@ -109,9 +136,7 @@ def _parse_secret_lines(lines: Iterable[str], prefix: str) -> tuple[dict[str, st
             if not connection_id or not secret:
                 raise ValueError("Secret mapping contains an empty connection ID or secret")
             if not connection_id.startswith(f"{prefix}-"):
-                raise ValueError(
-                    f"Connection ID {connection_id!r} does not belong to provider prefix {prefix}"
-                )
+                raise ValueError(f"Connection ID {connection_id!r} does not belong to provider prefix {prefix}")
             try:
                 number = int(connection_id.split("-", 1)[1])
             except (IndexError, ValueError) as exc:
@@ -119,11 +144,10 @@ def _parse_secret_lines(lines: Iterable[str], prefix: str) -> tuple[dict[str, st
             if number <= 0:
                 raise ValueError(f"Invalid connection ID: {connection_id}")
             if connection_id in labeled:
-                raise ValueError(f"Duplicate connection ID in secret file: {connection_id}")
+                raise ValueError(f"Duplicate connection ID in import source: {connection_id}")
             labeled[connection_id] = secret
         else:
             unlabeled.append(line)
-
     return labeled, unlabeled
 
 
@@ -135,14 +159,12 @@ def read_secret_source(path: Path, prefix: str) -> tuple[dict[str, str], list[st
 
 def _connection_ids_for_provider(registry: dict, provider: str) -> list[str]:
     connections = registry["connections"]
-    return sorted(
-        (
-            connection_id
-            for connection_id, item in connections.items()
-            if isinstance(item, dict) and item.get("provider") == provider
-        ),
-        key=lambda value: int(value.split("-", 1)[1]),
-    )
+    values = [
+        connection_id
+        for connection_id, item in connections.items()
+        if isinstance(item, dict) and item.get("provider") == provider
+    ]
+    return sorted(values, key=lambda value: int(value.split("-", 1)[1]))
 
 
 def _next_connection_id(used_ids: set[str], prefix: str) -> str:
@@ -152,13 +174,51 @@ def _next_connection_id(used_ids: set[str], prefix: str) -> str:
     return f"{prefix}-{number:02d}"
 
 
+def _normalize_status(item: dict[str, Any]) -> str:
+    status = str(item.get("status", ""))
+    if status == "VALIDATED":
+        return LIFECYCLE_ACTIVE if bool(item.get("active")) else LIFECYCLE_DISABLED
+    if status == "KEY_ROTATED":
+        return LIFECYCLE_DISABLED
+    if status in LIFECYCLE_VALUES:
+        return status
+    return LIFECYCLE_DISABLED
+
+
+def _metadata_status(item: dict[str, Any]) -> str:
+    status = _normalize_status(item)
+    item["status"] = status
+    item["active"] = status == LIFECYCLE_ACTIVE
+    return status
+
+
+def _default_connection(connection_id: str, provider: str, fp: str) -> dict[str, Any]:
+    return {
+        "connection_id": connection_id,
+        "provider": provider,
+        "key_fingerprint": fp,
+        "role": None,
+        "status": LIFECYCLE_DISABLED,
+        "active": False,
+    }
+
+
 def import_provider(
     provider: str,
     keys_path: Path,
     registry: dict,
     prefix: str,
-) -> None:
+    *,
+    secret_store: SecretStore | None = None,
+) -> ImportSummary:
+    """Additively import secrets into protected storage; never remove by omission."""
+    if provider not in PROVIDER_FILES:
+        raise ValueError(f"Unsupported provider: {provider}")
+    if keys_path.suffix.lower() != ".txt":
+        raise ValueError("Import source must be a .txt file")
+
     connections = registry.setdefault("connections", {})
+    store = secret_store or WindowsProtectedSecretStore()
     labeled, unlabeled = read_secret_source(keys_path, prefix)
 
     by_fingerprint = {
@@ -168,96 +228,169 @@ def import_provider(
         and item.get("provider") == provider
         and isinstance(item.get("key_fingerprint"), str)
     }
-
     used_ids = {
         connection_id
         for connection_id, item in connections.items()
         if isinstance(item, dict) and item.get("provider") == provider
     }
-    assigned_ids: set[str] = set()
-    assigned_fingerprints: set[str] = set()
 
-    def upsert(connection_id: str, secret: str) -> None:
+    imported = 0
+    already_present = 0
+    rejected = 0
+    touched: list[str] = []
+    seen_fingerprints: set[str] = set()
+
+    def add_secret(connection_id: str, secret: str, *, allow_rotation: bool) -> None:
+        nonlocal imported, already_present, rejected
         fp = fingerprint(secret)
-        if fp in assigned_fingerprints:
-            raise ValueError(f"The same secret is assigned more than once for {provider}: {connection_id}")
-        assigned_fingerprints.add(fp)
-        assigned_ids.add(connection_id)
+        if fp in seen_fingerprints:
+            already_present += 1
+            return
+        seen_fingerprints.add(fp)
+
+        existing_id = by_fingerprint.get(fp)
+        if existing_id and existing_id != connection_id:
+            already_present += 1
+            return
 
         existing = connections.get(connection_id)
         if existing is None:
-            connections[connection_id] = {
-                "connection_id": connection_id,
-                "provider": provider,
-                "key_fingerprint": fp,
-                "role": None,
-                "status": "VALIDATED",
-                "active": False,
-            }
+            existing = _default_connection(connection_id, provider, fp)
+            connections[connection_id] = existing
+            by_fingerprint[fp] = connection_id
+            store.put(connection_id, provider, secret, fp)
+            imported += 1
+            touched.append(connection_id)
             return
 
-        if existing.get("provider") != provider:
-            raise ValueError(
-                f"Connection {connection_id} already belongs to another provider"
-            )
+        if not isinstance(existing, dict) or existing.get("provider") != provider:
+            rejected += 1
+            return
 
-        if existing.get("key_fingerprint") != fp:
-            existing["key_fingerprint"] = fp
-            existing["status"] = "KEY_ROTATED"
-            existing["active"] = False
-        else:
-            existing["status"] = "VALIDATED"
+        current_fp = existing.get("key_fingerprint")
+        if current_fp == fp:
+            if not store.has(connection_id):
+                store.put(connection_id, provider, secret, fp)
+                imported += 1
+                touched.append(connection_id)
+            else:
+                already_present += 1
+            return
+
+        if not allow_rotation:
+            rejected += 1
+            return
+
+        old_status = _normalize_status(existing)
+        store.put(connection_id, provider, secret, fp)
+        existing["key_fingerprint"] = fp
+        existing["status"] = old_status if old_status in {LIFECYCLE_ACTIVE, LIFECYCLE_DISABLED} else LIFECYCLE_DISABLED
+        existing["active"] = existing["status"] == LIFECYCLE_ACTIVE
+        by_fingerprint.pop(current_fp, None)
+        by_fingerprint[fp] = connection_id
+        imported += 1
+        touched.append(connection_id)
 
     for connection_id, secret in labeled.items():
-        upsert(connection_id, secret)
+        add_secret(connection_id, secret, allow_rotation=True)
 
     for secret in unlabeled:
         fp = fingerprint(secret)
         existing_id = by_fingerprint.get(fp)
-        if existing_id is not None and existing_id not in assigned_ids:
-            upsert(existing_id, secret)
+        if existing_id is not None:
+            add_secret(existing_id, secret, allow_rotation=False)
             continue
+        connection_id = _next_connection_id(used_ids | set(connections), prefix)
+        used_ids.add(connection_id)
+        add_secret(connection_id, secret, allow_rotation=False)
 
-        connection_id = _next_connection_id(used_ids | assigned_ids, prefix)
-        upsert(connection_id, secret)
+    save_registry(registry)
+    return ImportSummary(
+        provider=provider,
+        imported_count=imported,
+        already_present_count=already_present,
+        rejected_count=rejected,
+        persistence_status="PERSISTED",
+        connection_ids=tuple(touched),
+    )
 
-    stale_ids = used_ids - assigned_ids
-    for connection_id in stale_ids:
-        item = connections.get(connection_id)
-        if isinstance(item, dict) and item.get("provider") == provider:
-            item["status"] = "NOT_PRESENT_IN_SECRET_SOURCE"
-            item["active"] = False
+
+def get_connection_status(connection_id: str, registry: dict | None = None) -> str:
+    data = registry or load_registry()
+    item = data.get("connections", {}).get(connection_id, {})
+    if not isinstance(item, dict):
+        return LIFECYCLE_REMOVED
+    return _metadata_status(item)
+
+
+def set_connection_status(connection_id: str, status: str, registry: dict | None = None) -> dict[str, Any]:
+    if status not in LIFECYCLE_VALUES:
+        raise ValueError(f"Unsupported connection lifecycle status: {status}")
+    data = registry or load_registry()
+    item = data.get("connections", {}).get(connection_id)
+    if not isinstance(item, dict):
+        raise KeyError(f"Connection not found: {connection_id}")
+    item["status"] = status
+    item["active"] = status == LIFECYCLE_ACTIVE
+    save_registry(data)
+    return item
+
+
+def disable_connection(connection_id: str, registry: dict | None = None) -> dict[str, Any]:
+    return set_connection_status(connection_id, LIFECYCLE_DISABLED, registry)
+
+
+def enable_connection(connection_id: str, registry: dict | None = None) -> dict[str, Any]:
+    return set_connection_status(connection_id, LIFECYCLE_ACTIVE, registry)
+
+
+def mark_connection_failed(connection_id: str, *, invalid: bool = False, reason: str | None = None, registry: dict | None = None) -> dict[str, Any]:
+    item = set_connection_status(connection_id, LIFECYCLE_INVALID if invalid else LIFECYCLE_FAILED, registry)
+    if reason:
+        item["failure_reason"] = reason[:240]
+        save_registry(registry or load_registry())
+    return item
+
+
+def remove_connection(
+    connection_id: str,
+    *,
+    registry: dict | None = None,
+    secret_store: SecretStore | None = None,
+) -> bool:
+    data = registry or load_registry()
+    connections = data.get("connections", {})
+    item = connections.get(connection_id)
+    if not isinstance(item, dict):
+        raise KeyError(f"Connection not found: {connection_id}")
+    store = secret_store or WindowsProtectedSecretStore()
+    store.delete(connection_id)
+    del connections[connection_id]
+    save_registry(data)
+    return True
+
+
+def connection_is_eligible(connection_id: str, registry: dict | None = None) -> bool:
+    data = registry or load_registry()
+    item = data.get("connections", {}).get(connection_id)
+    if not isinstance(item, dict):
+        return False
+    return _metadata_status(item) == LIFECYCLE_ACTIVE
+
+
+def get_secret(connection_id: str, provider: str | None = None, *, secret_store: SecretStore | None = None) -> str:
+    store = secret_store or WindowsProtectedSecretStore()
+    return store.get(connection_id, provider)
 
 
 def main() -> int:
     registry = load_registry()
-
-    resolved_files: dict[str, Path] = {}
+    print("Connection metadata registry loaded.")
+    print(f"Protected secret store : {secret_dir()}")
     for provider in PROVIDER_FILES:
-        resolved_files[provider] = resolve_secret_file(provider)
-        import_provider(
-            provider=provider,
-            keys_path=resolved_files[provider],
-            registry=registry,
-            prefix=PROVIDER_PREFIXES[provider],
-        )
-
-    registry["version"] = max(int(registry.get("version", 1)), 3)
-    save_registry(registry)
-
-    counts = {
-        provider: len(_connection_ids_for_provider(registry, provider))
-        for provider in PROVIDER_FILES
-    }
-
-    print("Connection registry updated.")
-    print(f"Secret directory       : {secret_dir()}")
-    print(f"Groq connections       : {counts['groq']}")
-    print(f"OpenRouter connections : {counts['openrouter']}")
-    print(f"Registry               : {REGISTRY_FILE.name}")
-    print("Role source            : config/registry.json")
-    print("Raw secrets printed    : NO")
-
+        print(f"{provider} connections     : {len(_connection_ids_for_provider(registry, provider))}")
+    print("Raw secrets printed      : NO")
+    print("TXT import semantics     : ADDITIVE")
     return 0
 
 
