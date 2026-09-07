@@ -104,15 +104,33 @@ class CentralLeader:
             self.router.fail_current_leader(task_id, reason=type(exc).__name__)
             raise
 
-        lease = self.router.leases.get(task_id)
-        if lease is None:
+        snapshot = self.router.snapshot()
+        leases = snapshot.get("leases") if isinstance(snapshot, Mapping) else None
+        live = leases.get(task_id) if isinstance(leases, Mapping) else None
+        if not isinstance(live, Mapping):
             raise CentralLeaderError("Leader lease disappeared during planning")
+
+        expected = {
+            "provider": request.provider,
+            "account_id": request.account_id,
+            "model": request.model,
+            "tier": request.tier,
+            "task_id": request.task_id,
+        }
+        observed = {
+            key: live.get(key)
+            for key in expected
+        }
+        if observed != expected:
+            raise CentralLeaderError(
+                "Leader lease changed during planning; model output is not rebound to the original leader"
+            )
 
         return LeaderResponse(
             payload=payload,
-            account_id=lease.account_id,
-            model=lease.model,
-            tier=lease.tier,
+            account_id=request.account_id,
+            model=request.model,
+            tier=request.tier,
         )
 
     def release(self, task_id: str) -> LeaderLease:
