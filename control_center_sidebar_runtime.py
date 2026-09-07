@@ -54,7 +54,7 @@ def install_scrollable_sidebar(app_class: Any) -> None:
 
         scrollbar = self.ttk.Scrollbar(sidebar, orient="vertical")
         self._cc_sidebar_scrollbar = scrollbar
-        scrollbar.place(relx=1.0, y=86, anchor="ne", width=14, relheight=0.77)
+        scrollbar.place(relx=1.0, y=88, anchor="ne", width=14, relheight=0.74)
 
         self._cc_sidebar_offset = 0
         self._cc_sidebar_content_height = 0
@@ -78,7 +78,7 @@ def install_scrollable_sidebar(app_class: Any) -> None:
                     amount = int(parts[1])
                 except ValueError:
                     return
-                units = 34 if parts[2] == "units" else self._cc_sidebar_nav_height()
+                units = 38 if parts[2] == "units" else self._cc_sidebar_nav_height()
                 max_offset = max(0, self._cc_sidebar_content_height - self._cc_sidebar_nav_height())
                 self._cc_sidebar_offset = min(
                     max_offset,
@@ -105,16 +105,16 @@ def install_scrollable_sidebar(app_class: Any) -> None:
 
     def _sidebar_nav_height(self: Any) -> int:
         sidebar = self._cc_sidebar
-        return max(160, sidebar.winfo_height() - 190)
+        return max(160, sidebar.winfo_height() - 198)
 
     def _layout_sidebar(self: Any) -> None:
         sidebar = self._cc_sidebar
-        width = max(160, sidebar.winfo_width())
+        width = max(224, sidebar.winfo_width())
         height = max(420, sidebar.winfo_height())
         nav_top = 88
-        nav_height = max(160, height - 188)
-        button_height = 38
-        gap = 5
+        nav_height = max(160, height - 198)
+        button_height = 42
+        gap = 4
         content_height = len(self._cc_sidebar_nav) * (button_height + gap) - gap
         self._cc_sidebar_content_height = max(0, content_height)
         max_offset = max(0, content_height - nav_height)
@@ -122,15 +122,15 @@ def install_scrollable_sidebar(app_class: Any) -> None:
 
         for index, button in enumerate(self._cc_sidebar_nav):
             y = nav_top + index * (button_height + gap) - self._cc_sidebar_offset
-            button.place(x=0, y=y, width=max(150, width - 14), height=button_height)
+            button.place(x=0, y=y, width=max(205, width - 14), height=button_height)
 
         controls = self._cc_sidebar_fixed
-        control_height = 38
+        control_height = 42
         control_gap = 6
         bottom = height - 8
         for button in reversed(controls):
             y = bottom - control_height
-            button.place(x=0, y=y, width=max(150, width), height=control_height)
+            button.place(x=0, y=y, width=max(205, width), height=control_height)
             bottom = y - control_gap
 
         scrollbar = self._cc_sidebar_scrollbar
