@@ -52,6 +52,49 @@ Adding connections requires:
 
 No routing rewrite.
 
+## Future operational requirement: Dynamic Connection Onboarding & Auto-Assignment
+
+This is a **future readiness requirement**, not a current implementation milestone and not a reason to interrupt the canonical orchestration acceptance gate.
+
+The target operational flow is:
+
+```text
+new connection/account
+    ↓
+validate provider + model + metadata
+    ↓
+validated capability discovery
+    ↓
+deterministic policy/registry assignment
+    ↓
+register in exactly one eligible pool/role
+    ↓
+health check
+    ↓
+eligible for router selection
+    ↓
+automatic quarantine/removal from effective availability on invalidation/failure
+```
+
+The target behavior must remain compatible with these authority rules:
+- `config/registry.json` remains the routing authority;
+- pool capacity is N-driven and never represented by hard-coded Python counts;
+- connection IDs are unique and stable;
+- each connection belongs to exactly one valid assignment;
+- provider, model, and role assignments must be policy-consistent;
+- runtime health/state is observation data and never becomes configuration authority;
+- secrets remain outside Git and normal persisted runtime evidence.
+
+### Current status assessment
+
+**CONFIGURATION-DRIVEN ONLY**.
+
+The current implementation already supports registry-defined leader/worker pools, N-driven pool sizes, uniqueness and assignment validation, provider/role consistency checks, runtime health separation, and router exclusion of unavailable connections. These capabilities support expansion by configuration, but they do **not** constitute automatic onboarding.
+
+Automatic capability discovery, deterministic classification of a newly introduced connection, service-side pool insertion without manual registry editing, onboarding health admission, and automatic quarantine/re-admission lifecycle are not currently established as a verified end-to-end behavior.
+
+Do not mark this requirement as `AUTO-ONBOARDING VERIFIED` merely because the registry accepts additional connection IDs or because the routers consume variable-length configured pools.
+
 ## Quotas
 Use multiple legitimate connections only within provider terms and configured policy. The system must not implement rotation as a quota-evasion mechanism.
 
