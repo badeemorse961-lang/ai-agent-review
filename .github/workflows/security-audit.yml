@@ -12,7 +12,7 @@ permissions:
 jobs:
   security-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -20,11 +20,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install test dependency
-        run: python -m pip install --disable-pip-version-check pytest
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Run security invariant audit
         run: python repository_security_audit.py
       - name: Verify cross-process workspace mutation lock
         run: python -m pytest -q test_workspace_mutation_lock.py test_workspace_mutation_lock_multiprocess.py
+      - name: Run full regression suite
+        run: python -m pytest -q
