@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol
 
 from central_leader import CentralLeader, LeaderResponse
-from execution_authorization import AuthorizationRecord, ExecutionAuthorizationBoundary
+from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
-from independent_validation import IndependentValidator, ValidationVerdict
+from independent_validation import IndependentValidator, ValidationVerdict, ValidationHook
 from plan_decomposer import PlanDecomposer
 from worker_dispatch import WorkerAssignment, WorkerDispatcher
 from worker_execution import ExecutionRequest, ExecutionResult, WorkerExecutionBoundary
@@ -26,16 +26,16 @@ class OrchestrationSafetyStop(OrchestrationError):
 
 @dataclass(frozen=True)
 class WorkerExecutionSpec:
-    """Explicit adapter output describing one worker's proposed work product.
+    """Explicit adapter output for one worker task.
 
-    The spec does not grant execution or mutation authority. The command is
-    still checked by ``WorkerExecutionBoundary`` and proposed changes remain
-    inert until independent validation and execution authorization accept them.
+    ``targets`` are execution-scope paths consumed by ``WorkerExecutionBoundary``.
+    ``changed_targets`` are the exact paths proposed for mutation. They must
+    equal the paths carried by ``changes``. Neither field grants authority.
     """
 
     command: tuple[str, ...]
     targets: tuple[str, ...]
-    checkpoint: Mapping[str, Any]
+    changed_targets: tuple[str, ...]
     changes: tuple[FileChange, ...]
     external_reads: tuple[str, ...] = ()
     external_writes: tuple[str, ...] = ()
@@ -68,7 +68,7 @@ class TaskExecutionRecord:
     execution_request: ExecutionRequest
     execution_result: ExecutionResult
     validation: ValidationVerdict
-    authorization: AuthorizationRecord
+    authorization: Mapping[str, Any]
     transaction: Mapping[str, Any]
 
 
@@ -103,7 +103,7 @@ class OrchestrationResult:
                     "execution_request": record.execution_request.to_dict(),
                     "execution_result": record.execution_result.to_dict(),
                     "validation": record.validation.to_dict(),
-                    "authorization": record.authorization.to_dict(),
+                    "authorization": dict(record.authorization),
                     "transaction": dict(record.transaction),
                 }
                 for record in self.task_records
@@ -114,16 +114,9 @@ class OrchestrationResult:
 class CanonicalOrchestrator:
     """Compose the validated AI-Agent boundaries into one canonical flow.
 
-    This class owns sequencing and cleanup only. It does not implement model
-    calls, worker command generation, validation logic, filesystem mutation, or
-    Git mutation. Those capabilities remain behind their existing boundaries
-    and explicit dependency-injected adapters.
-
-    The production composition is therefore:
-
-        understanding -> CentralLeader -> PlanDecomposer -> WorkerDispatcher
-        -> WorkerExecutionBoundary -> IndependentValidator
-        -> ExecutionAuthorizationBoundary -> ExecutionGate
+    This class owns sequencing and cleanup only. Model calls, worker command
+    generation, validation logic, filesystem mutation, and Git mutation remain
+    behind existing boundaries or explicit dependency-injected adapters.
     """
 
     def __init__(
@@ -136,7 +129,7 @@ class CanonicalOrchestrator:
         dispatcher: WorkerDispatcher,
         worker_execution: WorkerExecutionBoundary,
         worker_adapter: WorkerAdapter,
-        validator: IndependentValidator,
+        validator_factory: Any,
         authorization: ExecutionAuthorizationBoundary,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
@@ -152,7 +145,7 @@ class CanonicalOrchestrator:
             "dispatcher": dispatcher,
             "worker_execution": worker_execution,
             "worker_adapter": worker_adapter,
-            "validator": validator,
+            "validator_factory": validator_factory,
             "authorization": authorization,
         }
         missing = [name for name, value in required.items() if value is None]
@@ -160,6 +153,8 @@ class CanonicalOrchestrator:
             raise OrchestrationSafetyStop(
                 f"Canonical orchestration requires dependencies: {', '.join(sorted(missing))}"
             )
+        if not callable(validator_factory):
+            raise OrchestrationSafetyStop("validator_factory must be callable")
 
         self.understanding = understanding
         self.leader = leader
@@ -167,36 +162,38 @@ class CanonicalOrchestrator:
         self.dispatcher = dispatcher
         self.worker_execution = worker_execution
         self.worker_adapter = worker_adapter
-        self.validator = validator
+        self.validator_factory = validator_factory
         self.authorization = authorization
 
     def run(self, task_id: str) -> OrchestrationResult:
         if not isinstance(task_id, str) or not task_id.strip():
             raise OrchestrationSafetyStop("Orchestration requires a non-empty task_id")
 
-        understanding = self.understanding.analyze()
-        if not isinstance(understanding, Mapping):
-            raise OrchestrationSafetyStop("Project understanding must return a mapping")
-        context = understanding.get("context")
-        if not isinstance(context, Mapping):
-            raise OrchestrationSafetyStop(
-                "Project understanding must provide a bounded planning context"
-            )
-
-        leader_response = self.leader.plan(task_id, context)
-        plan = self.decomposer.decompose(leader_response.payload, context=context)
-        assignments = tuple(self.dispatcher.assign_plan(plan))
-        assignment_by_task = {item.task_id: item for item in assignments}
-
-        task_records: list[TaskExecutionRecord] = []
+        understanding: Mapping[str, Any]
+        assignments: tuple[WorkerAssignment, ...] = ()
         try:
+            understanding = self.understanding.analyze()
+            if not isinstance(understanding, Mapping):
+                raise OrchestrationSafetyStop(
+                    "Project understanding must return a mapping"
+                )
+            context = understanding.get("context")
+            if not isinstance(context, Mapping):
+                raise OrchestrationSafetyStop(
+                    "Project understanding must provide a bounded planning context"
+                )
+
+            leader_response = self.leader.plan(task_id, context)
+            plan = self.decomposer.decompose(leader_response.payload, context=context)
+            assignments = tuple(self.dispatcher.assign_plan(plan))
+            assignment_by_task = {item.task_id: item for item in assignments}
+
             tasks = plan.get("tasks")
             if not isinstance(tasks, list):
                 raise OrchestrationSafetyStop("Decomposed plan is missing tasks")
 
-            for task in self.dispatcher._topological_tasks(tasks):
-                if not isinstance(task, Mapping):
-                    raise OrchestrationSafetyStop("Plan task is not a mapping")
+            task_records: list[TaskExecutionRecord] = []
+            for task in self._ordered_tasks(tasks):
                 current_task_id = task.get("task_id")
                 if not isinstance(current_task_id, str) or current_task_id not in assignment_by_task:
                     raise OrchestrationSafetyStop(
@@ -216,48 +213,66 @@ class CanonicalOrchestrator:
                     external_reads=spec.external_reads,
                     external_writes=spec.external_writes,
                 )
+                request = self._request_from_execution(task, assignment_dict, spec)
 
-                evidence = self.worker_adapter.validate(
-                    self._request_from_execution(task, assignment_dict, spec),
-                    task,
-                    result,
-                    spec,
-                )
-                if not isinstance(evidence, Mapping):
-                    raise OrchestrationSafetyStop(
-                        f"Worker validation adapter returned invalid evidence for {current_task_id!r}"
+                validation_hook: ValidationHook = (
+                    lambda hook_request, hook_task, hook_result: self.worker_adapter.validate(
+                        hook_request,
+                        hook_task,
+                        hook_result,
+                        spec,
                     )
-
-                validation_hook = lambda request, hook_task, hook_result, evidence=evidence: evidence
-                verdict = self.validator.__class__(
-                    self.workspace_root,
-                    validation_hook=validation_hook,
-                ).validate(
-                    self._request_from_execution(task, assignment_dict, spec),
+                )
+                validator = self.validator_factory(validation_hook)
+                if not isinstance(validator, IndependentValidator):
+                    raise OrchestrationSafetyStop(
+                        "validator_factory must return IndependentValidator"
+                    )
+                verdict = validator.validate(
+                    request,
                     task,
                     result,
-                    changed_targets=spec.targets,
+                    changed_targets=spec.changed_targets,
                 )
 
-                transaction = self.authorization.apply(
-                    verdict,
-                    checkpoint=spec.checkpoint,
-                    changes=spec.changes,
-                )
-                record = TaskExecutionRecord(
-                    task=dict(task),
-                    assignment=assignment_dict,
-                    execution_request=self._request_from_execution(task, assignment_dict, spec),
-                    execution_result=result,
-                    validation=verdict,
-                    authorization=self.authorization.authorize(
+                authorization = {
+                    "task_id": verdict.task_id,
+                    "worker_id": verdict.worker_id,
+                    "authorized": True,
+                    "changed_targets": list(spec.changed_targets),
+                }
+
+                if spec.changes:
+                    transaction = self.authorization.apply(
                         verdict,
-                        checkpoint=spec.checkpoint,
+                        checkpoint=result.checkpoint,
                         changes=spec.changes,
-                    ),
-                    transaction=transaction,
+                    )
+                    if not isinstance(transaction, Mapping):
+                        raise OrchestrationSafetyStop(
+                            f"Execution authorization returned invalid transaction for {current_task_id!r}"
+                        )
+                    if transaction.get("status") != "APPROVED":
+                        raise OrchestrationSafetyStop(
+                            f"Task {current_task_id!r} did not reach APPROVED state: {transaction.get('status')!r}"
+                        )
+                else:
+                    transaction = {
+                        "status": "NO_MUTATION",
+                        "authorization": authorization,
+                    }
+
+                task_records.append(
+                    TaskExecutionRecord(
+                        task=dict(task),
+                        assignment=assignment_dict,
+                        execution_request=request,
+                        execution_result=result,
+                        validation=verdict,
+                        authorization=authorization,
+                        transaction=dict(transaction),
+                    )
                 )
-                task_records.append(record)
 
             return OrchestrationResult(
                 status="APPROVED",
@@ -275,55 +290,100 @@ class CanonicalOrchestrator:
             except Exception:
                 pass
 
+    @staticmethod
+    def _ordered_tasks(tasks: list[Any]) -> list[Mapping[str, Any]]:
+        by_id: dict[str, Mapping[str, Any]] = {}
+        for item in tasks:
+            if not isinstance(item, Mapping):
+                raise OrchestrationSafetyStop("Every plan task must be an object")
+            task_id = item.get("task_id")
+            if not isinstance(task_id, str) or not task_id.strip():
+                raise OrchestrationSafetyStop("Every plan task requires task_id")
+            by_id[task_id] = item
+
+        indegree = {task_id: 0 for task_id in by_id}
+        outgoing: dict[str, list[str]] = {task_id: [] for task_id in by_id}
+        for task_id, task in by_id.items():
+            dependencies = task.get("depends_on", [])
+            if not isinstance(dependencies, list):
+                raise OrchestrationSafetyStop(
+                    f"Task {task_id!r} dependencies must be a list"
+                )
+            for dependency in dependencies:
+                if dependency not in by_id:
+                    raise OrchestrationSafetyStop(
+                        f"Task {task_id!r} references unknown dependency {dependency!r}"
+                    )
+                indegree[task_id] += 1
+                outgoing[dependency].append(task_id)
+
+        ready = sorted(task_id for task_id, value in indegree.items() if value == 0)
+        result: list[Mapping[str, Any]] = []
+        while ready:
+            current = ready.pop(0)
+            result.append(by_id[current])
+            for dependent in sorted(outgoing[current]):
+                indegree[dependent] -= 1
+                if indegree[dependent] == 0:
+                    ready.append(dependent)
+                    ready.sort()
+
+        if len(result) != len(by_id):
+            raise OrchestrationSafetyStop("Plan dependency graph contains a cycle")
+        return result
+
+    @staticmethod
     def _validate_worker_spec(
-        self,
         spec: WorkerExecutionSpec,
         task: Mapping[str, Any],
     ) -> None:
         if not isinstance(spec, WorkerExecutionSpec):
-            raise OrchestrationSafetyStop("Worker adapter must return WorkerExecutionSpec")
+            raise OrchestrationSafetyStop(
+                "Worker adapter must return WorkerExecutionSpec"
+            )
         if not spec.command:
             raise OrchestrationSafetyStop("Worker execution command must not be empty")
-        if not isinstance(spec.checkpoint, Mapping) or spec.checkpoint.get("isolated") is not True:
+        if set(spec.changes) and set(spec.changed_targets) != {
+            change.path for change in spec.changes
+        }:
             raise OrchestrationSafetyStop(
-                "Worker adapter checkpoint must explicitly attest isolated execution"
+                f"Worker changes must exactly match changed_targets for {task.get('task_id')!r}"
             )
-        checkpoint_id = spec.checkpoint.get("checkpoint_id")
-        if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
+        if not spec.changes and spec.changed_targets:
             raise OrchestrationSafetyStop(
-                "Worker adapter checkpoint requires checkpoint_id"
-            )
-        task_id = task.get("task_id")
-        if not isinstance(task_id, str) or not task_id.strip():
-            raise OrchestrationSafetyStop("Plan task requires a non-empty task_id")
-
-        normalized_changes = tuple(change.path for change in spec.changes)
-        normalized_targets = tuple(str(path) for path in spec.targets)
-        if set(normalized_changes) != set(normalized_targets):
-            raise OrchestrationSafetyStop(
-                f"Worker changes must exactly match execution targets for {task_id!r}"
+                "changed_targets cannot be declared without FileChange records"
             )
 
-    @staticmethod
     def _request_from_execution(
+        self,
         task: Mapping[str, Any],
         assignment: Mapping[str, Any],
         spec: WorkerExecutionSpec,
     ) -> ExecutionRequest:
-        workspace_root = assignment.get("workspace_root")
-        if not isinstance(workspace_root, str) or not workspace_root.strip():
-            raise OrchestrationSafetyStop("Worker assignment does not identify a workspace")
+        workspace_root = str(self.workspace_root)
         return ExecutionRequest(
             task_id=str(task["task_id"]),
             role=str(task["role"]),
             worker_id=str(assignment["worker_id"]),
             workspace_root=workspace_root,
             command=tuple(spec.command),
-            targets=tuple(str(item) for item in spec.targets),
-            timeout_seconds=120.0,
+            targets=tuple(spec.targets),
+            timeout_seconds=self.worker_execution.timeout_seconds,
             external_reads=tuple(spec.external_reads),
             external_writes=tuple(spec.external_writes),
         )
+
+
+def default_validator_factory(
+    workspace_root: Path,
+) -> Callable[[ValidationHook], IndependentValidator]:
+    """Create per-task independent validators with a caller-supplied hook."""
+    root = workspace_root.resolve()
+
+    def factory(hook: ValidationHook) -> IndependentValidator:
+        return IndependentValidator(root, validation_hook=hook)
+
+    return factory
 
 
 def orchestrate(
@@ -336,7 +396,6 @@ def orchestrate(
     dispatcher: WorkerDispatcher,
     worker_execution: WorkerExecutionBoundary,
     worker_adapter: WorkerAdapter,
-    validator: IndependentValidator,
     authorization: ExecutionAuthorizationBoundary,
 ) -> OrchestrationResult:
     """Functional entry point for the canonical orchestration composition."""
@@ -348,6 +407,6 @@ def orchestrate(
         dispatcher=dispatcher,
         worker_execution=worker_execution,
         worker_adapter=worker_adapter,
-        validator=validator,
+        validator_factory=default_validator_factory(workspace_root),
         authorization=authorization,
     ).run(task_id)
