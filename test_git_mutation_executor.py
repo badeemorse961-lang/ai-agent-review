@@ -45,7 +45,7 @@ def authorized_evidence(
         worker_id=worker_id,
         passed=True,
         reasons=(),
-        evidence={"changed_targets": [target], "validated": True},
+        evidence={"passed": True, "changed_targets": [target], "validated": True},
     )
 
 
