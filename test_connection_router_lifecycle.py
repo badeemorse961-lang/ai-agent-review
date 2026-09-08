@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -61,25 +60,22 @@ def test_leader_router_excludes_disabled_connection(tmp_path: Path) -> None:
     data["connections"]["OR-01"]["status"] = "DISABLED"
     data["connections"]["OR-01"]["active"] = False
     connections.write_text(json.dumps(data), encoding="utf-8")
-    with patch("leader_router.REGISTRY_FILE", registry), patch("config_registry.REGISTRY_FILE", registry), patch("config_registry.CONNECTIONS_FILE", connections):
-        router = LeaderRouter(health_file=leader_health, state_file=leader_state, registry_file=registry)
-        assert router.active_pool("ULTRA") == ["OR-02"]
-        lease = router.acquire("TASK-DISABLED")
-        assert lease.account_id == "OR-02"
+    router = LeaderRouter(health_file=leader_health, state_file=leader_state, registry_file=registry)
+    assert router.active_pool("ULTRA") == ["OR-02"]
+    lease = router.acquire("TASK-DISABLED")
+    assert lease.account_id == "OR-02"
 
 
 def test_worker_router_excludes_failed_invalid_and_removed_connections(tmp_path: Path) -> None:
     for lifecycle in ("FAILED", "INVALID", "REMOVED"):
         case = tmp_path / lifecycle.lower()
         case.mkdir()
-        registry, connections, _, worker_health, _, worker_state = write_registry_fixture(case, groq_status=lifecycle, groq_active=False)
-        with patch("worker_router.REGISTRY_FILE", registry), patch("config_registry.REGISTRY_FILE", registry), patch("config_registry.CONNECTIONS_FILE", connections):
-            router = WorkerRouter(health_file=worker_health, state_file=worker_state, registry_file=registry)
-            assert "GROQ-01" not in router.available_workers("coder")
+        registry, _, _, worker_health, _, worker_state = write_registry_fixture(case, groq_status=lifecycle, groq_active=False)
+        router = WorkerRouter(health_file=worker_health, state_file=worker_state, registry_file=registry)
+        assert "GROQ-01" not in router.available_workers("coder")
 
 
 def test_active_connection_remains_routable(tmp_path: Path) -> None:
-    registry, connections, _, worker_health, _, worker_state = write_registry_fixture(tmp_path, groq_status="ACTIVE", groq_active=True)
-    with patch("worker_router.REGISTRY_FILE", registry), patch("config_registry.REGISTRY_FILE", registry), patch("config_registry.CONNECTIONS_FILE", connections):
-        router = WorkerRouter(health_file=worker_health, state_file=worker_state, registry_file=registry)
-        assert "GROQ-01" in router.available_workers("coder")
+    registry, _, _, worker_health, _, worker_state = write_registry_fixture(tmp_path, groq_status="ACTIVE", groq_active=True)
+    router = WorkerRouter(health_file=worker_health, state_file=worker_state, registry_file=registry)
+    assert "GROQ-01" in router.available_workers("coder")
