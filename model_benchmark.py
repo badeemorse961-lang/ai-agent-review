@@ -309,6 +309,17 @@ def _prepare_workspace(root: Path) -> tuple[Path, TerminalExecutor]:
     return temp, _executor(temp)
 
 
+def _uses_terminal_executor(executor: Any) -> bool:
+    current = executor
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, TerminalExecutor):
+            return True
+        seen.add(id(current))
+        current = getattr(current, "inner", None)
+    return False
+
+
 def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bool:
     for raw in task.get("verification", []):
         try:
@@ -321,7 +332,7 @@ def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bo
         executable = Path(args[0]).name.lower().removesuffix(".exe")
         if executable == "pytest":
             pytest_args = args
-            if isinstance(executor, TerminalExecutor):
+            if _uses_terminal_executor(executor):
                 resolved_pytest = shutil.which("pytest")
                 if not resolved_pytest:
                     return False
@@ -333,7 +344,7 @@ def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bo
             and args[2].lower() == "pytest"
         ):
             pytest_args = ["pytest", *args[3:]]
-            if isinstance(executor, TerminalExecutor):
+            if _uses_terminal_executor(executor):
                 resolved_pytest = shutil.which("pytest")
                 if not resolved_pytest:
                     return False
