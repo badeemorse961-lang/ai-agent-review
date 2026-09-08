@@ -30,23 +30,89 @@ def _install_expiry_column(app_class: type) -> None:
         if tree is None:
             return
         columns = list(tree["columns"])
-        if "expiry" in columns:
-            return
-        columns.append("expiry")
-        tree["columns"] = tuple(columns)
-        tree.heading("expiry", text="Expiry")
-        tree.column("expiry", width=130, anchor="w")
+        if "expiry" not in columns:
+            columns.append("expiry")
+            tree["columns"] = tuple(columns)
+            tree.heading("expiry", text="Expiry")
+            tree.column("expiry", width=110, minwidth=85, anchor="w", stretch=False)
         registry = load_registry()
         connections = registry.get("connections", {})
         for row_id in tree.get_children(""):
             values = list(tree.item(row_id, "values"))
             connection_id = str(values[0]) if values else ""
-            item = connections.get(connection_id) if isinstance(connections, Mapping) else None
-            values.append(_expiry_label(item) if isinstance(item, Mapping) else "NOT PROVIDED")
+            expiry = _expiry_label(connections.get(connection_id)) if isinstance(connections, Mapping) and isinstance(connections.get(connection_id), Mapping) else "NOT PROVIDED"
+            if len(values) < len(columns):
+                values.append(expiry)
+            else:
+                values[-1] = expiry
             tree.item(row_id, values=tuple(values))
+        _fit_tree(tree)
 
     wrapped._expiry_runtime_wrapped = True
     app_class._connections = wrapped
+
+
+def _fit_tree(tree: Any) -> None:
+    """Keep the main tree usable within the current viewport; no clipped right-side columns."""
+    try:
+        tree.update_idletasks()
+        viewport = max(int(tree.winfo_width()) - 6, 1)
+        columns = list(tree["columns"])
+        if not columns:
+            return
+        if not hasattr(tree, "_base_tree_widths"):
+            tree._base_tree_widths = {column: int(tree.column(column, "width")) for column in columns}
+        base = dict(tree._base_tree_widths)
+        total = sum(base.get(column, 80) for column in columns)
+        if total <= viewport:
+            return
+        scale = viewport / total
+        widths: dict[str, int] = {column: max(68, int(base.get(column, 80) * scale)) for column in columns}
+        total_scaled = sum(widths.values())
+        if total_scaled > viewport:
+            order = sorted(columns, key=lambda column: widths[column], reverse=True)
+            index = 0
+            while total_scaled > viewport and order:
+                column = order[index % len(order)]
+                if widths[column] > 68:
+                    widths[column] -= 1
+                    total_scaled -= 1
+                index += 1
+        for column in columns:
+            tree.column(column, width=widths[column], minwidth=min(widths[column], 68), stretch=False)
+    except Exception:
+        pass
+
+
+def _install_tree_fit(app_class: type) -> None:
+    original_show = app_class.show
+    if getattr(original_show, "_tree_fit_runtime_wrapped", False):
+        return
+
+    def _fit_current(self: Any) -> None:
+        try:
+            for item in self.body.winfo_children():
+                _fit_descendant_trees(self, item)
+        except Exception:
+            pass
+
+    def show(self: Any, page: str) -> None:
+        original_show(self, page)
+        self.root.update_idletasks()
+        _fit_current(self)
+
+    show._tree_fit_runtime_wrapped = True
+    app_class.show = show
+
+
+def _fit_descendant_trees(app: Any, widget: Any) -> None:
+    try:
+        if isinstance(widget, app.ttk.Treeview):
+            _fit_tree(widget)
+        for child in widget.winfo_children():
+            _fit_descendant_trees(app, child)
+    except Exception:
+        pass
 
 
 def _router_models(self: Any) -> None:
@@ -71,10 +137,10 @@ def _router_models(self: Any) -> None:
         "healthy": "External Healthy",
         "failed": "Runtime / External Failed",
     }
-    widths = {"router": 130, "tier": 140, "model": 330, "configured": 220, "healthy": 150, "failed": 180}
+    widths = {"router": 120, "tier": 125, "model": 300, "configured": 210, "healthy": 110, "failed": 150}
     for column in tree["columns"]:
         tree.heading(column, text=labels[column])
-        tree.column(column, width=widths[column], anchor="w")
+        tree.column(column, width=widths[column], minwidth=68, anchor="w", stretch=False)
 
     service = self.service
     leader = getattr(service, "leader_router", None)
@@ -100,17 +166,19 @@ def _router_models(self: Any) -> None:
     tree.grid(row=0, column=0, sticky="nsew")
     note = self.ttk.Label(
         body,
-        text="This page reports configured routing models only. It does not enumerate every model offered by Groq/OpenRouter and does not mutate routing.",
+        text="This page reports configured routing models only. It does not enumerate every model offered by Groq/OpenRouter and does not mutate routing. Credential expiry is shown in Connections & Pools only when explicit metadata provides it.",
         style="Subtitle.TLabel",
         wraplength=1050,
         justify="left",
     )
     note.grid(row=1, column=0, sticky="ew", pady=(10, 0))
     self._set_status(type("Result", (), {"error": None, "status": "OK"})(), "Router models refreshed")
+    _fit_tree(tree)
 
 
 def install_operator_runtime(app_class: type) -> None:
     _install_expiry_column(app_class)
+    _install_tree_fit(app_class)
     if not hasattr(app_class, "_router_models"):
         app_class._router_models = _router_models
     original_show = app_class.show
@@ -122,8 +190,10 @@ def install_operator_runtime(app_class: type) -> None:
             self.current_page = page
             self._clear()
             self._router_models()
+            self.root.update_idletasks()
             return
         original_show(self, page)
+        self.root.update_idletasks()
 
     show._router_runtime_wrapped = True
     app_class.show = show
