@@ -17,7 +17,7 @@ TARGET_IDS = ("GROQ-01", "GROQ-02")
 
 
 class GroqCredentialImportApp:
-    """Windows-only operator UI for the official Groq credential import path."""
+    """Windows operator UI for the official Groq credential import path."""
 
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -56,7 +56,8 @@ class GroqCredentialImportApp:
             main,
             text=("Expected stable IDs: GROQ-01 and GROQ-02. "
                   "The import button stays disabled unless both are explicitly labeled and no extra IDs exist."),
-            wraplength=760,\        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(12, 12))
+            wraplength=760,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(12, 12))
 
         actions = ttk.Frame(main)
         actions.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 12))
@@ -210,5 +211,18 @@ class GroqCredentialImportApp:
         self.root.mainloop()
 
 
+def main() -> None:
+    try:
+        GroqCredentialImportApp().run()
+    except Exception as exc:
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("AI-Agent Groq Import", f"Startup failed: {type(exc).__name__}: {exc}")
+            root.destroy()
+        except Exception:
+            raise
+
+
 if __name__ == "__main__":
-    GroqCredentialImportApp().run()
+    main()
