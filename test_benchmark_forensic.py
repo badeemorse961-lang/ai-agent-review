@@ -19,6 +19,44 @@ def test_safe_redaction_removes_secret_like_values() -> None:
     assert safe["plain"] == "safe"
 
 
+def test_exception_evidence_is_diagnostic_and_secret_safe() -> None:
+    exc = RuntimeError("Authorization: Bearer sk-or-v1-super-secret-value")
+    evidence = benchmark_forensic.exception_evidence(exc, "inference.call_model")
+    assert evidence["phase"] == "inference.call_model"
+    assert evidence["function"] == "collect_task"
+    assert evidence["exception_type"] == "RuntimeError"
+    assert "forensic collector exception" not in evidence["exception_message"]
+    assert "sk-or-v1-" not in evidence["exception_message"]
+    assert "Bearer" not in "\n".join(evidence["traceback"])
+
+
+def test_collect_task_exception_preserves_safe_partial_evidence(monkeypatch, tmp_path) -> None:
+    task = {
+        "id": "S1",
+        "class": "SIMPLE",
+        "kind": "code",
+        "expected": {},
+        "verification": ["python -m pytest -q test_calculator.py"],
+        "target_paths": ["test_calculator.py"],
+    }
+    candidate = benchmark.Candidate("openrouter", "openai/gpt-5.6-luna", "OR-01")
+
+    def fail_call_model(*_args, **_kwargs):
+        raise UnboundLocalError("cannot access local variable 'response' where it is not associated with a value")
+
+    monkeypatch.setattr(benchmark, "_prepare_workspace", lambda _root: (tmp_path, SimpleNamespace()))
+    monkeypatch.setattr(benchmark, "read_context", lambda *_args, **_kwargs: "safe context")
+    monkeypatch.setattr(benchmark, "call_model", fail_call_model)
+    monkeypatch.setattr(benchmark, "WindowsProtectedSecretStore", lambda: object())
+    result = benchmark_forensic.collect_task(tmp_path, task, candidate)
+    assert result["error_type"] == "UnboundLocalError"
+    assert result["error"] == "forensic collector failed"
+    assert result["forensic_status"] == "EVALUATOR_FAILURE"
+    assert result["forensic_exception"]["phase"] == "inference.call_model"
+    assert "response" in result["forensic_exception"]["exception_message"]
+    assert result["forensic_exception"]["traceback"]
+
+
 def test_verification_evidence_records_original_normalized_exit_and_output() -> None:
     task = {"verification": ["python -m pytest -q test_calculator.py"], "target_paths": ["test_calculator.py"]}
     tracer = benchmark_forensic.TracingExecutor(SimpleNamespace())
