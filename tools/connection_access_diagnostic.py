@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -38,6 +39,8 @@ SAFE_DIAGNOSTIC_KEYS = {
     "credential_validated",
     "raw_credentials_returned",
     "key_fingerprint_present",
+    "classification",
+    "model_present_in_listing",
 }
 
 
@@ -71,7 +74,7 @@ def load_metadata() -> dict[str, Any]:
 
 def classify_http(status: int | None, body: Any, model: str) -> tuple[str, str]:
     if status is None:
-        return "NO_HTTP_RESPONSE", "No provider response was received."
+        return "PROVIDER_FAILURE", "No provider response was received."
     if 200 <= status < 300:
         if isinstance(body, dict):
             rows = body.get("data")
@@ -83,7 +86,7 @@ def classify_http(status: int | None, body: Any, model: str) -> tuple[str, str]:
                 }
                 if model in ids:
                     return "READY", "Credential accepted and candidate model is present in provider model listing."
-                return "PROVIDER_FAILURE", "Credential request succeeded, but candidate model was not present in the provider model listing."
+                return "MODEL_ID_NOT_AVAILABLE", "Credential request succeeded, but candidate model was not present in the provider model listing."
         return "READY", "Provider authentication request succeeded."
     if status in (401, 403):
         return "PROVIDER_FAILURE", "Provider rejected authentication/authorization."
@@ -96,6 +99,48 @@ def classify_http(status: int | None, body: Any, model: str) -> tuple[str, str]:
     if 500 <= status < 600:
         return "PROVIDER_FAILURE", "Provider returned a server-side error."
     return "UNRESOLVED", "Unexpected provider HTTP status."
+
+
+def _safe_secret_store_stage(connection_id: str, expected_provider: str) -> tuple[str, bool, str | None]:
+    """Return (stage, credential_retrievable, secret). The secret is never persisted or returned by the caller."""
+    store = WindowsProtectedSecretStore()
+
+    try:
+        store_path = Path(store.path)
+        encrypted = store_path.read_bytes()
+    except OSError:
+        return "STORE_ACCESS_FAILURE", False, None
+
+    try:
+        plaintext = store._backend.unprotect(encrypted)  # diagnostic-only, read-only inspection
+    except SecretStoreError as exc:
+        if "CryptUnprotectData failed" in str(exc):
+            return "DPAPI_READ_FAILURE", False, None
+        return "STORE_ACCESS_FAILURE", False, None
+    except OSError:
+        return "STORE_ACCESS_FAILURE", False, None
+
+    try:
+        data = json.loads(plaintext.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return "STORE_ACCESS_FAILURE", False, None
+
+    connections = data.get("connections") if isinstance(data, dict) else None
+    if not isinstance(connections, dict):
+        return "STORE_ACCESS_FAILURE", False, None
+
+    item = connections.get(connection_id)
+    if not isinstance(item, dict):
+        return "SECRET_RECORD_MISSING", False, None
+
+    if item.get("provider") != expected_provider:
+        return "CONNECTION_ID_MISMATCH", False, None
+
+    secret = item.get("secret")
+    if not isinstance(secret, str) or not secret:
+        return "SECRET_RECORD_MISSING", False, None
+
+    return "READY", True, secret
 
 
 def diagnostic(connection_id: str) -> dict[str, Any]:
@@ -114,8 +159,8 @@ def diagnostic(connection_id: str) -> dict[str, Any]:
     }
 
     if not isinstance(raw, dict):
-        result["classification"] = "ENVIRONMENT_FAILURE"
-        result["secret_store"] = "SECRET_MISSING"
+        result["classification"] = "LOCAL_ENVIRONMENT_FAILURE"
+        result["secret_store"] = "CONNECTION_ID_MISMATCH"
         result["error"] = "Connection metadata record not found."
         return result
 
@@ -132,29 +177,28 @@ def diagnostic(connection_id: str) -> dict[str, Any]:
 
     expected_provider = TARGETS[connection_id]["provider"]
     if raw.get("provider") != expected_provider:
-        result["classification"] = "CONFIGURATION_FAILURE"
-        result["secret_store"] = "NOT_CHECKED_PROVIDER_METADATA_MISMATCH"
+        result["classification"] = "LOCAL_ENVIRONMENT_FAILURE"
+        result["secret_store"] = "CONNECTION_ID_MISMATCH"
         result["error"] = "Connection provider metadata does not match diagnostic target."
         return result
 
     try:
-        store = WindowsProtectedSecretStore()
-        secret = store.get(connection_id, expected_provider)
-        if not isinstance(secret, str) or not secret:
-            result["secret_store"] = "SECRET_MISSING"
-            result["classification"] = "ENVIRONMENT_FAILURE"
-            return result
-        result["secret_store"] = "SECRET_PRESENT_AND_RETRIEVABLE"
-        result["credential_retrievable"] = True
+        stage, retrievable, secret = _safe_secret_store_stage(connection_id, expected_provider)
+        result["secret_store"] = stage
+        result["credential_retrievable"] = retrievable
     except SecretStoreError as exc:
-        result["secret_store"] = "SECRETSTORE_ERROR"
-        result["classification"] = "ENVIRONMENT_FAILURE"
+        result["secret_store"] = "STORE_ACCESS_FAILURE"
         result["error"] = type(exc).__name__
+        result["classification"] = "LOCAL_ENVIRONMENT_FAILURE"
         return result
     except Exception as exc:
-        result["secret_store"] = "SECRETSTORE_ERROR"
-        result["classification"] = "ENVIRONMENT_FAILURE"
+        result["secret_store"] = "STORE_ACCESS_FAILURE"
         result["error"] = type(exc).__name__
+        result["classification"] = "LOCAL_ENVIRONMENT_FAILURE"
+        return result
+
+    if not retrievable or not isinstance(secret, str) or not secret:
+        result["classification"] = "LOCAL_ENVIRONMENT_FAILURE"
         return result
 
     headers = {
@@ -189,7 +233,12 @@ def diagnostic(connection_id: str) -> dict[str, Any]:
                 }
             ),
         }
-        result["classification"] = category
+        if category == "READY":
+            result["classification"] = "READY"
+        elif category == "MODEL_ID_NOT_AVAILABLE":
+            result["classification"] = "MODEL_ID_NOT_AVAILABLE"
+        else:
+            result["classification"] = "PROVIDER_FAILURE"
     except requests.RequestException as exc:
         result["provider_http"] = {
             "status_code": None,
@@ -208,7 +257,7 @@ def main() -> int:
     args = parser.parse_args()
 
     payload = {
-        "diagnostic_version": 1,
+        "diagnostic_version": 2,
         "targets": list(TARGETS),
         "production_registry_mutated": False,
         "routing_policy_mutated": False,
@@ -217,11 +266,12 @@ def main() -> int:
         "raw_credentials_returned": False,
         "results": [diagnostic(connection_id) for connection_id in TARGETS],
     }
+    safe_payload = sanitize(payload)
     args.output.write_text(
-        json.dumps(sanitize(payload), indent=2, ensure_ascii=False),
+        json.dumps(safe_payload, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    print(json.dumps(sanitize(payload), indent=2, ensure_ascii=False))
+    print(json.dumps(safe_payload, indent=2, ensure_ascii=False))
     print(f"DIAGNOSTIC_WRITTEN={args.output.resolve()}")
     return 0
 
