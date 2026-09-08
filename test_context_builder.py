@@ -69,6 +69,11 @@ class ContextBuilderTests(unittest.TestCase):
             "authority_note": "not an execution authorization",
         }
 
+    def _context_requirement(self, context: dict, requirement_id: str) -> dict:
+        return next(
+            item for item in context["requirements"] if item["requirement_id"] == requirement_id
+        )
+
     def test_context_is_deterministic_and_evidence_only(self) -> None:
         builder = ContextBuilder()
         first = builder.build(self._bundle())
@@ -111,7 +116,7 @@ class ContextBuilderTests(unittest.TestCase):
 
     def test_static_evidence_does_not_become_runtime_proof(self) -> None:
         context = ContextBuilder().build(self._bundle())
-        req1 = next(item for item in context["requirements"] if item["requirement_id"] == "REQ-1")
+        req1 = self._context_requirement(context, "REQ-1")
 
         self.assertEqual(req1["status"], "IMPLEMENTED_UNVERIFIED")
         self.assertFalse(req1["execution_evidence_present"])
@@ -123,7 +128,7 @@ class ContextBuilderTests(unittest.TestCase):
         bundle["gap_compliance"]["summary"]["verified"] = 1
 
         context = build_context(bundle)
-        req1 = next(item for item in context["requirements"] if item["requirement_id"] == "REQ-1")
+        req1 = self._context_requirement(context, "REQ-1")
 
         self.assertTrue(req1["execution_evidence_present"])
         self.assertEqual(req1["status"], "VERIFIED")
@@ -165,6 +170,46 @@ class ContextBuilderTests(unittest.TestCase):
             ContextBuilder(max_chars=100)
         with self.assertRaises(ValueError):
             ContextBuilder(max_requirements=0)
+
+    def test_prose_terms_are_not_treated_as_secret_leaks(self) -> None:
+        bundle = self._bundle()
+        bundle["specification"]["requirements"][0][
+            "text"
+        ] = "The application must document its secret handling, token lifecycle, and credential policy."
+
+        context = ContextBuilder().build(bundle)
+        req1 = self._context_requirement(context, "REQ-1")
+
+        self.assertIn("secret handling", req1["text"])
+        self.assertIn("token lifecycle", req1["text"])
+        self.assertIn("credential policy", req1["text"])
+
+    def test_sensitive_keys_are_still_redacted_and_secret_patterns_are_removed(self) -> None:
+        redacted = ContextBuilder._redact(
+            {"api_key": "sk-test-not-a-real-key-but-sensitive", "nested": {"password": "value"}}
+        )
+        self.assertEqual(redacted["api_key"], "[REDACTED]")
+        self.assertEqual(redacted["nested"]["password"], "[REDACTED]")
+        ContextBuilder._assert_no_secrets(redacted)
+
+        leaked = self._bundle()
+        leaked["specification"]["requirements"][0]["text"] = "Bearer abcdefghijklmnopqrstuvwxyz123456"
+        context = ContextBuilder().build(leaked)
+        req1 = self._context_requirement(context, "REQ-1")
+        self.assertEqual(req1["text"], "[REDACTED]")
+        ContextBuilder._assert_no_secrets(context)
+
+    def test_openrouter_key_pattern_is_redacted(self) -> None:
+        bundle = self._bundle()
+        bundle["specification"]["requirements"][0][
+            "text"
+        ] = "OpenRouter credential example: sk-or-v1-abcdefghijklmnopqrstuvwxyz123456"
+
+        context = ContextBuilder().build(bundle)
+        req1 = self._context_requirement(context, "REQ-1")
+
+        self.assertEqual(req1["text"], "OpenRouter credential example: [REDACTED]")
+        ContextBuilder._assert_no_secrets(context)
 
 
 if __name__ == "__main__":

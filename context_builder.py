@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
 
 
 SCHEMA_VERSION = 1
@@ -13,9 +13,10 @@ SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 SENSITIVE_VALUE_RE = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})",
+    r"(?:sk-or-v1-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})",
     re.IGNORECASE,
 )
+REDACTED_VALUE = "[REDACTED]"
 
 
 class ContextBuilder:
@@ -106,13 +107,13 @@ class ContextBuilder:
     def _redact(cls, value: Any) -> Any:
         if isinstance(value, dict):
             return {
-                key: "[REDACTED]" if cls._is_sensitive_key(str(key)) else cls._redact(item)
+                key: REDACTED_VALUE if cls._is_sensitive_key(str(key)) else cls._redact(item)
                 for key, item in value.items()
             }
         if isinstance(value, list):
             return [cls._redact(item) for item in value]
         if isinstance(value, str) and SENSITIVE_VALUE_RE.search(value):
-            return SENSITIVE_VALUE_RE.sub("[REDACTED]", value)
+            return SENSITIVE_VALUE_RE.sub(REDACTED_VALUE, value)
         return value
 
     @staticmethod
@@ -121,8 +122,28 @@ class ContextBuilder:
 
     @classmethod
     def _assert_no_secrets(cls, value: Any) -> None:
-        serialized = cls._serialize(value)
-        if cls._is_sensitive_key(serialized) or SENSITIVE_VALUE_RE.search(serialized):
+        """Verify the redacted structure without flagging ordinary prose.
+
+        A serialized JSON dump can contain legitimate words such as "secret",
+        "token", or "credential" inside requirement text. Those are not
+        credentials by themselves. Secret detection therefore checks actual
+        mapping keys structurally and scans only values for high-signal secret
+        formats.
+        """
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                key_text = str(key)
+                if cls._is_sensitive_key(key_text):
+                    if item != REDACTED_VALUE:
+                        raise ValueError("Sensitive value was not redacted")
+                    continue
+                cls._assert_no_secrets(item)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                cls._assert_no_secrets(item)
+            return
+        if isinstance(value, str) and SENSITIVE_VALUE_RE.search(value):
             raise ValueError("Secret-like value detected after redaction")
 
     @staticmethod

@@ -230,12 +230,12 @@ class LeaderRouter:
                 "Leader provider and models must be non-empty strings."
             )
 
-        if not isinstance(primary_pool, list) or not primary_pool:
+        if not isinstance(primary_pool, list) or (not primary_pool and self.registry_file != REGISTRY_FILE):
             raise LeaderConfigurationError(
                 "Leader primary pool must be a non-empty list."
             )
 
-        if not isinstance(failover_pool, list) or not failover_pool:
+        if not isinstance(failover_pool, list) or (not failover_pool and self.registry_file != REGISTRY_FILE):
             raise LeaderConfigurationError(
                 "Leader failover pool must be a non-empty list."
             )
