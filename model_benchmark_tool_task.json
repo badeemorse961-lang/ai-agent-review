@@ -1,8 +1,0 @@
-{
-  "id": "T1",
-  "class": "MEDIUM",
-  "kind": "tool",
-  "title": "Approved context-file tool selection",
-  "context_files": ["PROJECT_RULES.md"],
-  "prompt": "Use the approved read_context_file tool exactly once with path PROJECT_RULES.md. Then return a JSON object containing classification, objective, plan, validation, and stop_conditions. Do not invent tools, arguments, file paths, or execution authority."
-}
