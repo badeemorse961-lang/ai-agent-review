@@ -15,6 +15,7 @@ class HTTPForensicEvidence:
 
     request_classification: str
     http_status: int | None
+    status_category: str
     sanitized_error_code: str | None
     sanitized_error_message: str | None
     elapsed_ms: float | None
@@ -80,6 +81,7 @@ def build_http_forensic_evidence(
     *,
     request_classification: str,
     http_status: int | None,
+    status_category: str | None = None,
     sanitized_error_code: str | None = None,
     sanitized_error_message: str | None = None,
     elapsed_ms: float | None = None,
@@ -107,9 +109,13 @@ def build_http_forensic_evidence(
         if isinstance(sanitized_error_code, str)
         else None
     )
+    category = status_category
+    if category is None:
+        category = classify_http_status(http_status) if http_status is not None else "NETWORK_OR_TRANSPORT_FAILURE"
     return HTTPForensicEvidence(
         request_classification=request_classification,
         http_status=http_status,
+        status_category=category,
         sanitized_error_code=code,
         sanitized_error_message=message,
         elapsed_ms=elapsed_ms,
