@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean
 from typing import Any, Mapping, Sequence
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 import model_benchmark as benchmark
 from model_benchmark import RunResult, _aggregate_group, run_benchmark
@@ -18,7 +23,6 @@ from phase_a_candidate_inventory import (
 from protected_secret_store import WindowsProtectedSecretStore
 
 
-BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = BASE_DIR / "benchmark_results.local.json"
 
 _PROVIDER_FAILURES = {"HTTPError", "ConnectionError", "Timeout", "RequestException", "JSONDecodeError"}
@@ -60,8 +64,7 @@ def model_level_aggregate(results: Sequence[RunResult]) -> dict[str, Any]:
         by_model_connection[(result.candidate.provider, result.candidate.model, result.candidate.connection_id)].append(result)
 
     by_model: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
-    for key, items in by_model_connection.items():
-        provider, model, connection_id = key
+    for (provider, model, connection_id), items in by_model_connection.items():
         summary = _connection_summary(items)
         summary["connection_id"] = connection_id
         by_model[(provider, model)].append(summary)
@@ -138,7 +141,7 @@ def build_phase_a_payload(
     created_at: str,
 ) -> dict[str, Any]:
     return {
-        "benchmark_version": benchmark.__dict__.get("BENCHMARK_VERSION", 3),
+        "benchmark_version": 3,
         "phase": "A",
         "decision_mode": "evidence_only",
         "production_registry_mutated": False,
