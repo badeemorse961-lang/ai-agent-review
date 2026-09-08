@@ -4,9 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
-
-from leader_router import LeaderRouter, LeaderUnavailable
+from leader_router import LeaderRouter
 from worker_router import WorkerRouter
 
 
@@ -24,8 +22,12 @@ def write_registry_fixture(tmp_path: Path, *, groq_status: str = "ACTIVE", groq_
                 "provider": "groq",
                 "model": "g1",
                 "roles": {
-                    "coder": ["GROQ-01"], "debugger": ["GROQ-02"], "tester": ["GROQ-03"],
-                    "architect": ["GROQ-04"], "reviewer": ["GROQ-05"], "standby": ["GROQ-06"],
+                    "coder": ["GROQ-01"],
+                    "debugger": ["GROQ-02"],
+                    "tester": ["GROQ-03"],
+                    "architect": ["GROQ-04"],
+                    "reviewer": ["GROQ-05"],
+                    "standby": ["GROQ-06"],
                 },
             },
         }
@@ -37,7 +39,17 @@ def write_registry_fixture(tmp_path: Path, *, groq_status: str = "ACTIVE", groq_
             "OR-01": {"connection_id": "OR-01", "provider": "openrouter", "key_fingerprint": hashlib.sha256(b"or-secret-1").hexdigest(), "role": None, "status": "ACTIVE", "active": True, "credential_validated": True, "validation_required": False},
             "OR-02": {"connection_id": "OR-02", "provider": "openrouter", "key_fingerprint": hashlib.sha256(b"or-secret-2").hexdigest(), "role": None, "status": "ACTIVE", "active": True, "credential_validated": True, "validation_required": False},
             **{
-                f"GROQ-{i:02d}": {"connection_id": f"GROQ-{i:02d}", "provider": "groq", "key_fingerprint": hashlib.sha256(f"groq-{i}".encode()).hexdigest(), "role": None, "status": groq_status if i == 1 else "ACTIVE", "active": groq_active if i == 1 else True, "credential_validated": groq_status not in {"FAILED", "INVALID", "REMOVED"}, "validation_required": groq_status in {"FAILED", "INVALID"}} for i in range(1, 7)
+                f"GROQ-{i:02d}": {
+                    "connection_id": f"GROQ-{i:02d}",
+                    "provider": "groq",
+                    "key_fingerprint": hashlib.sha256(f"groq-{i}".encode()).hexdigest(),
+                    "role": None,
+                    "status": groq_status if i == 1 else "ACTIVE",
+                    "active": groq_active if i == 1 else True,
+                    "credential_validated": groq_status not in {"FAILED", "INVALID", "REMOVED"},
+                    "validation_required": groq_status in {"FAILED", "INVALID"},
+                }
+                for i in range(1, 7)
             },
         },
     }
@@ -47,10 +59,32 @@ def write_registry_fixture(tmp_path: Path, *, groq_status: str = "ACTIVE", groq_
     worker_health = tmp_path / "worker_health.json"
     leader_state = tmp_path / "leader_state.json"
     worker_state = tmp_path / "worker_state.json"
+
     registry_path.write_text(json.dumps(config), encoding="utf-8")
     connections_path.write_text(json.dumps(connections), encoding="utf-8")
-    leader_health.write_text(json.dumps({"provider": "openrouter", "models": {"m1": {"provider": "openrouter", "healthy": ["OR-01", "OR-02"], "failed": []}, "m2": {"provider": "openrouter", "healthy": ["OR-01", "OR-02"], "failed": []}}}), encoding="utf-8")
-    worker_health.write_text(json.dumps({"provider": "groq", "healthy": [f"GROQ-{i:02d}" for i in range(1, 7)], "failed": []}), encoding="utf-8")
+
+    leader_healthy = ["OR-01", "OR-02"]
+    leader_failed: list[str] = []
+    leader_health.write_text(
+        json.dumps({
+            "provider": "openrouter",
+            "models": {
+                "m1": {"provider": "openrouter", "healthy": leader_healthy, "failed": leader_failed},
+                "m2": {"provider": "openrouter", "healthy": leader_healthy, "failed": leader_failed},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    worker_healthy = [f"GROQ-{i:02d}" for i in range(1, 7)]
+    worker_failed: list[str] = []
+    if groq_status != "ACTIVE" or not groq_active:
+        worker_healthy.remove("GROQ-01")
+        worker_failed.append("GROQ-01")
+    worker_health.write_text(
+        json.dumps({"provider": "groq", "healthy": worker_healthy, "failed": worker_failed}),
+        encoding="utf-8",
+    )
     return registry_path, connections_path, leader_health, worker_health, leader_state, worker_state
 
 
@@ -60,6 +94,11 @@ def test_leader_router_excludes_disabled_connection(tmp_path: Path) -> None:
     data["connections"]["OR-01"]["status"] = "DISABLED"
     data["connections"]["OR-01"]["active"] = False
     connections.write_text(json.dumps(data), encoding="utf-8")
+    health = json.loads(leader_health.read_text(encoding="utf-8"))
+    for model in ("m1", "m2"):
+        health["models"][model]["healthy"].remove("OR-01")
+        health["models"][model]["failed"].append("OR-01")
+    leader_health.write_text(json.dumps(health), encoding="utf-8")
     router = LeaderRouter(health_file=leader_health, state_file=leader_state, registry_file=registry)
     assert router.active_pool("ULTRA") == ["OR-02"]
     lease = router.acquire("TASK-DISABLED")
