@@ -3,14 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+BASE = Path(__file__).resolve().parent.parent
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))
 
 import requests
 
 from protected_secret_store import SecretStoreError, WindowsProtectedSecretStore
 
-BASE = Path(__file__).resolve().parent.parent
 CONNECTIONS_FILE = BASE / "connections.json"
 
 TARGETS = {
