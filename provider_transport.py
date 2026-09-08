@@ -9,7 +9,7 @@ import requests
 
 from central_leader import LeaderRequest
 from connection_manager import read_secret_source, resolve_secret_file
-from http_forensics import build_http_forensic_evidence, sanitize_error_payload
+from http_forensics import build_http_forensic_evidence, classify_http_status, sanitize_error_payload
 
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -123,6 +123,7 @@ class OpenAICompatibleTransport:
             evidence = build_http_forensic_evidence(
                 request_classification=request_classification,
                 http_status=None,
+                status_category="NETWORK_OR_TRANSPORT_FAILURE",
                 sanitized_error_code="CONNECT_TIMEOUT",
                 sanitized_error_message=f"Connection exceeded {self.config.connect_timeout}s",
                 elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -142,6 +143,7 @@ class OpenAICompatibleTransport:
             evidence = build_http_forensic_evidence(
                 request_classification=request_classification,
                 http_status=None,
+                status_category="NETWORK_OR_TRANSPORT_FAILURE",
                 sanitized_error_code="READ_TIMEOUT",
                 sanitized_error_message=f"Response exceeded {self.config.read_timeout}s",
                 elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -161,6 +163,7 @@ class OpenAICompatibleTransport:
             evidence = build_http_forensic_evidence(
                 request_classification=request_classification,
                 http_status=None,
+                status_category="NETWORK_OR_TRANSPORT_FAILURE",
                 sanitized_error_code="REQUEST_TIMEOUT",
                 sanitized_error_message="Provider request timed out",
                 elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -180,6 +183,7 @@ class OpenAICompatibleTransport:
             evidence = build_http_forensic_evidence(
                 request_classification=request_classification,
                 http_status=None,
+                status_category="NETWORK_OR_TRANSPORT_FAILURE",
                 sanitized_error_code="CONNECTION_ERROR",
                 sanitized_error_message=type(exc).__name__,
                 elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -199,6 +203,7 @@ class OpenAICompatibleTransport:
             evidence = build_http_forensic_evidence(
                 request_classification=request_classification,
                 http_status=None,
+                status_category="NETWORK_OR_TRANSPORT_FAILURE",
                 sanitized_error_code=type(exc).__name__,
                 sanitized_error_message=type(exc).__name__,
                 elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -223,10 +228,11 @@ class OpenAICompatibleTransport:
             except ValueError:
                 response_data = None
             error_code, error_message = sanitize_error_payload(response_data, secrets=(key,))
-            category = __import__("http_forensics").classify_http_status(response.status_code)
+            category = classify_http_status(response.status_code)
             evidence = build_http_forensic_evidence(
                 request_classification=request_classification,
                 http_status=response.status_code,
+                status_category=category,
                 sanitized_error_code=error_code or category,
                 sanitized_error_message=error_message,
                 elapsed_ms=elapsed_ms,
