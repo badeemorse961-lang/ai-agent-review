@@ -290,6 +290,7 @@ def _prepare_workspace(root: Path) -> tuple[Path, TerminalExecutor]:
         ".pytest_cache",
     )
     shutil.copytree(root, temp, dirs_exist_ok=True, ignore=ignore)
+    (temp / ".git").mkdir()
     executor = _executor(temp)
     for command in (("git", "init"), ("git", "add", "-A")):
         result = executor.run(command)
