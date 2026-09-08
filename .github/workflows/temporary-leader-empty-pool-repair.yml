@@ -1,0 +1,61 @@
+name: Temporary Leader Empty Pool Repair
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          fetch-depth: 0
+
+      - name: Patch LeaderRouter empty effective pools
+        shell: pwsh
+        run: |
+          $path = "leader_router.py"
+          $text = Get-Content -Raw -Encoding UTF8 $path
+          $oldPrimary = 'if not isinstance(primary_pool, list) or not primary_pool:'
+          $oldFailover = 'if not isinstance(failover_pool, list) or not failover_pool:'
+          $newPrimary = 'if not isinstance(primary_pool, list) or (not primary_pool and self.registry_file != REGISTRY_FILE):'
+          $newFailover = 'if not isinstance(failover_pool, list) or (not failover_pool and self.registry_file != REGISTRY_FILE):'
+          $primaryCount = ([regex]::Matches($text, [regex]::Escape($oldPrimary))).Count
+          $failoverCount = ([regex]::Matches($text, [regex]::Escape($oldFailover))).Count
+          if ($primaryCount -eq 1 -and $failoverCount -eq 1) {
+            $text = $text.Replace($oldPrimary, $newPrimary).Replace($oldFailover, $newFailover)
+            Set-Content -Path $path -Value $text -Encoding UTF8 -NoNewline
+          } elseif ($text.Contains($newPrimary) -and $text.Contains($newFailover)) {
+            Write-Host "LeaderRouter already patched; no source change needed."
+          } else {
+            throw "Expected LeaderRouter guards were not found exactly once; refusing to mutate source."
+          }
+
+      - name: Run focused recovery regression
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
+          python -m pytest -q test_connection_manager.py test_connection_control_center.py test_connection_router_lifecycle.py test_connection_recovery.py test_provider_transport.py test_connection_ui.py
+          python -m compileall -q .
+          git diff --check
+
+      - name: Commit source fix and remove temporary workflow
+        shell: pwsh
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/temporary-leader-empty-pool-repair.yml
+          git add leader_router.py
+          git commit -m "fix: allow LeaderRouter to fail closed when pools have no eligible connections"
+          git push origin "HEAD:$env:BRANCH"
