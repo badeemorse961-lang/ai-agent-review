@@ -129,7 +129,7 @@ def test_http_forensic_status_and_category_are_preserved(
     transport = OpenAICompatibleTransport(session=session)
 
     with pytest.raises(ProviderTransportError) as exc_info:
-        transport(
+        transport.send(
             provider="openrouter",
             account_id="OR-01",
             model="model-test",
@@ -142,7 +142,7 @@ def test_http_forensic_status_and_category_are_preserved(
     evidence = exc_info.value.forensic_evidence
     assert evidence is not None
     assert evidence["http_status"] == status_code
-    assert evidence["sanitized_error_code"] in {"provider-code", expected_category}
+    assert evidence["sanitized_error_code"] == "provider-code"
     assert evidence["sanitized_error_message"] == "bounded diagnostic"
     assert evidence["connection_id"] == "OR-01"
     assert evidence["provider"] == "openrouter"
@@ -158,7 +158,6 @@ def test_successful_response_shape_and_transport_call_are_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_secrets(tmp_path, "OR-03=key-three\n", monkeypatch)
-    expected = {"plan": {"goal": "ok", "tasks": []}}
     session = FakeSession(
         FakeResponse(
             200,
@@ -169,7 +168,7 @@ def test_successful_response_shape_and_transport_call_are_unchanged(
     transport = OpenAICompatibleTransport(session=session)
     result = transport(leader_request())
 
-    assert result["plan"] == expected
+    assert result["plan"] == {"goal": "ok", "tasks": []}
     assert result["provider_response"] == {"status": "OK", "model": "model-test"}
     assert len(session.calls) == 1
     assert session.calls[0]["url"] == "https://openrouter.ai/api/v1/chat/completions"
@@ -229,7 +228,7 @@ def test_artifact_friendly_evidence_contains_no_credential_headers(
     transport = OpenAICompatibleTransport(session=session)
 
     with pytest.raises(ProviderTransportError) as exc_info:
-        transport(
+        transport.send(
             provider="openrouter",
             account_id="OR-01",
             model="model-test",
