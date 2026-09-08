@@ -21,10 +21,10 @@ def test_secret_leakage_is_a_hard_failure() -> None:
     assert "secret_leakage" in hard
 
 
-def test_prepare_workspace_excludes_git_and_local_results(tmp_path: Path, monkeypatch) -> None:
+def test_prepare_workspace_excludes_source_git_and_local_results(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "tracked.txt").write_text("tracked", encoding="utf-8")
     (tmp_path / ".git").mkdir()
-    (tmp_path / ".git" / "config").write_text("config", encoding="utf-8")
+    (tmp_path / ".git" / "config").write_text("source-config", encoding="utf-8")
     (tmp_path / "benchmark_results.local.json").write_text("local", encoding="utf-8")
     calls: list[tuple[str, ...]] = []
 
@@ -42,9 +42,10 @@ def test_prepare_workspace_excludes_git_and_local_results(tmp_path: Path, monkey
     try:
         assert disposable != tmp_path
         assert (disposable / "tracked.txt").read_text(encoding="utf-8") == "tracked"
-        assert not (disposable / ".git").exists()
-        assert not (disposable / "benchmark_results.local.json").exists()
-        assert calls == [("git", "init"), ("git", "add", "-A")]
+        assert (disposable / ".git").is_dir()
+        assert (disposable / ".git" / "config").read_text(encoding="utf-8") != "source-config"
+        assert (disposable / "benchmark_results.local.json").exists() is False
+        assert calls == [("git", "add", "-A")]
     finally:
         import shutil
         shutil.rmtree(disposable, ignore_errors=True)
