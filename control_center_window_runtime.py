@@ -61,22 +61,26 @@ def _install_scrollable_body(app: Any) -> None:
 
 
 def _fit_window_to_screen(app: Any) -> None:
-    """Choose a sane initial size for the actual Windows desktop resolution."""
+    """Start the Control Center fully visible on Windows, with a safe fallback for other platforms."""
     root = app.root
     root.update_idletasks()
+    root.minsize(980, 600)
+    root.resizable(True, True)
+
+    try:
+        # Windows supports a native maximized state and this avoids the desktop/taskbar clipping seen on smaller displays.
+        if root.tk.call("tk", "windowingsystem") == "win32":
+            root.state("zoomed")
+            root.update_idletasks()
+            return
+    except Exception:
+        pass
 
     screen_width = max(root.winfo_screenwidth(), 1024)
     screen_height = max(root.winfo_screenheight(), 720)
-
     width = min(1380, screen_width - 40)
     height = min(880, screen_height - 80)
-
-    width = max(width, 980)
-    height = max(height, 600)
-
-    root.geometry(f"{width}x{height}")
-    root.minsize(980, 600)
-    root.resizable(True, True)
+    root.geometry(f"{max(width, 980)}x{max(height, 600)}")
 
 
 def install_responsive_window(app_class: Any) -> None:
