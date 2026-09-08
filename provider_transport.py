@@ -6,8 +6,8 @@ from typing import Any, Mapping
 
 import requests
 
-from central_leader import LeaderRequest
 from connection_manager import get_secret
+from central_leader import LeaderRequest
 from protected_secret_store import SecretStore, WindowsProtectedSecretStore
 
 
@@ -66,6 +66,45 @@ class OpenAICompatibleTransport:
             messages=self._planning_messages(request.context),
         )
 
+    def _validated_identity(self, provider: str, account_id: str) -> tuple[str, str, str]:
+        provider_key = provider.strip().lower()
+        url = PROVIDER_URLS.get(provider_key)
+        prefix = PROVIDER_PREFIXES.get(provider_key)
+        if url is None or prefix is None:
+            raise ProviderTransportError(f"Unsupported provider: {provider}")
+        if not isinstance(account_id, str) or not account_id.startswith(f"{prefix}-"):
+            raise ProviderTransportError("Provider account identity is invalid")
+        return provider_key, prefix, url
+
+    def validate_connection(self, *, provider: str, account_id: str) -> Mapping[str, Any]:
+        """Validate only provider credential access; never return credential material."""
+        provider_key, _, url = self._validated_identity(provider, account_id)
+        try:
+            key = get_secret(account_id, provider_key, secret_store=self.secret_store)
+        except Exception as exc:
+            raise ProviderTransportError(
+                f"No protected credential is available for {provider_key}/{account_id}"
+            ) from exc
+        models_url = url.rsplit("/", 2)[0] + "/models"
+        try:
+            response = self.session.get(
+                models_url,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+                timeout=(self.config.connect_timeout, self.config.read_timeout),
+            )
+        except requests.RequestException as exc:
+            raise ProviderTransportError(
+                f"Provider validation failed for {provider_key}/{account_id}: {type(exc).__name__}"
+            ) from exc
+        if not response.ok:
+            raise ProviderTransportError(
+                f"Provider validation returned HTTP {response.status_code} for {provider_key}/{account_id}"
+            )
+        return {"status": "VALIDATED", "provider": provider_key, "connection_id": account_id}
+
     def send(
         self,
         *,
@@ -74,13 +113,7 @@ class OpenAICompatibleTransport:
         model: str,
         messages: list[dict[str, str]],
     ) -> Mapping[str, Any]:
-        provider_key = provider.strip().lower()
-        url = PROVIDER_URLS.get(provider_key)
-        prefix = PROVIDER_PREFIXES.get(provider_key)
-        if url is None or prefix is None:
-            raise ProviderTransportError(f"Unsupported provider: {provider}")
-        if not isinstance(account_id, str) or not account_id.startswith(f"{prefix}-"):
-            raise ProviderTransportError("Provider account identity is invalid")
+        provider_key, _, url = self._validated_identity(provider, account_id)
         if not isinstance(model, str) or not model.strip():
             raise ProviderTransportError("Provider model identity is invalid")
         if not isinstance(messages, list) or not messages:
