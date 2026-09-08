@@ -96,6 +96,7 @@ def test_http_error_does_not_expose_secret(tmp_path: Path, monkeypatch: pytest.M
     assert "401" in str(exc_info.value)
     assert exc_info.value.forensic_evidence is not None
     assert exc_info.value.forensic_evidence["http_status"] == 401
+    assert exc_info.value.forensic_evidence["status_category"] == "AUTHENTICATION_FAILURE"
     assert exc_info.value.forensic_evidence["request_classification"] == "openai_compatible_chat_completion"
     assert secret not in str(exc_info.value.forensic_evidence)
 
@@ -142,6 +143,7 @@ def test_http_forensic_status_and_category_are_preserved(
     evidence = exc_info.value.forensic_evidence
     assert evidence is not None
     assert evidence["http_status"] == status_code
+    assert evidence["status_category"] == expected_category
     assert evidence["sanitized_error_code"] == "provider-code"
     assert evidence["sanitized_error_message"] == "bounded diagnostic"
     assert evidence["connection_id"] == "OR-01"
@@ -195,16 +197,22 @@ def test_connection_error_is_distinguished_without_secret_data(
     evidence = exc_info.value.forensic_evidence
     assert evidence is not None
     assert evidence["http_status"] is None
+    assert evidence["status_category"] == "NETWORK_OR_TRANSPORT_FAILURE"
     assert evidence["sanitized_error_code"] == "CONNECTION_ERROR"
     assert secret not in str(evidence)
 
 
-def test_read_timeout_is_distinguished_without_secret_data(
+@pytest.mark.parametrize(
+    "exception",
+    [requests.ConnectTimeout("connect timed out"), requests.Timeout("timed out")],
+)
+def test_timeout_is_distinguished_without_secret_data(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    exception: Exception,
 ) -> None:
     write_secrets(tmp_path, "OR-01=test-key\n", monkeypatch)
-    session = FakeSession(exception=requests.ReadTimeout("read timed out"))
+    session = FakeSession(exception=exception)
     transport = OpenAICompatibleTransport(session=session)
 
     with pytest.raises(ProviderTransportError) as exc_info:
@@ -213,7 +221,8 @@ def test_read_timeout_is_distinguished_without_secret_data(
     evidence = exc_info.value.forensic_evidence
     assert evidence is not None
     assert evidence["http_status"] is None
-    assert evidence["sanitized_error_code"] == "READ_TIMEOUT"
+    assert evidence["status_category"] == "NETWORK_OR_TRANSPORT_FAILURE"
+    assert evidence["sanitized_error_code"] in {"CONNECT_TIMEOUT", "REQUEST_TIMEOUT"}
 
 
 def test_artifact_friendly_evidence_contains_no_credential_headers(
@@ -238,6 +247,7 @@ def test_artifact_friendly_evidence_contains_no_credential_headers(
 
     evidence = exc_info.value.forensic_evidence
     assert evidence is not None
+    assert evidence["status_category"] == "AUTHORIZATION_ACCESS_FAILURE"
     assert "Authorization" not in str(evidence)
     assert secret not in str(evidence)
     assert len(evidence["sanitized_error_message"]) <= 300
