@@ -159,7 +159,7 @@ def discover_connection_inventory(
         fingerprint_matches = False
         if provider and fingerprint_present:
             try:
-                credential_present = bool(secret_store.has(connection_id, provider))
+                credential_present = bool(secret_store.has(connection_id))
             except Exception:
                 credential_present = False
             if credential_present:
