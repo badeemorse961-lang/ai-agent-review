@@ -321,6 +321,11 @@ def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bo
         executable = Path(args[0]).name.lower().removesuffix(".exe")
         if executable == "pytest":
             pytest_args = args
+            if isinstance(executor, TerminalExecutor):
+                resolved_pytest = shutil.which("pytest")
+                if not resolved_pytest:
+                    return False
+                pytest_args = [resolved_pytest, *args[1:]]
         elif (
             executable == "python"
             and len(args) >= 3
@@ -328,6 +333,11 @@ def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bo
             and args[2].lower() == "pytest"
         ):
             pytest_args = ["pytest", *args[3:]]
+            if isinstance(executor, TerminalExecutor):
+                resolved_pytest = shutil.which("pytest")
+                if not resolved_pytest:
+                    return False
+                pytest_args[0] = resolved_pytest
         else:
             return False
 
