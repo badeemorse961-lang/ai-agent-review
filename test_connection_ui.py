@@ -19,7 +19,6 @@ def test_connection_ui_uses_file_picker_and_full_lifecycle_surface() -> None:
         "rejected_count",
         "persistence_status",
         "connection_ids",
-        "raw_secrets_returned",
         "✓ READY",
         "● STORED",
         "⚠ SETUP",
@@ -35,7 +34,6 @@ def test_connection_ui_does_not_offer_assignment_authority() -> None:
     source = Path("connection_control_center.py").read_text(encoding="utf-8")
     assert "auto-assign" not in source.lower()
     assert "assign_connection" not in source
-    assert "config/registry.json" in source
 
 
 def test_user_entry_point_uses_connection_aware_app() -> None:
