@@ -86,20 +86,26 @@ def test_control_fixture_proves_full_pass_path(monkeypatch, tmp_path) -> None:
     pytest_executable = shutil.which("pytest")
     assert pytest_executable is not None
 
-    assert result["model_response_received"] is True
-    assert result["structured_ok"] is True
-    assert result["work_product_ok"] is True
-    assert result["changed_paths"] == ["control_fixture.py"]
-    assert result["semantic_failures"] == []
-    assert result["hard_failures"] == []
-    assert result["verification"]["executed"] is True
-    assert result["verification"]["normalized_command"] == [pytest_executable, "-q", "control_fixture.py"]
-    assert result["verification"]["terminal_executor_executable"] == pytest_executable
-    assert result["verification"]["returncode"] == 0
-    assert result["verification"]["timed_out"] is False
-    assert "2 passed" in result["verification"]["stdout"]
-    assert result["forensic_status"] == "COMPLETE"
-    artifact_text = json.dumps(result, ensure_ascii=False)
+    artifact = tmp_path / "control_forensic_artifact.json"
+    artifact.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    persisted = json.loads(artifact.read_text(encoding="utf-8"))
+
+    assert persisted["model_response_received"] is True
+    assert persisted["structured_ok"] is True
+    assert persisted["work_product_ok"] is True
+    assert persisted["changed_paths"] == ["control_fixture.py"]
+    assert persisted["semantic_pass"] is True
+    assert persisted["semantic_failures"] == []
+    assert persisted["hard_failures"] == []
+    assert persisted["regression_ok"] is True
+    assert persisted["verification"]["executed"] is True
+    assert persisted["verification"]["normalized_command"] == [pytest_executable, "-q", "control_fixture.py"]
+    assert persisted["verification"]["terminal_executor_executable"] == pytest_executable
+    assert persisted["verification"]["returncode"] == 0
+    assert persisted["verification"]["timed_out"] is False
+    assert "2 passed" in persisted["verification"]["stdout"]
+    assert persisted["forensic_status"] == "COMPLETE"
+    artifact_text = artifact.read_text(encoding="utf-8")
     assert "sk-or-v1-" not in artifact_text
     assert "gsk_" not in artifact_text
     assert "Authorization: Bearer" not in artifact_text
