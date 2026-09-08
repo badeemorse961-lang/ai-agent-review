@@ -132,6 +132,7 @@ class OpenAICompatibleTransport:
                 task_id=task_id,
                 task_class=task_class,
                 repeat=repeat,
+                secrets=(key,),
             ).to_dict()
             raise ProviderTransportError(
                 f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
@@ -150,6 +151,7 @@ class OpenAICompatibleTransport:
                 task_id=task_id,
                 task_class=task_class,
                 repeat=repeat,
+                secrets=(key,),
             ).to_dict()
             raise ProviderTransportError(
                 f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
@@ -168,6 +170,7 @@ class OpenAICompatibleTransport:
                 task_id=task_id,
                 task_class=task_class,
                 repeat=repeat,
+                secrets=(key,),
             ).to_dict()
             raise ProviderTransportError(
                 f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
@@ -186,6 +189,7 @@ class OpenAICompatibleTransport:
                 task_id=task_id,
                 task_class=task_class,
                 repeat=repeat,
+                secrets=(key,),
             ).to_dict()
             raise ProviderTransportError(
                 f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
@@ -204,6 +208,7 @@ class OpenAICompatibleTransport:
                 task_id=task_id,
                 task_class=task_class,
                 repeat=repeat,
+                secrets=(key,),
             ).to_dict()
             raise ProviderTransportError(
                 f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
@@ -217,7 +222,7 @@ class OpenAICompatibleTransport:
                 response_data = response.json()
             except ValueError:
                 response_data = None
-            error_code, error_message = sanitize_error_payload(response_data)
+            error_code, error_message = sanitize_error_payload(response_data, secrets=(key,))
             category = __import__("http_forensics").classify_http_status(response.status_code)
             evidence = build_http_forensic_evidence(
                 request_classification=request_classification,
@@ -231,6 +236,7 @@ class OpenAICompatibleTransport:
                 task_id=task_id,
                 task_class=task_class,
                 repeat=repeat,
+                secrets=(key,),
             ).to_dict()
             raise ProviderTransportError(
                 f"Provider returned HTTP {response.status_code} for {provider_key}/{account_id}",
