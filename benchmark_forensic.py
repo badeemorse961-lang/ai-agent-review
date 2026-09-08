@@ -194,6 +194,7 @@ def collect_task(root: Path, task: Mapping[str, Any], candidate: benchmark.Candi
         original_tool_result = benchmark._tool_result
 
         def capture_post(*args, **kwargs):
+            nonlocal phase
             capture_phase = "inference.response_capture"
             try:
                 provider_response = original_post(*args, **kwargs)
@@ -204,7 +205,6 @@ def collect_task(root: Path, task: Mapping[str, Any], candidate: benchmark.Candi
                         tool_calls.extend(safe(calls))
                 return provider_response
             except Exception:
-                nonlocal phase
                 phase = capture_phase
                 raise
 
@@ -242,10 +242,10 @@ def collect_task(root: Path, task: Mapping[str, Any], candidate: benchmark.Candi
         else:
             phase = "evaluation.patch"
             touched = parsed.get("touched_paths")
-            patch = parsed.get("unified_diff")
+            patch_text = parsed.get("unified_diff")
             apply_ok = False
             if isinstance(touched, list):
-                apply_ok, changed = benchmark._apply_patch(executor, temp_root, str(patch or ""))
+                apply_ok, changed = benchmark._apply_patch(executor, temp_root, str(patch_text or ""))
             allowed = {benchmark._normalise_path(str(p)) for p in task.get("target_paths", [])}
             touched_normalised = {benchmark._normalise_path(str(p)) for p in touched} if isinstance(touched, list) else set()
             scope_ok = apply_ok and touched_normalised == changed and changed <= allowed
