@@ -13,8 +13,8 @@ class FakeSecretStore:
     def __init__(self, values: dict[tuple[str, str], str]) -> None:
         self.values = values
 
-    def has(self, connection_id: str, provider: str = "") -> bool:
-        return (connection_id, provider) in self.values
+    def has(self, connection_id: str) -> bool:
+        return any(key[0] == connection_id for key in self.values)
 
     def get(self, connection_id: str, provider: str) -> str:
         return self.values[(connection_id, provider)]
@@ -39,11 +39,9 @@ def _write_fixture(tmp_path: Path) -> tuple[Path, Path, dict[tuple[str, str], st
     }
     secrets = {
         ("OR-01", "openrouter"): "or-secret",
-        ("GROQ-01", "groq-one".lower()): "groq-secret-1",
+        ("GROQ-01", "groq"): "groq-secret-1",
         ("GROQ-02", "groq"): "groq-secret-2",
     }
-    # Correct the intentionally explicit provider key for GROQ-01.
-    secrets[("GROQ-01", "groq")] = secrets.pop(("GROQ-01", "groq-one"))
     metadata = {"version": 2, "connections": {}}
     for (connection_id, provider), secret in secrets.items():
         metadata["connections"][connection_id] = {
