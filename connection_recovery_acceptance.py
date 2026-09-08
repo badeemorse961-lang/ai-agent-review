@@ -107,6 +107,7 @@ def run(repo_root: Path, replacement_txt: Path) -> None:
             # B: one additive named import rotates every existing stable Leader ID.
             metadata = _load_json(metadata_path)
             before_ids = list(metadata["connections"])
+            before_fingerprints = {connection_id: metadata["connections"][connection_id]["key_fingerprint"] for connection_id in leader_ids}
             before_primary = list(config_source["architecture"]["leader"]["primary_pool"])
             before_failover = list(config_source["architecture"]["leader"]["failover_pool"])
             summary = import_provider("openrouter", replacement_txt, metadata, "OR", secret_store=store, persist=True)
@@ -115,6 +116,8 @@ def run(repo_root: Path, replacement_txt: Path) -> None:
             assert list(metadata["connections"]) == before_ids
             assert list(config_source["architecture"]["leader"]["primary_pool"]) == before_primary
             assert list(config_source["architecture"]["leader"]["failover_pool"]) == before_failover
+            for connection_id in leader_ids:
+                assert metadata["connections"][connection_id]["key_fingerprint"] != before_fingerprints[connection_id]
 
             # C: rotated credentials are present but not eligible before validation.
             for connection_id in leader_ids:
@@ -201,6 +204,7 @@ def run(repo_root: Path, replacement_txt: Path) -> None:
     print(f"Leader stable IDs recovered: {len(leader_ids)}")
     print("Protected credential persistence: PASS")
     print("Stable identity / assignment preservation: PASS")
+    print("Fingerprint replacement: PASS")
     print("No Dynamic Auto-Assignment: PASS")
     print("Assigned removal authority protection: PASS")
     print("New-key tombstone removal: PASS")
