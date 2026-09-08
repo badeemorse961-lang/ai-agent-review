@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Any, Mapping
+from dataclasses import asdict, dataclass
+from typing import Any, Mapping, Sequence
 
 from secret_redaction import redact_text
 
@@ -47,8 +47,12 @@ def classify_http_status(status_code: int) -> str:
     return f"HTTP_{status_code}"
 
 
-def sanitize_error_payload(payload: Any) -> tuple[str | None, str | None]:
-    """Extract only bounded, redacted error code/message from a provider body."""
+def sanitize_error_payload(
+    payload: Any,
+    *,
+    secrets: Sequence[str] = (),
+) -> tuple[str | None, str | None]:
+    """Extract only bounded, secret-redacted error code/message from a provider body."""
     if not isinstance(payload, Mapping):
         return None, None
     error = payload.get("error")
@@ -60,11 +64,14 @@ def sanitize_error_payload(payload: Any) -> tuple[str | None, str | None]:
 
     sanitized_code = None
     if isinstance(code, (str, int)):
-        sanitized_code = redact_text(str(code))[:MAX_ERROR_MESSAGE_CHARS]
+        sanitized_code = redact_text(str(code), secrets=secrets)[:MAX_ERROR_MESSAGE_CHARS]
 
     sanitized_message = None
     if isinstance(message, str):
-        sanitized_message = redact_text(message[:MAX_ERROR_MESSAGE_CHARS])
+        sanitized_message = redact_text(
+            message[:MAX_ERROR_MESSAGE_CHARS],
+            secrets=secrets,
+        )
 
     return sanitized_code, sanitized_message
 
@@ -82,14 +89,21 @@ def build_http_forensic_evidence(
     task_id: str | None = None,
     task_class: str | None = None,
     repeat: int | None = None,
+    secrets: Sequence[str] = (),
 ) -> HTTPForensicEvidence:
     message = (
-        redact_text(sanitized_error_message[:MAX_ERROR_MESSAGE_CHARS])
+        redact_text(
+            sanitized_error_message[:MAX_ERROR_MESSAGE_CHARS],
+            secrets=secrets,
+        )
         if isinstance(sanitized_error_message, str)
         else None
     )
     code = (
-        redact_text(sanitized_error_code[:MAX_ERROR_MESSAGE_CHARS])
+        redact_text(
+            sanitized_error_code[:MAX_ERROR_MESSAGE_CHARS],
+            secrets=secrets,
+        )
         if isinstance(sanitized_error_code, str)
         else None
     )
