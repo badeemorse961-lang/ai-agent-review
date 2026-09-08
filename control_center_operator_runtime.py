@@ -8,6 +8,34 @@ from connection_manager import load_registry
 
 ROUTER_MODELS_PAGE = "Router Models"
 
+_CONNECTION_HEADERS = {
+    "id": "Connection ID",
+    "provider": "Provider",
+    "model": "Model",
+    "assignment": "Assignment",
+    "status": "Status",
+    "ready": "Readiness",
+    "runtime": "Health",
+    "fingerprint": "Fingerprint",
+    "credential": "Credential",
+    "reason": "Reason",
+    "expiry": "Expiry",
+}
+
+_CONNECTION_WIDTHS = {
+    "id": 95,
+    "provider": 70,
+    "model": 185,
+    "assignment": 105,
+    "status": 75,
+    "ready": 90,
+    "runtime": 85,
+    "fingerprint": 90,
+    "credential": 90,
+    "reason": 135,
+    "expiry": 105,
+}
+
 
 def _expiry_label(item: Mapping[str, Any]) -> str:
     for key in ("credential_expires_at", "expires_at", "expiry", "expiration"):
@@ -33,14 +61,26 @@ def _install_expiry_column(app_class: type) -> None:
         if "expiry" not in columns:
             columns.append("expiry")
             tree["columns"] = tuple(columns)
-            tree.heading("expiry", text="Expiry")
-            tree.column("expiry", width=110, minwidth=85, anchor="w", stretch=False)
+
+        # Re-apply all headings after extending the Treeview columns. ttk can
+        # reset existing heading configuration when the columns tuple changes.
+        for column in columns:
+            tree.heading(column, text=_CONNECTION_HEADERS.get(column, column))
+            tree.column(
+                column,
+                width=_CONNECTION_WIDTHS.get(column, 100),
+                minwidth=68,
+                anchor="w",
+                stretch=False,
+            )
+
         registry = load_registry()
         connections = registry.get("connections", {})
         for row_id in tree.get_children(""):
             values = list(tree.item(row_id, "values"))
             connection_id = str(values[0]) if values else ""
-            expiry = _expiry_label(connections.get(connection_id)) if isinstance(connections, Mapping) and isinstance(connections.get(connection_id), Mapping) else "NOT PROVIDED"
+            item = connections.get(connection_id) if isinstance(connections, Mapping) else None
+            expiry = _expiry_label(item) if isinstance(item, Mapping) else "NOT PROVIDED"
             if len(values) < len(columns):
                 values.append(expiry)
             else:
