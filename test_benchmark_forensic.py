@@ -79,22 +79,23 @@ def test_collect_task_successful_collection_remains_successful(monkeypatch, tmp_
 
     class FakeExecutor:
         def run(self, *_args, **_kwargs):
-            raise AssertionError("verification should be stubbed in this unit test")
+            return SimpleNamespace(returncode=0, timed_out=False, stdout="1 passed", stderr="")
 
     monkeypatch.setattr(benchmark, "_prepare_workspace", lambda _root: (tmp_path, FakeExecutor()))
     monkeypatch.setattr(benchmark, "read_context", lambda *_args, **_kwargs: "safe context")
     monkeypatch.setattr(benchmark, "call_model", lambda *_args, **_kwargs: (response, 12.5, tool_trace, (10, 8, 0.001)))
     monkeypatch.setattr(benchmark, "WindowsProtectedSecretStore", lambda: object())
     monkeypatch.setattr(benchmark, "_apply_patch", lambda *_args, **_kwargs: (True, {"test_calculator.py"}))
-    monkeypatch.setattr(benchmark, "_run_verification", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(benchmark, "_run_verification", lambda executor, _task: executor.run(["pytest", "-q", "test_calculator.py"]) is not None)
     monkeypatch.setattr(benchmark, "_code_assertions", lambda *_args, **_kwargs: (True, []))
     result = benchmark_forensic.collect_task(tmp_path, task, candidate)
     assert result["model_response_received"] is True
     assert result["structured_ok"] is True
     assert result["changed_paths"] == ["test_calculator.py"]
-    assert result["verification"]["executed"] is False
+    assert result["verification"]["executed"] is True
+    assert result["verification"]["returncode"] == 0
+    assert result["verification"]["stdout"] == "1 passed"
     assert "forensic_exception" not in result
-    assert result["forensic_status"] == "UNRESOLVED"
 
 
 def test_verification_evidence_records_original_normalized_exit_and_output() -> None:
