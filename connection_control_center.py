@@ -15,20 +15,25 @@ from connection_manager import (
     load_registry,
     mark_connection_failed,
     remove_connection,
+    replace_connection_credential,
+    validate_connection,
 )
 from desktop_control_center import ControlCenterApp
 from leader_router import LeaderRouter
 from protected_secret_store import SecretStore, WindowsProtectedSecretStore
+from provider_transport import OpenAICompatibleTransport
 from worker_router import WorkerRouter
 
 
 class ConnectionControlCenterService(ControlCenterService):
-    """Adds explicit protected connection lifecycle intents over the existing Core routers."""
+    """Protected connection lifecycle boundary over the existing Core routers."""
 
     def __init__(self, *, secret_store: SecretStore | None = None, **kwargs: Any) -> None:
         self.secret_store = secret_store or WindowsProtectedSecretStore()
         self.last_connection_operation: Mapping[str, Any] | None = None
         super().__init__(**kwargs)
+        if self.leader_router is not None and (self.leader_transport is None or isinstance(self.leader_transport, OpenAICompatibleTransport)):
+            self.leader_transport = OpenAICompatibleTransport(secret_store=self.secret_store)
 
     def dispatch(self, intent: ApplicationIntent) -> ApplicationResult:
         intent.validate()
@@ -58,6 +63,8 @@ class ConnectionControlCenterService(ControlCenterService):
 
         handler = {
             "import_provider_connections": self._import_provider_connections,
+            "replace_connection_credential": self._replace_connection_credential,
+            "validate_connection": self._validate_connection,
             "disable_connection": self._disable_connection,
             "enable_connection": self._enable_connection,
             "remove_connection": self._remove_connection,
@@ -99,7 +106,41 @@ class ConnectionControlCenterService(ControlCenterService):
             return ApplicationResult("REJECTED", {}, "Selected import source must be an existing .txt file")
         registry = load_registry()
         summary = import_provider(provider, path, registry, "GROQ" if provider == "groq" else "OR", secret_store=self.secret_store)
-        return ApplicationResult("OK" if summary.imported_count or summary.already_present_count or summary.rejected_count else "NO_CHANGES", summary.to_dict())
+        self._reload_router_state()
+        status = "NO_CHANGES" if summary.imported_count == 0 and summary.rejected_count == 0 else "OK"
+        return ApplicationResult(status, summary.to_dict())
+
+    def _replace_connection_credential(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        connection_id = payload.get("connection_id")
+        source_path = payload.get("source_path")
+        if not isinstance(connection_id, str) or not connection_id.strip():
+            return ApplicationResult("REJECTED", {}, "connection_id is required")
+        if not isinstance(source_path, str) or not source_path.strip():
+            return ApplicationResult("REJECTED", {}, "Replacement TXT source is required")
+        path = Path(source_path).expanduser().resolve()
+        if path.suffix.lower() != ".txt" or not path.is_file():
+            return ApplicationResult("REJECTED", {}, "Selected replacement source must be an existing .txt file")
+        registry = load_registry()
+        summary = replace_connection_credential(connection_id, path, registry, secret_store=self.secret_store)
+        self._reload_router_state()
+        status = "NO_CHANGES" if summary.imported_count == 0 and summary.rejected_count == 0 else "OK"
+        return ApplicationResult(status, summary.to_dict())
+
+    def _validate_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        connection_id, _, registry = self._connection_from_payload(payload)
+        try:
+            item = validate_connection(connection_id, registry=registry, secret_store=self.secret_store)
+        except Exception as exc:
+            safe_reason = f"{type(exc).__name__}: {exc}"[:240]
+            try:
+                failed_registry = load_registry()
+                mark_connection_failed(connection_id, reason=safe_reason, registry=failed_registry)
+            except Exception:
+                pass
+            self._reload_router_state()
+            return ApplicationResult("FAILED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, safe_reason)
+        self._reload_router_state()
+        return ApplicationResult("OK", {"connection_id": connection_id, "status": item["status"], "credential_validated": True})
 
     def _connection_from_payload(self, payload: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
         connection_id = payload.get("connection_id")
@@ -124,7 +165,7 @@ class ConnectionControlCenterService(ControlCenterService):
         try:
             result = enable_connection(connection_id, registry)
         except ValueError as exc:
-            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry), "setup_required": "REGISTRY_ASSIGNMENT"}, str(exc))
+            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry), "setup_required": "VALIDATION_OR_REGISTRY_ASSIGNMENT"}, str(exc))
         self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"]})
 
@@ -132,7 +173,10 @@ class ConnectionControlCenterService(ControlCenterService):
         connection_id, _, registry = self._connection_from_payload(payload)
         if payload.get("confirmed") is not True:
             return ApplicationResult("REJECTED", {"connection_id": connection_id}, "Explicit confirmation is required")
-        remove_connection(connection_id, registry=registry, secret_store=self.secret_store)
+        try:
+            remove_connection(connection_id, registry=registry, secret_store=self.secret_store)
+        except ValueError as exc:
+            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, str(exc))
         self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": "REMOVED"})
 
@@ -147,7 +191,7 @@ class ConnectionControlCenterService(ControlCenterService):
 
 
 class ConnectionControlCenterApp(ControlCenterApp):
-    """Same Control Center shell with the protected connection lifecycle surface."""
+    """Same Control Center shell with protected connection lifecycle and recovery actions."""
 
     def __init__(self) -> None:
         super().__init__(service=ConnectionControlCenterService())
@@ -156,7 +200,7 @@ class ConnectionControlCenterApp(ControlCenterApp):
     def _connections(self) -> None:
         self._header(
             "Connections & Pools",
-            "✓ READY = securely stored + assigned + active. Stored-only connections are not routed; assignment remains config/registry.json.",
+            "✓ READY = securely stored + assigned + validated. New connections remain STORED until explicit admission.",
             action=lambda: self.show("Connections & Pools"),
             action_text="Refresh",
         )
@@ -164,47 +208,40 @@ class ConnectionControlCenterApp(ControlCenterApp):
         self.body.rowconfigure(0, weight=1)
         tree = self.ttk.Treeview(
             self.body,
-            columns=("id", "provider", "model", "assignment", "status", "ready", "runtime", "fingerprint"),
+            columns=("id", "provider", "model", "assignment", "status", "ready", "runtime", "fingerprint", "credential"),
             show="headings",
             selectmode="browse",
         )
-        labels = {"id":"Connection ID", "provider":"Provider", "model":"Model", "assignment":"Assignment", "status":"Status", "ready":"Automatic Use", "runtime":"Runtime / Health", "fingerprint":"Fingerprint"}
-        widths = {"id":120, "provider":100, "model":240, "assignment":160, "status":105, "ready":125, "runtime":125, "fingerprint":100}
+        labels = {"id": "Connection ID", "provider": "Provider", "model": "Model", "assignment": "Assignment", "status": "Lifecycle", "ready": "Ready State", "runtime": "Runtime / Health", "fingerprint": "Fingerprint", "credential": "Credential"}
+        widths = {"id": 110, "provider": 95, "model": 220, "assignment": 150, "status": 100, "ready": 115, "runtime": 120, "fingerprint": 90, "credential": 90}
         for column in tree["columns"]:
             tree.heading(column, text=labels[column])
             tree.column(column, width=widths[column], anchor="w")
         connections = result.data.get("connections", []) if isinstance(result.data, Mapping) else []
         palette = self.palette[self.dark]
-        tree.tag_configure("READY", foreground=palette["good"])
-        tree.tag_configure("STORED", foreground=palette["muted"])
-        tree.tag_configure("SETUP", foreground=palette["warn"])
-        tree.tag_configure("FAILED", foreground=palette["bad"])
-        tree.tag_configure("REMOVED", foreground=palette["muted"])
+        for state, color in (("READY", palette["good"]), ("STORED", palette["muted"]), ("SETUP", palette["warn"]), ("FAILED", palette["bad"]), ("REMOVED", palette["muted"])):
+            tree.tag_configure(state, foreground=color)
         for item in connections:
             item = self._mapping(item)
             readiness = str(item.get("ready_state", "SETUP")).upper()
-            reason = str(item.get("ready_reason", ""))
             if readiness not in {"READY", "STORED", "SETUP", "FAILED", "REMOVED"}:
                 readiness = "SETUP"
-                reason = reason or "Unknown readiness state"
-            ready_label = {"READY":"✓ READY", "STORED":"● STORED", "SETUP":"⚠ SETUP", "FAILED":"✕ FAILED", "REMOVED":"— REMOVED"}[readiness]
+            ready_label = {"READY": "✓ READY", "STORED": "● STORED", "SETUP": "⚠ SETUP", "FAILED": "✕ FAILED", "REMOVED": "— REMOVED"}[readiness]
             raw_status = str(item.get("metadata_status", "UNKNOWN"))
             display_status = "ACTIVE" if raw_status == "VALIDATED" else raw_status
             assignment = ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned"
-            inserted = tree.insert("", "end", values=(item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""), assignment, display_status, ready_label, item.get("runtime_status", "UNOBSERVED"), "present" if item.get("fingerprint_present") else "absent"), tags=(readiness,))
-            if reason:
-                tree.item(inserted, values=tree.item(inserted, "values"))
+            tree.insert("", "end", values=(item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""), assignment, display_status, ready_label, item.get("runtime_status", "UNOBSERVED"), "present" if item.get("fingerprint_present") else "absent", "present" if item.get("credential_present") else "absent"), tags=(readiness,))
         tree.grid(row=0, column=0, sticky="nsew")
         self.connection_tree = tree
 
         toolbar = self.ttk.Frame(self.body)
         toolbar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         for provider, label in (("openrouter", "Import OpenRouter TXT"), ("groq", "Import Groq TXT")):
-            self.ttk.Button(toolbar, text=label, command=lambda p=provider: self._import(p)).pack(side="left", padx=(0, 8))
-        for action, label in (("disable_connection", "Disable"), ("enable_connection", "Enable"), ("remove_connection", "Remove")):
-            self.ttk.Button(toolbar, text=label, command=lambda a=action: self._connection_action(a)).pack(side="left", padx=(0, 8))
-        legend = self.ttk.Label(toolbar, text="✓ READY = stored + assigned + active | ● STORED = saved but not routed | ⚠ SETUP = needs attention | ✕ FAILED = unavailable", style="Status.TLabel")
-        legend.pack(side="left", padx=(12, 0))
+            self.ttk.Button(toolbar, text=label, command=lambda p=provider: self._import(p)).pack(side="left", padx=(0, 5))
+        for action, label in (("replace_connection_credential", "Replace / Rotate"), ("validate_connection", "Validate"), ("disable_connection", "Disable"), ("enable_connection", "Enable"), ("remove_connection", "Remove")):
+            self.ttk.Button(toolbar, text=label, command=lambda a=action: self._connection_action(a)).pack(side="left", padx=(0, 5))
+        legend = self.ttk.Label(toolbar, text="✓ READY = stored + assigned + validated | ● STORED = saved, not routed | ⚠ SETUP = needs attention | ✕ FAILED = unavailable", style="Status.TLabel")
+        legend.pack(side="left", padx=(6, 0))
         operation = getattr(self.service, "last_connection_operation", None)
         if isinstance(operation, Mapping):
             self._show_connection_operation(toolbar, operation)
@@ -230,13 +267,18 @@ class ConnectionControlCenterApp(ControlCenterApp):
         self._set_status(result)
 
     def _connection_action(self, action: str) -> None:
-        from tkinter import messagebox
+        from tkinter import filedialog, messagebox
         connection_id = self._selected_connection_id()
         if not connection_id:
             self._set_status(ApplicationResult("REJECTED", {}, "Select a connection first"))
             return
         payload: dict[str, Any] = {"connection_id": connection_id}
-        if action == "remove_connection":
+        if action == "replace_connection_credential":
+            path = filedialog.askopenfilename(title=f"Replace credential for {connection_id}", filetypes=[("Text files", "*.txt")])
+            if not path:
+                return
+            payload["source_path"] = path
+        elif action == "remove_connection":
             confirmed = messagebox.askyesno("Remove connection", f"Remove {connection_id}? The protected credential will be deleted.")
             if not confirmed:
                 return
@@ -246,17 +288,19 @@ class ConnectionControlCenterApp(ControlCenterApp):
         self._set_status(result)
 
     def _show_connection_operation(self, parent: Any, data: Mapping[str, Any]) -> None:
+        provider = str(data.get("provider", ""))
+        status = str(data.get("result_status", ""))
+        ids = data.get("connection_ids", [])
+        affected = f" | ids={', '.join(str(x) for x in ids)}" if isinstance(ids, list) and ids else ""
         if "imported_count" in data:
-            provider = str(data.get("provider", ""))
-            status = str(data.get("result_status", ""))
-            summary = f"{provider}: imported={data.get('imported_count', 0)} | already present={data.get('already_present_count', 0)} | rejected={data.get('rejected_count', 0)} | persistence={data.get('persistence_status', 'UNKNOWN')}"
+            summary = f"{provider}: imported={data.get('imported_count', 0)} | already present={data.get('already_present_count', 0)} | rejected={data.get('rejected_count', 0)} | persistence={data.get('persistence_status', 'UNKNOWN')}{affected}"
             if status == "NO_CHANGES":
-                summary = f"{provider}: NO CHANGES | already present={data.get('already_present_count', 0)}"
-            self.ttk.Label(parent, text=summary, style="Status.TLabel").pack(side="left", padx=(12, 0))
+                summary = f"{provider}: NO CHANGES | already present={data.get('already_present_count', 0)}{affected}"
+            self.ttk.Label(parent, text=summary, style="Status.TLabel").pack(side="left", padx=(8, 0))
             palette = self.palette[self.dark]
-            self.status.configure(text=summary, foreground=palette["good"] if status != "ERROR" else palette["bad"])
+            self.status.configure(text=summary, foreground=palette["good"] if status not in {"ERROR", "FAILED"} else palette["bad"])
         else:
-            self._set_status(ApplicationResult(str(data.get("result_status", "OK")), data), str(data.get("status", "Updated")))
+            self._set_status(ApplicationResult(status or "OK", data), str(data.get("status", "Updated")))
 
 
 def main() -> int:
