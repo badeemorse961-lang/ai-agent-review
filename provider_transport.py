@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -8,6 +9,7 @@ import requests
 
 from central_leader import LeaderRequest
 from connection_manager import read_secret_source, resolve_secret_file
+from http_forensics import build_http_forensic_evidence, sanitize_error_payload
 
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -24,6 +26,10 @@ PROVIDER_PREFIXES = {
 
 class ProviderTransportError(RuntimeError):
     """Raised when a provider request cannot produce a usable response."""
+
+    def __init__(self, message: str, *, forensic_evidence: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.forensic_evidence = dict(forensic_evidence) if forensic_evidence is not None else None
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,7 @@ class OpenAICompatibleTransport:
             account_id=request.account_id,
             model=request.model,
             messages=self._planning_messages(request.context),
+            task_id=request.task_id,
         )
 
     def send(
@@ -75,6 +82,10 @@ class OpenAICompatibleTransport:
         account_id: str,
         model: str,
         messages: list[dict[str, str]],
+        task_id: str | None = None,
+        task_class: str | None = None,
+        repeat: int | None = None,
+        request_classification: str = "openai_compatible_chat_completion",
     ) -> Mapping[str, Any]:
         provider_key = provider.strip().lower()
         url = PROVIDER_URLS.get(provider_key)
@@ -95,6 +106,7 @@ class OpenAICompatibleTransport:
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
         }
+        started = time.perf_counter()
 
         try:
             response = self.session.post(
@@ -107,14 +119,122 @@ class OpenAICompatibleTransport:
                 json=payload,
                 timeout=(self.config.connect_timeout, self.config.read_timeout),
             )
-        except requests.RequestException as exc:
+        except requests.ConnectTimeout as exc:
+            evidence = build_http_forensic_evidence(
+                request_classification=request_classification,
+                http_status=None,
+                sanitized_error_code="CONNECT_TIMEOUT",
+                sanitized_error_message=f"Connection exceeded {self.config.connect_timeout}s",
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                connection_id=account_id,
+                provider=provider_key,
+                model=model,
+                task_id=task_id,
+                task_class=task_class,
+                repeat=repeat,
+            ).to_dict()
             raise ProviderTransportError(
-                f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}"
+                f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
+                forensic_evidence=evidence,
+            ) from exc
+        except requests.ReadTimeout as exc:
+            evidence = build_http_forensic_evidence(
+                request_classification=request_classification,
+                http_status=None,
+                sanitized_error_code="READ_TIMEOUT",
+                sanitized_error_message=f"Response exceeded {self.config.read_timeout}s",
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                connection_id=account_id,
+                provider=provider_key,
+                model=model,
+                task_id=task_id,
+                task_class=task_class,
+                repeat=repeat,
+            ).to_dict()
+            raise ProviderTransportError(
+                f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
+                forensic_evidence=evidence,
+            ) from exc
+        except requests.Timeout as exc:
+            evidence = build_http_forensic_evidence(
+                request_classification=request_classification,
+                http_status=None,
+                sanitized_error_code="REQUEST_TIMEOUT",
+                sanitized_error_message="Provider request timed out",
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                connection_id=account_id,
+                provider=provider_key,
+                model=model,
+                task_id=task_id,
+                task_class=task_class,
+                repeat=repeat,
+            ).to_dict()
+            raise ProviderTransportError(
+                f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
+                forensic_evidence=evidence,
+            ) from exc
+        except requests.ConnectionError as exc:
+            evidence = build_http_forensic_evidence(
+                request_classification=request_classification,
+                http_status=None,
+                sanitized_error_code="CONNECTION_ERROR",
+                sanitized_error_message=type(exc).__name__,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                connection_id=account_id,
+                provider=provider_key,
+                model=model,
+                task_id=task_id,
+                task_class=task_class,
+                repeat=repeat,
+            ).to_dict()
+            raise ProviderTransportError(
+                f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
+                forensic_evidence=evidence,
+            ) from exc
+        except requests.RequestException as exc:
+            evidence = build_http_forensic_evidence(
+                request_classification=request_classification,
+                http_status=None,
+                sanitized_error_code=type(exc).__name__,
+                sanitized_error_message=type(exc).__name__,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                connection_id=account_id,
+                provider=provider_key,
+                model=model,
+                task_id=task_id,
+                task_class=task_class,
+                repeat=repeat,
+            ).to_dict()
+            raise ProviderTransportError(
+                f"Provider request failed for {provider_key}/{account_id}: {type(exc).__name__}",
+                forensic_evidence=evidence,
             ) from exc
 
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+
         if not response.ok:
+            try:
+                response_data = response.json()
+            except ValueError:
+                response_data = None
+            error_code, error_message = sanitize_error_payload(response_data)
+            category = __import__("http_forensics").classify_http_status(response.status_code)
+            evidence = build_http_forensic_evidence(
+                request_classification=request_classification,
+                http_status=response.status_code,
+                sanitized_error_code=error_code or category,
+                sanitized_error_message=error_message,
+                elapsed_ms=elapsed_ms,
+                connection_id=account_id,
+                provider=provider_key,
+                model=model,
+                task_id=task_id,
+                task_class=task_class,
+                repeat=repeat,
+            ).to_dict()
             raise ProviderTransportError(
-                f"Provider returned HTTP {response.status_code} for {provider_key}/{account_id}"
+                f"Provider returned HTTP {response.status_code} for {provider_key}/{account_id}",
+                forensic_evidence=evidence,
             )
 
         try:
