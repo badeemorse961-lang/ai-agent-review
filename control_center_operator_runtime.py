@@ -57,19 +57,20 @@ def _install_expiry_column(app_class: type) -> None:
         tree = getattr(self, "connection_tree", None)
         if tree is None:
             return
+
         columns = list(tree["columns"])
         if "expiry" not in columns:
             columns.append("expiry")
             tree["columns"] = tuple(columns)
 
-        # Re-apply all headings after extending the Treeview columns. ttk can
-        # reset existing heading configuration when the columns tuple changes.
+        # Extending ttk.Treeview columns can reset heading configuration.
+        # Re-apply all headings after the columns tuple is finalized.
         for column in columns:
             tree.heading(column, text=_CONNECTION_HEADERS.get(column, column))
             tree.column(
                 column,
                 width=_CONNECTION_WIDTHS.get(column, 100),
-                minwidth=68,
+                minwidth=_CONNECTION_WIDTHS.get(column, 100),
                 anchor="w",
                 stretch=False,
             )
@@ -86,20 +87,43 @@ def _install_expiry_column(app_class: type) -> None:
             else:
                 values[-1] = expiry
             tree.item(row_id, values=tuple(values))
+
+        _ensure_connections_horizontal_scroll(self, tree)
         _fit_tree(tree)
 
     wrapped._expiry_runtime_wrapped = True
     app_class._connections = wrapped
 
 
+def _ensure_connections_horizontal_scroll(app: Any, tree: Any) -> None:
+    parent = tree.master
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+    tree.grid_configure(row=0, column=0, sticky="nsew")
+    scrollbar = getattr(app, "_connections_xscrollbar", None)
+    if scrollbar is None:
+        scrollbar = app.ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+        scrollbar.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        tree.configure(xscrollcommand=scrollbar.set)
+        app._connections_xscrollbar = scrollbar
+
+
 def _fit_tree(tree: Any) -> None:
-    """Keep the main tree usable within the current viewport; no clipped right-side columns."""
+    """Keep tables readable; Connections uses fixed widths plus horizontal scrolling."""
     try:
         tree.update_idletasks()
-        viewport = max(int(tree.winfo_width()) - 6, 1)
         columns = list(tree["columns"])
         if not columns:
             return
+
+        if "expiry" in columns:
+            for column in columns:
+                tree.heading(column, text=_CONNECTION_HEADERS.get(column, column))
+                width = _CONNECTION_WIDTHS.get(column, 100)
+                tree.column(column, width=width, minwidth=width, anchor="w", stretch=False)
+            return
+
+        viewport = max(int(tree.winfo_width()) - 6, 1)
         if not hasattr(tree, "_base_tree_widths"):
             tree._base_tree_widths = {column: int(tree.column(column, "width")) for column in columns}
         base = dict(tree._base_tree_widths)
