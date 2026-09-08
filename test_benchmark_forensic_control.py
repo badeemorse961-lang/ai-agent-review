@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import benchmark_forensic
@@ -82,6 +83,8 @@ def test_control_fixture_proves_full_pass_path(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(benchmark, "WindowsProtectedSecretStore", lambda: object())
 
     result = benchmark_forensic.collect_task(tmp_path, CONTROL_TASK, candidate)
+    pytest_executable = shutil.which("pytest")
+    assert pytest_executable is not None
 
     assert result["model_response_received"] is True
     assert result["structured_ok"] is True
@@ -90,8 +93,8 @@ def test_control_fixture_proves_full_pass_path(monkeypatch, tmp_path) -> None:
     assert result["semantic_failures"] == []
     assert result["hard_failures"] == []
     assert result["verification"]["executed"] is True
-    assert result["verification"]["normalized_command"] == ["pytest", "-q", "control_fixture.py"]
-    assert result["verification"]["terminal_executor_executable"] == "pytest"
+    assert result["verification"]["normalized_command"] == [pytest_executable, "-q", "control_fixture.py"]
+    assert result["verification"]["terminal_executor_executable"] == pytest_executable
     assert result["verification"]["returncode"] == 0
     assert result["verification"]["timed_out"] is False
     assert "2 passed" in result["verification"]["stdout"]
@@ -115,8 +118,6 @@ def test_control_fixture_proves_existing_scoring_path_without_inference(tmp_path
             benchmark.ToolTrace(False, 0, None, True, True, True, False),
         )
     finally:
-        import shutil
-
         shutil.rmtree(workspace, ignore_errors=True)
 
     assert score > 0
