@@ -82,12 +82,9 @@ def _status_is_eligible(item: dict[str, Any]) -> bool:
     if status in NON_ELIGIBLE_STATUSES:
         return False
     if status == "ACTIVE":
-        return active is True
-    # VALIDATED is retained as a legacy-compatible eligible state. New lifecycle
-    # mutations use ACTIVE with active=True, while older metadata may contain
-    # VALIDATED records whose boolean active flag predates the lifecycle model.
+        return active is True and item.get("credential_validated", True) is True and item.get("validation_required", False) is False
     if status == "VALIDATED":
-        return True
+        return item.get("credential_validated", True) is True and item.get("validation_required", False) is False
     return False
 
 
@@ -161,12 +158,8 @@ def validate_registry() -> dict[str, Any]:
     effective = copy.deepcopy(registry)
     effective_leader = effective["architecture"]["leader"]
     effective_workers = effective["architecture"]["workers"]
-    effective_leader["primary_pool"] = [
-        connection_id for connection_id in primary_pool if _status_is_eligible(connections[connection_id])
-    ]
-    effective_leader["failover_pool"] = [
-        connection_id for connection_id in failover_pool if _status_is_eligible(connections[connection_id])
-    ]
+    effective_leader["primary_pool"] = [connection_id for connection_id in primary_pool if _status_is_eligible(connections[connection_id])]
+    effective_leader["failover_pool"] = [connection_id for connection_id in failover_pool if _status_is_eligible(connections[connection_id])]
     effective_workers["roles"] = {
         role: [connection_id for connection_id in ids if _status_is_eligible(connections[connection_id])]
         for role, ids in roles.items()
