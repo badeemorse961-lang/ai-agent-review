@@ -32,12 +32,23 @@ SECRET_PATTERNS = [
 ]
 
 SENSITIVE_KEYS = re.compile(r"(api[_-]?key|authorization|credential|password|secret|token)", re.I)
+SAFE_DIAGNOSTIC_KEYS = {
+    "secret_store",
+    "credential_retrievable",
+    "credential_validated",
+    "raw_credentials_returned",
+    "key_fingerprint_present",
+}
 
 
 def sanitize(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            str(k): "[REDACTED]" if SENSITIVE_KEYS.search(str(k)) else sanitize(v)
+            str(k): (
+                sanitize(v)
+                if str(k) in SAFE_DIAGNOSTIC_KEYS
+                else ("[REDACTED]" if SENSITIVE_KEYS.search(str(k)) else sanitize(v))
+            )
             for k, v in value.items()
         }
     if isinstance(value, list):
