@@ -315,10 +315,24 @@ def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bo
             args = shlex.split(str(raw), posix=True)
         except ValueError:
             return False
-        if not args or Path(args[0]).name.lower().removesuffix(".exe") != "pytest":
+        if not args:
             return False
+
+        executable = Path(args[0]).name.lower().removesuffix(".exe")
+        if executable == "pytest":
+            pytest_args = args
+        elif (
+            executable == "python"
+            and len(args) >= 3
+            and args[1] == "-m"
+            and args[2].lower() == "pytest"
+        ):
+            pytest_args = ["pytest", *args[3:]]
+        else:
+            return False
+
         result = executor.run(
-            tuple(args),
+            tuple(pytest_args),
             target_paths=tuple(str(path) for path in task.get("target_paths", [])),
         )
         if result.returncode != 0 or result.timed_out:
