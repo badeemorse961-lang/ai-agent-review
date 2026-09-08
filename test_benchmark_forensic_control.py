@@ -34,7 +34,7 @@ CONTROL_TASK = {
     "target_paths": ["control_fixture.py"],
 }
 
-GOLDEN_CONTENT = """--- a/control_fixture.py\n+++ b/control_fixture.py\n@@ -1 +1,4 @@\n def test_control_fixture():\n     assert 2 + 2 == 4\n+\n+def test_control_regression():\n+    assert \"ok\" == \"ok\"\n"""
+GOLDEN_CONTENT = """--- a/control_fixture.py\n+++ b/control_fixture.py\n@@ -1,2 +1,5 @@\n def test_control_fixture():\n     assert 2 + 2 == 4\n+\n+def test_control_regression():\n+    assert \"ok\" == \"ok\"\n"""
 
 GOLDEN_RESPONSE = {
     "choices": [
@@ -94,7 +94,7 @@ def test_control_fixture_proves_full_pass_path(monkeypatch, tmp_path) -> None:
     assert result["verification"]["terminal_executor_executable"] == "pytest"
     assert result["verification"]["returncode"] == 0
     assert result["verification"]["timed_out"] is False
-    assert "1 passed" in result["verification"]["stdout"]
+    assert "2 passed" in result["verification"]["stdout"]
     assert result["forensic_status"] == "COMPLETE"
     artifact_text = json.dumps(result, ensure_ascii=False)
     assert "sk-or-v1-" not in artifact_text
