@@ -8,21 +8,28 @@ from application_boundary import ApplicationIntent, ApplicationResult, ControlCe
 from connection_manager import (
     LIFECYCLE_ACTIVE,
     LIFECYCLE_DISABLED,
+    PROVIDER_PREFIXES,
     disable_connection,
     enable_connection,
+    fingerprint,
     get_connection_status,
+    import_known_provider_credentials,
     import_provider,
     load_registry,
     mark_connection_failed,
+    read_secret_source,
     remove_connection,
     replace_connection_credential,
     validate_connection,
 )
 from desktop_control_center import ControlCenterApp
 from leader_router import LeaderRouter
-from protected_secret_store import SecretStore, WindowsProtectedSecretStore
+from protected_secret_store import SecretStore, SecretStoreError, WindowsProtectedSecretStore
 from provider_transport import OpenAICompatibleTransport
 from worker_router import WorkerRouter
+
+
+GROQ_STABLE_IMPORT_IDS = ("GROQ-01", "GROQ-02")
 
 
 class ConnectionControlCenterService(ControlCenterService):
@@ -51,7 +58,11 @@ class ConnectionControlCenterService(ControlCenterService):
                         continue
                     try:
                         registry = load_registry()
-                        mark_connection_failed(connection_id, reason="runtime health validation reported the connection as unavailable", registry=registry)
+                        mark_connection_failed(
+                            connection_id,
+                            reason="runtime health validation reported the connection as unavailable",
+                            registry=registry,
+                        )
                         changed = True
                     except Exception:
                         pass
@@ -62,6 +73,7 @@ class ConnectionControlCenterService(ControlCenterService):
 
         handler = {
             "import_provider_connections": self._import_provider_connections,
+            "verify_provider_readiness": self._verify_provider_readiness,
             "replace_connection_credential": self._replace_connection_credential,
             "validate_connection": self._validate_connection,
             "disable_connection": self._disable_connection,
@@ -104,10 +116,81 @@ class ConnectionControlCenterService(ControlCenterService):
         if path.suffix.lower() != ".txt" or not path.is_file():
             return ApplicationResult("REJECTED", {}, "Selected import source must be an existing .txt file")
         registry = load_registry()
-        summary = import_provider(provider, path, registry, "GROQ" if provider == "groq" else "OR", secret_store=self.secret_store)
+        prefix = PROVIDER_PREFIXES[provider]
+        if provider == "groq":
+            summary = import_known_provider_credentials(
+                provider,
+                path,
+                registry,
+                prefix,
+                GROQ_STABLE_IMPORT_IDS,
+                secret_store=self.secret_store,
+            )
+        else:
+            summary = import_provider(
+                provider,
+                path,
+                registry,
+                prefix,
+                secret_store=self.secret_store,
+            )
         self._reload_router_state()
-        status = "NO_CHANGES" if summary.imported_count == 0 and summary.rejected_count == 0 else "OK"
+        if summary.imported_count == 0 and summary.rejected_count == 0:
+            status = "NO_CHANGES"
+        elif summary.rejected_count > 0 and summary.imported_count == 0:
+            status = "REJECTED"
+        else:
+            status = "OK"
         return ApplicationResult(status, summary.to_dict())
+
+    def _verify_provider_readiness(self, payload: Mapping[str, Any]) -> ApplicationResult:
+        provider = payload.get("provider")
+        connection_ids = payload.get("connection_ids")
+        if provider != "groq":
+            return ApplicationResult("REJECTED", {}, "provider must be groq")
+        ids = tuple(connection_ids) if isinstance(connection_ids, (list, tuple)) else GROQ_STABLE_IMPORT_IDS
+        if not ids or any(not isinstance(item, str) or not item.strip() for item in ids):
+            return ApplicationResult("REJECTED", {}, "connection_ids must contain valid IDs")
+        registry = load_registry().get("connections", {})
+        results: list[dict[str, Any]] = []
+        all_ready = True
+        for connection_id in ids:
+            item = registry.get(connection_id) if isinstance(registry, Mapping) else None
+            if not isinstance(item, Mapping) or item.get("provider") != provider:
+                results.append({"connection_id": connection_id, "state": "NOT_READY", "reason": "CONNECTION_ID_MISMATCH"})
+                all_ready = False
+                continue
+            expected = item.get("key_fingerprint")
+            if not isinstance(expected, str) or not expected:
+                results.append({"connection_id": connection_id, "state": "NOT_READY", "reason": "FINGERPRINT_MISSING"})
+                all_ready = False
+                continue
+            try:
+                secret = self.secret_store.get(connection_id, provider)
+            except SecretStoreError:
+                results.append({"connection_id": connection_id, "state": "NOT_READY", "reason": "SECRET_RECORD_MISSING"})
+                all_ready = False
+                continue
+            if not isinstance(secret, str) or not secret:
+                results.append({"connection_id": connection_id, "state": "NOT_READY", "reason": "SECRET_RECORD_INVALID"})
+                all_ready = False
+                continue
+            if fingerprint(secret) != expected:
+                results.append({"connection_id": connection_id, "state": "NOT_READY", "reason": "FINGERPRINT_MISMATCH"})
+                all_ready = False
+                continue
+            results.append({"connection_id": connection_id, "state": "READY", "reason": "PROTECTED_CREDENTIAL_RETRIEVABLE"})
+        return ApplicationResult(
+            "OK" if all_ready else "FAILED",
+            {
+                "provider": provider,
+                "connections": results,
+                "all_ready": all_ready,
+                "raw_credentials_returned": False,
+                "routing_mutated": False,
+                "activation_mutated": False,
+            },
+        )
 
     def _replace_connection_credential(self, payload: Mapping[str, Any]) -> ApplicationResult:
         connection_id = payload.get("connection_id")
@@ -137,7 +220,11 @@ class ConnectionControlCenterService(ControlCenterService):
             except Exception:
                 pass
             self._reload_router_state()
-            return ApplicationResult("FAILED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, safe_reason)
+            return ApplicationResult(
+                "FAILED",
+                {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)},
+                safe_reason,
+            )
         self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": item["status"], "credential_validated": True})
 
@@ -160,11 +247,23 @@ class ConnectionControlCenterService(ControlCenterService):
     def _enable_connection(self, payload: Mapping[str, Any]) -> ApplicationResult:
         connection_id, _, registry = self._connection_from_payload(payload)
         if not self.secret_store.has(connection_id):
-            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, "Protected credential is unavailable")
+            return ApplicationResult(
+                "BLOCKED",
+                {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)},
+                "Protected credential is unavailable",
+            )
         try:
             result = enable_connection(connection_id, registry)
         except ValueError as exc:
-            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry), "setup_required": "VALIDATION_OR_REGISTRY_ASSIGNMENT"}, str(exc))
+            return ApplicationResult(
+                "BLOCKED",
+                {
+                    "connection_id": connection_id,
+                    "status": get_connection_status(connection_id, registry),
+                    "setup_required": "VALIDATION_OR_REGISTRY_ASSIGNMENT",
+                },
+                str(exc),
+            )
         self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"]})
 
@@ -175,7 +274,11 @@ class ConnectionControlCenterService(ControlCenterService):
         try:
             remove_connection(connection_id, registry=registry, secret_store=self.secret_store)
         except ValueError as exc:
-            return ApplicationResult("BLOCKED", {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)}, str(exc))
+            return ApplicationResult(
+                "BLOCKED",
+                {"connection_id": connection_id, "status": get_connection_status(connection_id, registry)},
+                str(exc),
+            )
         self._reload_router_state()
         return ApplicationResult("OK", {"connection_id": connection_id, "status": "REMOVED"})
 
@@ -186,7 +289,10 @@ class ConnectionControlCenterService(ControlCenterService):
         safe_reason = reason[:240] if isinstance(reason, str) else None
         result = mark_connection_failed(connection_id, invalid=invalid, reason=safe_reason, registry=registry)
         self._reload_router_state()
-        return ApplicationResult("OK", {"connection_id": connection_id, "status": result["status"], "reason": result.get("failure_reason", "")})
+        return ApplicationResult(
+            "OK",
+            {"connection_id": connection_id, "status": result["status"], "reason": result.get("failure_reason", "")},
+        )
 
 
 class ConnectionControlCenterApp(ControlCenterApp):
@@ -211,26 +317,55 @@ class ConnectionControlCenterApp(ControlCenterApp):
             show="headings",
             selectmode="browse",
         )
-        labels = {"id": "Connection ID", "provider": "Provider", "model": "Model", "assignment": "Assignment", "status": "Lifecycle", "ready": "Ready State", "runtime": "Runtime / Health", "fingerprint": "Fingerprint", "credential": "Credential", "reason": "Reason"}
-        widths = {"id": 110, "provider": 95, "model": 220, "assignment": 145, "status": 90, "ready": 110, "runtime": 115, "fingerprint": 85, "credential": 85, "reason": 260}
+        labels = {
+            "id": "Connection ID", "provider": "Provider", "model": "Model", "assignment": "Assignment",
+            "status": "Lifecycle", "ready": "Ready State", "runtime": "Runtime / Health", "fingerprint": "Fingerprint",
+            "credential": "Credential", "reason": "Reason",
+        }
+        widths = {
+            "id": 110, "provider": 95, "model": 220, "assignment": 145, "status": 90, "ready": 110,
+            "runtime": 115, "fingerprint": 85, "credential": 85, "reason": 260,
+        }
         for column in tree["columns"]:
             tree.heading(column, text=labels[column])
             tree.column(column, width=widths[column], anchor="w")
         connections = result.data.get("connections", []) if isinstance(result.data, Mapping) else []
         palette = self.palette[self.dark]
-        for state, color in (("READY", palette["good"]), ("STORED", palette["muted"]), ("SETUP", palette["warn"]), ("FAILED", palette["bad"]), ("REMOVED", palette["muted"])):
+        for state, color in (
+            ("READY", palette["good"]),
+            ("STORED", palette["muted"]),
+            ("SETUP", palette["warn"]),
+            ("FAILED", palette["bad"]),
+            ("REMOVED", palette["muted"]),
+        ):
             tree.tag_configure(state, foreground=color)
         for item in connections:
             item = self._mapping(item)
             readiness = str(item.get("ready_state", "SETUP")).upper()
             if readiness not in {"READY", "STORED", "SETUP", "FAILED", "REMOVED"}:
                 readiness = "SETUP"
-            ready_label = {"READY": "✓ READY", "STORED": "● STORED", "SETUP": "⚠ SETUP", "FAILED": "✕ FAILED", "REMOVED": "— REMOVED"}[readiness]
+            ready_label = {
+                "READY": "✓ READY",
+                "STORED": "● STORED",
+                "SETUP": "⚠ SETUP",
+                "FAILED": "✕ FAILED",
+                "REMOVED": "— REMOVED",
+            }[readiness]
             raw_status = str(item.get("metadata_status", "UNKNOWN"))
             display_status = "ACTIVE" if raw_status == "VALIDATED" else raw_status
             assignment = ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned"
             reason = str(item.get("ready_reason", ""))
-            tree.insert("", "end", values=(item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""), assignment, display_status, ready_label, item.get("runtime_status", "UNOBSERVED"), "present" if item.get("fingerprint_present") else "absent", "present" if item.get("credential_present") else "absent", reason), tags=(readiness,))
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""), assignment,
+                    display_status, ready_label, item.get("runtime_status", "UNOBSERVED"),
+                    "present" if item.get("fingerprint_present") else "absent",
+                    "present" if item.get("credential_present") else "absent", reason,
+                ),
+                tags=(readiness,),
+            )
         tree.grid(row=0, column=0, sticky="nsew")
         self.connection_tree = tree
 
@@ -238,9 +373,20 @@ class ConnectionControlCenterApp(ControlCenterApp):
         toolbar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         for provider, label in (("openrouter", "Import OpenRouter TXT"), ("groq", "Import Groq TXT")):
             self.ttk.Button(toolbar, text=label, command=lambda p=provider: self._import(p)).pack(side="left", padx=(0, 5))
-        for action, label in (("replace_connection_credential", "Replace / Rotate"), ("validate_connection", "Validate"), ("disable_connection", "Disable"), ("enable_connection", "Enable"), ("remove_connection", "Remove")):
+        self.ttk.Button(toolbar, text="Verify Groq Readiness", command=self._verify_groq_readiness).pack(side="left", padx=(0, 5))
+        for action, label in (
+            ("replace_connection_credential", "Replace / Rotate"),
+            ("validate_connection", "Validate"),
+            ("disable_connection", "Disable"),
+            ("enable_connection", "Enable"),
+            ("remove_connection", "Remove"),
+        ):
             self.ttk.Button(toolbar, text=label, command=lambda a=action: self._connection_action(a)).pack(side="left", padx=(0, 5))
-        legend = self.ttk.Label(toolbar, text="✓ READY = stored + assigned + validated | ● STORED = saved, not routed | ⚠ SETUP = needs attention | ✕ FAILED = unavailable", style="Status.TLabel")
+        legend = self.ttk.Label(
+            toolbar,
+            text="✓ READY = stored + assigned + validated | ● STORED = saved, not routed | ⚠ SETUP = needs attention | ✕ FAILED = unavailable",
+            style="Status.TLabel",
+        )
         legend.pack(side="left", padx=(6, 0))
         operation = getattr(self.service, "last_connection_operation", None)
         if isinstance(operation, Mapping):
@@ -258,13 +404,96 @@ class ConnectionControlCenterApp(ControlCenterApp):
         return str(values[0]) if values else None
 
     def _import(self, provider: str) -> None:
-        from tkinter import filedialog
-        path = filedialog.askopenfilename(title=f"Import {provider} TXT source", filetypes=[("Text files", "*.txt")])
+        from tkinter import filedialog, messagebox
+        path = filedialog.askopenfilename(
+            title=f"Import {provider} TXT source",
+            filetypes=[("Text files", "*.txt")],
+        )
         if not path:
             return
-        result = self.service.dispatch(ApplicationIntent("import_provider_connections", {"provider": provider, "source_path": path}))
+        source = Path(path).resolve()
+        if provider == "groq":
+            self._groq_import_preview(source)
+            return
+        result = self.service.dispatch(
+            ApplicationIntent("import_provider_connections", {"provider": provider, "source_path": str(source)})
+        )
         self.show("Connections & Pools")
         self._set_status(result)
+
+    def _groq_import_preview(self, source: Path) -> None:
+        from tkinter import messagebox
+        try:
+            labeled, unlabeled = read_secret_source(source, PROVIDER_PREFIXES["groq"])
+        except Exception as exc:
+            messagebox.showerror("Groq import", f"Cannot read TXT source: {type(exc).__name__}: {exc}")
+            return
+
+        registry = load_registry().get("connections", {})
+        known_by_fingerprint: dict[str, str] = {}
+        for connection_id in GROQ_STABLE_IMPORT_IDS:
+            item = registry.get(connection_id) if isinstance(registry, Mapping) else None
+            if isinstance(item, Mapping) and isinstance(item.get("key_fingerprint"), str):
+                known_by_fingerprint[item["key_fingerprint"]] = connection_id
+
+        known_matches: list[str] = []
+        for secret in unlabeled:
+            connection_id = known_by_fingerprint.get(fingerprint(secret))
+            if connection_id and connection_id not in known_matches:
+                known_matches.append(connection_id)
+
+        labeled_targets = sorted(set(labeled) & set(GROQ_STABLE_IMPORT_IDS))
+        unexpected_labeled = sorted(set(labeled) - set(GROQ_STABLE_IMPORT_IDS))
+        summary = [
+            "SAFE GROQ IMPORT PREVIEW",
+            "",
+            f"Source: {source}",
+            f"Total source entries: {len(labeled) + len(unlabeled)}",
+            f"Explicit GROQ IDs: {', '.join(labeled_targets) if labeled_targets else '(none)'}",
+            f"Unlabeled entries: {len(unlabeled)}",
+            f"Known stable matches: {', '.join(sorted(known_matches)) if known_matches else '(none)'}",
+            f"Unmatched entries: {max(0, len(unlabeled) - len(known_matches))}",
+            f"Unexpected explicit IDs: {', '.join(unexpected_labeled) if unexpected_labeled else '(none)'}",
+            "",
+            "Credential values are never displayed.",
+            "Only existing stable GROQ-01 / GROQ-02 identities can be imported.",
+            "No new Groq connection IDs will be created by this flow.",
+        ]
+        proceed = bool(known_matches or labeled_targets) and not unexpected_labeled
+        if not proceed:
+            messagebox.showwarning("Groq import blocked", "\n".join(summary) + "\n\nNo known stable Groq credential was found.")
+            return
+        proceed = messagebox.askyesno("Confirm Groq import", "\n".join(summary) + "\n\nImport matching stable credentials into protected storage?")
+        if not proceed:
+            return
+        result = self.service.dispatch(
+            ApplicationIntent("import_provider_connections", {"provider": "groq", "source_path": str(source)})
+        )
+        self.show("Connections & Pools")
+        self._set_status(result)
+
+    def _verify_groq_readiness(self) -> None:
+        result = self.service.dispatch(
+            ApplicationIntent("verify_provider_readiness", {"provider": "groq", "connection_ids": list(GROQ_STABLE_IMPORT_IDS)})
+        )
+        self.show("Connections & Pools")
+        lines: list[str] = ["GROQ PROTECTED-CREDENTIAL READINESS", ""]
+        items = result.data.get("connections", []) if isinstance(result.data, Mapping) else []
+        for item in items:
+            item = self._mapping(item)
+            lines.append(f"{item.get('connection_id', '?')} = {item.get('state', 'UNRESOLVED')} — {item.get('reason', '')}")
+        lines.extend([
+            "",
+            "Credential values displayed: NO",
+            "Routing mutated: NO",
+            "Activation mutated: NO",
+        ])
+        from tkinter import messagebox
+        if result.status == "OK":
+            messagebox.showinfo("Groq readiness", "\n".join(lines))
+        else:
+            messagebox.showwarning("Groq readiness", "\n".join(lines))
+        self._set_status(result, "Groq protected-credential readiness checked")
 
     def _connection_action(self, action: str) -> None:
         from tkinter import filedialog, messagebox
@@ -274,12 +503,18 @@ class ConnectionControlCenterApp(ControlCenterApp):
             return
         payload: dict[str, Any] = {"connection_id": connection_id}
         if action == "replace_connection_credential":
-            path = filedialog.askopenfilename(title=f"Replace credential for {connection_id}", filetypes=[("Text files", "*.txt")])
+            path = filedialog.askopenfilename(
+                title=f"Replace credential for {connection_id}",
+                filetypes=[("Text files", "*.txt")],
+            )
             if not path:
                 return
             payload["source_path"] = path
         elif action == "remove_connection":
-            confirmed = messagebox.askyesno("Remove connection", f"Remove {connection_id}? The protected credential will be deleted.")
+            confirmed = messagebox.askyesno(
+                "Remove connection",
+                f"Remove {connection_id}? The protected credential will be deleted.",
+            )
             if not confirmed:
                 return
             payload["confirmed"] = True
@@ -293,12 +528,21 @@ class ConnectionControlCenterApp(ControlCenterApp):
         ids = data.get("connection_ids", [])
         affected = f" | ids={', '.join(str(x) for x in ids)}" if isinstance(ids, list) and ids else ""
         if "imported_count" in data:
-            summary = f"{provider}: imported={data.get('imported_count', 0)} | already present={data.get('already_present_count', 0)} | rejected={data.get('rejected_count', 0)} | persistence={data.get('persistence_status', 'UNKNOWN')}{affected}"
+            summary = (
+                f"{provider}: imported={data.get('imported_count', 0)} | "
+                f"already present={data.get('already_present_count', 0)} | "
+                f"rejected={data.get('rejected_count', 0)} | "
+                f"unmatched={data.get('unmatched_count', 0)} | "
+                f"persistence={data.get('persistence_status', 'UNKNOWN')}{affected}"
+            )
             if status == "NO_CHANGES":
-                summary = f"{provider}: NO CHANGES | already present={data.get('already_present_count', 0)}{affected}"
+                summary = f"{provider}: NO CHANGES | already present={data.get('already_present_count', 0)} | unmatched={data.get('unmatched_count', 0)}{affected}"
             self.ttk.Label(parent, text=summary, style="Status.TLabel").pack(side="left", padx=(8, 0))
             palette = self.palette[self.dark]
-            self.status.configure(text=summary, foreground=palette["good"] if status not in {"ERROR", "FAILED"} else palette["bad"])
+            self.status.configure(
+                text=summary,
+                foreground=palette["good"] if status not in {"ERROR", "FAILED", "REJECTED"} else palette["bad"],
+            )
         else:
             self._set_status(ApplicationResult(status or "OK", data), str(data.get("status", "Updated")))
 
