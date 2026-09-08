@@ -14,6 +14,7 @@ from model_benchmark import (
     _contains_secret_like_value,
     _contains_term,
     _hard_failures,
+    _prepare_workspace,
     _semantic_assertions,
     _tool_loop,
     _tool_result,
@@ -270,3 +271,16 @@ def test_secret_like_output_is_detected() -> None:
     assert _contains_secret_like_value("OR-01") is False
     assert _contains_secret_like_value("sk-or-v1-example") is True
     assert _contains_secret_like_value("Authorization: Bearer secret") is True
+
+
+def test_prepare_workspace_initializes_git_before_git_safety_validation(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "sample.txt").write_text("benchmark\n", encoding="utf-8")
+
+    temp, _ = _prepare_workspace(source)
+    try:
+        assert (temp / ".git").is_dir()
+    finally:
+        import shutil
+        shutil.rmtree(temp, ignore_errors=True)
