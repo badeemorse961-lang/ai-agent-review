@@ -31,9 +31,8 @@ class ConnectionControlCenterService(ControlCenterService):
     def __init__(self, *, secret_store: SecretStore | None = None, **kwargs: Any) -> None:
         self.secret_store = secret_store or WindowsProtectedSecretStore()
         self.last_connection_operation: Mapping[str, Any] | None = None
+        kwargs.setdefault("leader_transport", OpenAICompatibleTransport(secret_store=self.secret_store))
         super().__init__(**kwargs)
-        if self.leader_router is not None and (self.leader_transport is None or isinstance(self.leader_transport, OpenAICompatibleTransport)):
-            self.leader_transport = OpenAICompatibleTransport(secret_store=self.secret_store)
 
     def dispatch(self, intent: ApplicationIntent) -> ApplicationResult:
         intent.validate()
@@ -208,12 +207,12 @@ class ConnectionControlCenterApp(ControlCenterApp):
         self.body.rowconfigure(0, weight=1)
         tree = self.ttk.Treeview(
             self.body,
-            columns=("id", "provider", "model", "assignment", "status", "ready", "runtime", "fingerprint", "credential"),
+            columns=("id", "provider", "model", "assignment", "status", "ready", "runtime", "fingerprint", "credential", "reason"),
             show="headings",
             selectmode="browse",
         )
-        labels = {"id": "Connection ID", "provider": "Provider", "model": "Model", "assignment": "Assignment", "status": "Lifecycle", "ready": "Ready State", "runtime": "Runtime / Health", "fingerprint": "Fingerprint", "credential": "Credential"}
-        widths = {"id": 110, "provider": 95, "model": 220, "assignment": 150, "status": 100, "ready": 115, "runtime": 120, "fingerprint": 90, "credential": 90}
+        labels = {"id": "Connection ID", "provider": "Provider", "model": "Model", "assignment": "Assignment", "status": "Lifecycle", "ready": "Ready State", "runtime": "Runtime / Health", "fingerprint": "Fingerprint", "credential": "Credential", "reason": "Reason"}
+        widths = {"id": 110, "provider": 95, "model": 220, "assignment": 145, "status": 90, "ready": 110, "runtime": 115, "fingerprint": 85, "credential": 85, "reason": 260}
         for column in tree["columns"]:
             tree.heading(column, text=labels[column])
             tree.column(column, width=widths[column], anchor="w")
@@ -230,7 +229,8 @@ class ConnectionControlCenterApp(ControlCenterApp):
             raw_status = str(item.get("metadata_status", "UNKNOWN"))
             display_status = "ACTIVE" if raw_status == "VALIDATED" else raw_status
             assignment = ", ".join(item.get("assignments", [])) if isinstance(item.get("assignments"), list) else "unassigned"
-            tree.insert("", "end", values=(item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""), assignment, display_status, ready_label, item.get("runtime_status", "UNOBSERVED"), "present" if item.get("fingerprint_present") else "absent", "present" if item.get("credential_present") else "absent"), tags=(readiness,))
+            reason = str(item.get("ready_reason", ""))
+            tree.insert("", "end", values=(item.get("connection_id", ""), item.get("provider", ""), item.get("model", ""), assignment, display_status, ready_label, item.get("runtime_status", "UNOBSERVED"), "present" if item.get("fingerprint_present") else "absent", "present" if item.get("credential_present") else "absent", reason), tags=(readiness,))
         tree.grid(row=0, column=0, sticky="nsew")
         self.connection_tree = tree
 
