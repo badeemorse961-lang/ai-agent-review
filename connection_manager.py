@@ -149,6 +149,16 @@ def _status(item: dict[str, Any]) -> str:
     return LIFECYCLE_DISABLED
 
 
+def _set_rotation_pending(item: dict[str, Any], previous_status: str) -> None:
+    item["status"] = LIFECYCLE_DISABLED
+    item["active"] = False
+    item["credential_validated"] = False
+    item["validation_required"] = True
+    item.pop("failure_reason", None)
+    if previous_status in {LIFECYCLE_FAILED, LIFECYCLE_INVALID}:
+        item["failure_reason"] = "credential replaced; successful provider validation is required"
+
+
 def import_provider(
     provider: str,
     keys_path: Path,
@@ -170,7 +180,8 @@ def import_provider(
     by_fingerprint = {
         item.get("key_fingerprint"): connection_id
         for connection_id, item in connections.items()
-        if isinstance(item, dict) and item.get("provider") == provider
+        if isinstance(item, dict)
+        and item.get("provider") == provider
         and item.get("status") != LIFECYCLE_REMOVED
         and isinstance(item.get("key_fingerprint"), str)
     }
@@ -202,6 +213,8 @@ def import_provider(
                 "role": None,
                 "status": LIFECYCLE_DISABLED,
                 "active": False,
+                "credential_validated": False,
+                "validation_required": True,
             }
             store.put(connection_id, provider, secret, fp)
             by_fingerprint[fp] = connection_id
@@ -211,20 +224,24 @@ def import_provider(
         if not isinstance(existing, dict) or existing.get("provider") != provider:
             rejected += 1
             return
+        if existing.get("status") == LIFECYCLE_REMOVED:
+            rejected += 1
+            return
         current_fp = existing.get("key_fingerprint")
         if current_fp == fp:
             if store.has(connection_id):
                 already_present += 1
             else:
                 store.put(connection_id, provider, secret, fp)
+                _set_rotation_pending(existing, _status(existing))
+                existing["key_fingerprint"] = fp
                 imported += 1
                 touched.append(connection_id)
             return
         previous_status = _status(existing)
         store.put(connection_id, provider, secret, fp)
         existing["key_fingerprint"] = fp
-        existing["status"] = previous_status
-        existing["active"] = previous_status == LIFECYCLE_ACTIVE
+        _set_rotation_pending(existing, previous_status)
         if current_fp:
             by_fingerprint.pop(current_fp, None)
         by_fingerprint[fp] = connection_id
@@ -246,6 +263,41 @@ def import_provider(
     if persist:
         save_registry(registry)
     return ImportSummary(provider, imported, already_present, rejected, "PERSISTED" if persist else "TEST_ONLY", tuple(touched))
+
+
+def replace_connection_credential(
+    connection_id: str,
+    keys_path: Path,
+    registry: dict,
+    *,
+    secret_store: SecretStore,
+    persist: bool = True,
+) -> ImportSummary:
+    """Replace one credential by an explicitly selected stable connection ID."""
+    item = registry.get("connections", {}).get(connection_id)
+    if not isinstance(item, dict):
+        raise KeyError(f"Connection not found: {connection_id}")
+    provider = item.get("provider")
+    if provider not in PROVIDER_FILES:
+        raise ValueError(f"Unsupported provider: {provider}")
+    if keys_path.suffix.lower() != ".txt":
+        raise ValueError("Replacement source must be a .txt file")
+    labeled, unlabeled = read_secret_source(keys_path, PROVIDER_PREFIXES[provider])
+    if unlabeled or set(labeled) != {connection_id}:
+        raise ValueError(f"Replacement TXT must contain exactly one labeled entry for {connection_id}")
+    secret = labeled[connection_id]
+    fp = fingerprint(secret)
+    if item.get("status") == LIFECYCLE_REMOVED:
+        raise ValueError(f"Connection has been removed: {connection_id}")
+    current_fp = item.get("key_fingerprint")
+    if current_fp == fp and secret_store.has(connection_id):
+        return ImportSummary(provider, 0, 1, 0, "PERSISTED" if persist else "TEST_ONLY", (connection_id,))
+    secret_store.put(connection_id, provider, secret, fp)
+    item["key_fingerprint"] = fp
+    _set_rotation_pending(item, _status(item))
+    if persist:
+        save_registry(registry)
+    return ImportSummary(provider, 1, 0, 0, "PERSISTED" if persist else "TEST_ONLY", (connection_id,))
 
 
 def _assigned_connections(authoritative: dict) -> set[str]:
@@ -281,10 +333,19 @@ def set_connection_status(connection_id: str, status: str, registry: dict | None
         authoritative = json.loads(AUTHORITATIVE_REGISTRY_FILE.read_text(encoding="utf-8"))
         if connection_id not in _assigned_connections(authoritative):
             raise ValueError("Connection must be assigned in config/registry.json before it can be enabled")
+        if item.get("credential_validated") is False or item.get("validation_required") is True:
+            raise ValueError("Successful credential validation is required before activation")
+        if item.get("status") in {LIFECYCLE_FAILED, LIFECYCLE_INVALID, LIFECYCLE_REMOVED}:
+            raise ValueError("Failed or removed connection cannot be enabled without successful validation")
     item["status"] = status
     item["active"] = status == LIFECYCLE_ACTIVE
-    if status in {LIFECYCLE_FAILED, LIFECYCLE_INVALID} and "failure_reason" not in item:
-        item["failure_reason"] = "runtime validation reported the connection as unavailable"
+    if status == LIFECYCLE_DISABLED:
+        item["validation_required"] = False
+    if status in {LIFECYCLE_FAILED, LIFECYCLE_INVALID}:
+        item["credential_validated"] = False
+        item["validation_required"] = True
+        if "failure_reason" not in item:
+            item["failure_reason"] = "runtime validation reported the connection as unavailable"
     if persist:
         save_registry(data)
     return item
@@ -308,6 +369,45 @@ def mark_connection_failed(connection_id: str, *, invalid: bool = False, reason:
     return item
 
 
+def validate_connection(connection_id: str, *, registry: dict | None = None, secret_store: SecretStore | None = None, validator: Any | None = None, persist: bool = True) -> dict[str, Any]:
+    """Provider-validate a credential, then activate only an assigned connection pending validation."""
+    data = registry or load_registry()
+    item = data.get("connections", {}).get(connection_id)
+    if not isinstance(item, dict):
+        raise KeyError(f"Connection not found: {connection_id}")
+    if item.get("status") == LIFECYCLE_REMOVED:
+        raise ValueError(f"Connection has been removed: {connection_id}")
+    store = secret_store or WindowsProtectedSecretStore()
+    provider = item.get("provider")
+    if not isinstance(provider, str):
+        raise ValueError("Connection provider is invalid")
+    secret = store.get(connection_id, provider)
+    expected_fp = item.get("key_fingerprint")
+    actual_fp = fingerprint(secret)
+    if expected_fp != actual_fp:
+        raise ValueError("Protected credential fingerprint does not match connection metadata")
+    check = validator or _default_credential_validator
+    check(provider, connection_id, store)
+    assigned = connection_id in _assigned_connections(json.loads(AUTHORITATIVE_REGISTRY_FILE.read_text(encoding="utf-8")))
+    item["credential_validated"] = True
+    item["validation_required"] = False
+    item.pop("failure_reason", None)
+    if assigned and item.get("status") in {LIFECYCLE_FAILED, LIFECYCLE_INVALID, LIFECYCLE_DISABLED, "VALIDATED"}:
+        item["status"] = LIFECYCLE_ACTIVE
+        item["active"] = True
+    elif not assigned:
+        item["status"] = LIFECYCLE_DISABLED
+        item["active"] = False
+    if persist:
+        save_registry(data)
+    return item
+
+
+def _default_credential_validator(provider: str, connection_id: str, store: SecretStore) -> None:
+    from provider_transport import OpenAICompatibleTransport
+    OpenAICompatibleTransport(secret_store=store).validate_connection(provider=provider, account_id=connection_id)
+
+
 def remove_connection(
     connection_id: str,
     *,
@@ -320,32 +420,15 @@ def remove_connection(
     if not isinstance(item, dict):
         raise KeyError(f"Connection not found: {connection_id}")
     authoritative = json.loads(AUTHORITATIVE_REGISTRY_FILE.read_text(encoding="utf-8"))
-    architecture = authoritative.get("architecture", {})
-    leader = architecture.get("leader", {}) if isinstance(architecture, dict) else {}
-    workers = architecture.get("workers", {}) if isinstance(architecture, dict) else {}
-    if isinstance(leader, dict):
-        for key in ("primary_pool", "failover_pool"):
-            pool = leader.get(key)
-            if isinstance(pool, list) and connection_id in pool:
-                remaining = [value for value in pool if value != connection_id]
-                if not remaining:
-                    raise ValueError("Cannot remove the final connection from a leader pool")
-                leader[key] = remaining
-    roles = workers.get("roles", {}) if isinstance(workers, dict) else {}
-    if isinstance(roles, dict):
-        for role, pool in roles.items():
-            if not isinstance(pool, list) or connection_id not in pool:
-                continue
-            remaining = [value for value in pool if value != connection_id]
-            if role != "standby" and not remaining:
-                raise ValueError(f"Cannot remove the final connection from worker role: {role}")
-            roles[role] = remaining
+    if connection_id in _assigned_connections(authoritative):
+        raise ValueError("Assigned connection cannot be removed from Control Center; update routing through the approved Core configuration authority first")
     store = secret_store or WindowsProtectedSecretStore()
     store.delete(connection_id)
-    data["connections"][connection_id]["status"] = LIFECYCLE_REMOVED
-    data["connections"][connection_id]["active"] = False
+    item["status"] = LIFECYCLE_REMOVED
+    item["active"] = False
+    item["credential_validated"] = False
+    item["validation_required"] = False
     if persist:
-        AUTHORITATIVE_REGISTRY_FILE.write_text(json.dumps(authoritative, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         save_registry(data)
     return True
 
@@ -355,7 +438,12 @@ def connection_is_eligible(connection_id: str, registry: dict | None = None) -> 
     item = data.get("connections", {}).get(connection_id)
     if not isinstance(item, dict):
         return False
-    return _status(item) not in NON_ELIGIBLE
+    return (
+        _status(item) not in NON_ELIGIBLE
+        and item.get("active") is True
+        and item.get("credential_validated", True) is True
+        and item.get("validation_required", False) is False
+    )
 
 
 def get_secret(connection_id: str, provider: str | None = None, *, secret_store: SecretStore | None = None) -> str:
