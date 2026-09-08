@@ -290,13 +290,26 @@ def _prepare_workspace(root: Path) -> tuple[Path, TerminalExecutor]:
         ".pytest_cache",
     )
     shutil.copytree(root, temp, dirs_exist_ok=True, ignore=ignore)
-    (temp / ".git").mkdir()
+    git_dir = temp / ".git"
+    (git_dir / "refs" / "heads").mkdir(parents=True)
+    (git_dir / "refs" / "tags").mkdir(parents=True)
+    (git_dir / "objects" / "info").mkdir(parents=True)
+    (git_dir / "objects" / "pack").mkdir(parents=True)
+    (git_dir / "info").mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+    (git_dir / "config").write_text(
+        "[core]\n"
+        "\trepositoryformatversion = 0\n"
+        "\tfilemode = false\n"
+        "\tbare = false\n"
+        "\tlogallrefupdates = true\n",
+        encoding="utf-8",
+    )
     executor = _executor(temp)
-    for command in (("git", "init"), ("git", "add", "-A")):
-        result = executor.run(command)
-        if result.returncode != 0:
-            shutil.rmtree(temp, ignore_errors=True)
-            raise RuntimeError("Disposable benchmark workspace setup failed")
+    result = executor.run(("git", "add", "-A"))
+    if result.returncode != 0:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise RuntimeError("Disposable benchmark workspace setup failed")
     return temp, executor
 
 
