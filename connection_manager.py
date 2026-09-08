@@ -431,6 +431,69 @@ def get_secret(connection_id: str, provider: str | None = None, *, secret_store:
     return (secret_store or WindowsProtectedSecretStore()).get(connection_id, provider)
 
 
+def import_known_provider_credentials(provider: str, keys_path: Path, registry: dict, prefix: str, allowed_connection_ids: Iterable[str], *, secret_store: SecretStore | None = None, persist: bool = True) -> ImportSummary:
+    """Import only exact matches for existing stable IDs; never allocate new connection IDs."""
+    if provider not in PROVIDER_FILES:
+        raise ValueError(f"Unsupported provider: {provider}")
+    if keys_path.suffix.lower() != ".txt":
+        raise ValueError("Import source must be a .txt file")
+    store = secret_store or WindowsProtectedSecretStore()
+    connections = registry.setdefault("connections", {})
+    allowed = tuple(dict.fromkeys(item for item in allowed_connection_ids if isinstance(item, str) and item.strip()))
+    if not allowed:
+        return ImportSummary(provider, 0, 0, 0, "PERSISTED" if persist else "TEST_ONLY", ())
+
+    labeled, unlabeled = read_secret_source(keys_path, prefix)
+    imported = already_present = rejected = 0
+    touched: list[str] = []
+    seen: set[str] = set()
+    by_fingerprint: dict[str, str] = {}
+
+    for connection_id in allowed:
+        item = connections.get(connection_id)
+        if not isinstance(item, dict) or item.get("provider") != provider or item.get("status") == LIFECYCLE_REMOVED:
+            continue
+        expected = item.get("key_fingerprint")
+        if isinstance(expected, str) and expected:
+            by_fingerprint[expected] = connection_id
+
+    def accept(connection_id: str, secret: str) -> None:
+        nonlocal imported, already_present, rejected
+        if connection_id not in allowed:
+            rejected += 1
+            return
+        item = connections.get(connection_id)
+        if not isinstance(item, dict) or item.get("provider") != provider or item.get("status") == LIFECYCLE_REMOVED:
+            rejected += 1
+            return
+        fp = fingerprint(secret)
+        if fp in seen:
+            already_present += 1
+            return
+        seen.add(fp)
+        expected = item.get("key_fingerprint")
+        if not isinstance(expected, str) or not expected or fp != expected:
+            rejected += 1
+            return
+        if store.has(connection_id):
+            already_present += 1
+            return
+        store.put(connection_id, provider, secret, fp)
+        imported += 1
+        touched.append(connection_id)
+
+    for connection_id, secret in labeled.items():
+        accept(connection_id, secret)
+    for secret in unlabeled:
+        connection_id = by_fingerprint.get(fingerprint(secret))
+        if connection_id is None:
+            rejected += 1
+            continue
+        accept(connection_id, secret)
+
+    return ImportSummary(provider, imported, already_present, rejected, "PERSISTED" if persist else "TEST_ONLY", tuple(touched))
+
+
 def main() -> int:
     registry = load_registry()
     print("Connection metadata registry loaded.")
