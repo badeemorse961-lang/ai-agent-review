@@ -57,6 +57,46 @@ def test_collect_task_exception_preserves_safe_partial_evidence(monkeypatch, tmp
     assert result["forensic_exception"]["traceback"]
 
 
+def test_collect_task_successful_collection_remains_successful(monkeypatch, tmp_path) -> None:
+    task = {
+        "id": "S1",
+        "class": "SIMPLE",
+        "kind": "code",
+        "expected": {},
+        "verification": ["python -m pytest -q test_calculator.py"],
+        "target_paths": ["test_calculator.py"],
+    }
+    candidate = benchmark.Candidate("openrouter", "openai/gpt-5.6-luna", "OR-01")
+    response = {
+        "choices": [{"message": {"content": json.dumps({
+            "summary": "add focused regression test",
+            "rationale": "bounded test-only change",
+            "touched_paths": ["test_calculator.py"],
+            "unified_diff": "--- a/test_calculator.py\n+++ b/test_calculator.py\n@@ -1 +1 @@\n-old\n+new\n",
+        })}}],
+    }
+    tool_trace = benchmark.ToolTrace(False, 0, None, True, True, True, False)
+
+    class FakeExecutor:
+        def run(self, *_args, **_kwargs):
+            raise AssertionError("verification should be stubbed in this unit test")
+
+    monkeypatch.setattr(benchmark, "_prepare_workspace", lambda _root: (tmp_path, FakeExecutor()))
+    monkeypatch.setattr(benchmark, "read_context", lambda *_args, **_kwargs: "safe context")
+    monkeypatch.setattr(benchmark, "call_model", lambda *_args, **_kwargs: (response, 12.5, tool_trace, (10, 8, 0.001)))
+    monkeypatch.setattr(benchmark, "WindowsProtectedSecretStore", lambda: object())
+    monkeypatch.setattr(benchmark, "_apply_patch", lambda *_args, **_kwargs: (True, {"test_calculator.py"}))
+    monkeypatch.setattr(benchmark, "_run_verification", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(benchmark, "_code_assertions", lambda *_args, **_kwargs: (True, []))
+    result = benchmark_forensic.collect_task(tmp_path, task, candidate)
+    assert result["model_response_received"] is True
+    assert result["structured_ok"] is True
+    assert result["changed_paths"] == ["test_calculator.py"]
+    assert result["verification"]["executed"] is False
+    assert "forensic_exception" not in result
+    assert result["forensic_status"] == "UNRESOLVED"
+
+
 def test_verification_evidence_records_original_normalized_exit_and_output() -> None:
     task = {"verification": ["python -m pytest -q test_calculator.py"], "target_paths": ["test_calculator.py"]}
     tracer = benchmark_forensic.TracingExecutor(SimpleNamespace())
