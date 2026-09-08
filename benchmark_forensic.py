@@ -182,6 +182,7 @@ def collect_task(root: Path, task: Mapping[str, Any], candidate: benchmark.Candi
     usage: tuple[int | None, int | None, float | None] = (None, None, None)
     latency_ms: float | None = None
     work_product_ok = False
+    regression_ok = True
     kind = str(task.get("kind", "leader"))
     try:
         phase = "workspace.prepare"
@@ -265,6 +266,7 @@ def collect_task(root: Path, task: Mapping[str, Any], candidate: benchmark.Candi
         hard_failures = benchmark._hard_failures(task, parsed, semantic_failures, tool_trace, structured_ok, work_product_ok, changed)
         verification = verification_evidence(task, tracer) if kind in {"code", "agentic"} else None
         response_received = isinstance(response, Mapping) and bool(response.get("choices"))
+        semantic_pass = not semantic_failures and structured_ok and (regression_ok if kind in {"code", "agentic"} else True)
         return {
             "task_id": str(task["id"]),
             "kind": kind,
@@ -275,9 +277,11 @@ def collect_task(root: Path, task: Mapping[str, Any], candidate: benchmark.Candi
             "changed_paths": sorted(changed),
             "touched_paths": safe(parsed.get("touched_paths")),
             "semantic_failures": semantic_failures,
+            "semantic_pass": semantic_pass,
             "semantic_failure_details": semantic_details(task, parsed, semantic_failures),
             "hard_failures": hard_failures,
             "verification": verification,
+            "regression_ok": regression_ok if kind in {"code", "agentic"} else None,
             "tool_trace": {
                 "requested": tool_trace.requested,
                 "tool_calls_seen": tool_trace.tool_calls_seen,
@@ -321,9 +325,11 @@ def collect_task(root: Path, task: Mapping[str, Any], candidate: benchmark.Candi
             "changed_paths": sorted(changed),
             "touched_paths": safe(parsed.get("touched_paths")) if parsed else None,
             "semantic_failures": semantic_failures,
+            "semantic_pass": False,
             "semantic_failure_details": semantic_details(task, parsed, semantic_failures),
             "hard_failures": [],
             "verification": verification,
+            "regression_ok": regression_ok if kind in {"code", "agentic"} else None,
             "tool_trace": partial_tool_trace,
             "expected_assertions": safe(task.get("expected", {})),
             "error_type": phase_evidence["exception_type"],
