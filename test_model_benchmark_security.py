@@ -26,16 +26,10 @@ def test_prepare_workspace_excludes_source_git_and_local_results(tmp_path: Path,
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config").write_text("source-config", encoding="utf-8")
     (tmp_path / "benchmark_results.local.json").write_text("local", encoding="utf-8")
-    calls: list[tuple[str, ...]] = []
-
-    class FakeResult:
-        returncode = 0
-        timed_out = False
 
     class FakeExecutor:
         def run(self, command, **kwargs):
-            calls.append(tuple(command))
-            return FakeResult()
+            raise AssertionError(f"prepare_workspace must not invoke forbidden Git mutation: {command!r}")
 
     monkeypatch.setattr("model_benchmark._executor", lambda root: FakeExecutor())
     disposable, _ = _prepare_workspace(tmp_path)
@@ -45,7 +39,6 @@ def test_prepare_workspace_excludes_source_git_and_local_results(tmp_path: Path,
         assert (disposable / ".git").is_dir()
         assert (disposable / ".git" / "config").read_text(encoding="utf-8") != "source-config"
         assert (disposable / "benchmark_results.local.json").exists() is False
-        assert calls == [("git", "add", "-A")]
     finally:
         import shutil
         shutil.rmtree(disposable, ignore_errors=True)
