@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-"""Real Windows recovery acceptance for stable Leader connection rotation.
-
-The test never mutates the repository's real config/registry.json, connections.json,
-or production protected-secret store. It creates an isolated temporary sandbox, uses
-Windows DPAPI for the sandbox credential store, and validates replacement credentials
-against the real provider APIs.
-"""
+"""Real Windows recovery acceptance for stable Leader connection rotation."""
 
 import argparse
 import json
 import os
-import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from application_boundary import ApplicationIntent
 from connection_control_center import ConnectionControlCenterService
 from connection_manager import (
     LIFECYCLE_ACTIVE,
@@ -27,7 +21,6 @@ from connection_manager import (
     fingerprint,
     import_provider,
     remove_connection,
-    replace_connection_credential,
     validate_connection,
 )
 from leader_router import LeaderRouter, LeaderUnavailable
@@ -101,38 +94,36 @@ def run(repo_root: Path, replacement_txt: Path) -> None:
              patch("leader_router.REGISTRY_FILE", config_path):
             store = WindowsProtectedSecretStore(path=store_path)
             for connection_id in leader_ids:
-                store.put(connection_id, "openrouter", f"acceptance-old-{connection_id}", fingerprint(f"acceptance-old-{connection_id}"))
+                old = f"acceptance-old-{connection_id}"
+                store.put(connection_id, "openrouter", old, fingerprint(old))
 
             # A: all existing leaders are failed; routing is fail-closed.
             router_down = LeaderRouter(health_file=health_path, state_file=state_path, registry_file=config_path)
             assert router_down.active_pool("ULTRA") == []
-            with __import__("pytest").raises(LeaderUnavailable):
+            import pytest
+            with pytest.raises(LeaderUnavailable):
                 router_down.acquire("ACCEPT-LEADER-DOWN")
 
-            # B: rotate every existing stable ID from a named TXT source.
+            # B: one additive named import rotates every existing stable Leader ID.
             metadata = _load_json(metadata_path)
             before_ids = list(metadata["connections"])
-            before_assignments = (
-                list(config_source["architecture"]["leader"]["primary_pool"]),
-                list(config_source["architecture"]["leader"]["failover_pool"]),
-            )
-            for connection_id in leader_ids:
-                replace_connection_credential(connection_id, replacement_txt, metadata, secret_store=store, persist=False)
-            _dump(metadata_path, metadata)
-
+            before_primary = list(config_source["architecture"]["leader"]["primary_pool"])
+            before_failover = list(config_source["architecture"]["leader"]["failover_pool"])
+            summary = import_provider("openrouter", replacement_txt, metadata, "OR", secret_store=store, persist=True)
+            assert summary.imported_count == len(leader_ids)
+            assert summary.connection_ids == tuple(leader_ids)
             assert list(metadata["connections"]) == before_ids
-            assert (
-                config_source["architecture"]["leader"]["primary_pool"],
-                config_source["architecture"]["leader"]["failover_pool"],
-            ) == before_assignments
+            assert list(config_source["architecture"]["leader"]["primary_pool"]) == before_primary
+            assert list(config_source["architecture"]["leader"]["failover_pool"]) == before_failover
 
-            # C: credentials exist, but rotation is not eligible before validation.
+            # C: rotated credentials are present but not eligible before validation.
             for connection_id in leader_ids:
                 item = metadata["connections"][connection_id]
                 assert item["status"] == LIFECYCLE_DISABLED
                 assert item["active"] is False
                 assert item["validation_required"] is True
                 assert store.has(connection_id)
+                assert not connection_is_eligible(connection_id, metadata)
 
             # D: real provider validation promotes assigned stable IDs back to ACTIVE.
             for connection_id in leader_ids:
@@ -156,25 +147,24 @@ def run(repo_root: Path, replacement_txt: Path) -> None:
             assert lease.account_id in leader_ids
             recovered_router.release("ACCEPT-RECOVERED")
 
-            # F: protected credential persistence across store/service reconstruction.
+            # F: Protected Store persists across reconstruction and service restart.
             restarted_store = WindowsProtectedSecretStore(path=store_path)
             for connection_id in leader_ids:
                 assert restarted_store.has(connection_id)
-
             service = ConnectionControlCenterService(secret_store=restarted_store, autowire_core=False)
-            view = service.dispatch(__import__("application_boundary").ApplicationIntent("refresh_connections", {}))
+            view = service.dispatch(ApplicationIntent("refresh_connections", {}))
             returned = {item["connection_id"]: item for item in view.data["connections"]}
             for connection_id in leader_ids:
                 assert returned[connection_id]["credential_present"] is True
                 assert returned[connection_id]["ready_state"] == "READY"
 
-            # G: re-import same replacement TXT; no duplicates or identity changes.
+            # G: re-import same replacement TXT is idempotent; no duplicates.
             second = import_provider("openrouter", replacement_txt, metadata, "OR", secret_store=restarted_store, persist=False)
             assert second.imported_count == 0
             assert second.already_present_count == len(leader_ids)
             assert set(metadata["connections"]) == set(before_ids)
 
-            # H: add one genuinely new credential; it is stored only and remains unassigned.
+            # H: genuinely new credential remains stored-only and does not enter routing.
             new_txt = sandbox / "new.txt"
             new_txt.write_text("new-recovery-key\n", encoding="utf-8")
             added = import_provider("openrouter", new_txt, metadata, "OR", secret_store=restarted_store, persist=False)
@@ -186,19 +176,21 @@ def run(repo_root: Path, replacement_txt: Path) -> None:
             assert new_id not in config_source["architecture"]["leader"]["primary_pool"]
             assert new_id not in config_source["architecture"]["leader"]["failover_pool"]
 
-            # I: disable/enable preserves the protected credential.
+            # I: Disable preserves credential; valid assigned connection can be re-enabled.
             disable_connection(leader_ids[0], metadata, persist=False)
             assert metadata["connections"][leader_ids[0]]["status"] == LIFECYCLE_DISABLED
             assert restarted_store.has(leader_ids[0])
             enable_connection(leader_ids[0], metadata, persist=False)
             assert metadata["connections"][leader_ids[0]]["status"] == LIFECYCLE_ACTIVE
 
-            # J: assigned removal is blocked and cannot rewrite authoritative config.
-            with __import__("pytest").raises(ValueError, match="approved Core configuration authority"):
+            # J: assigned removal is blocked and cannot rewrite routing authority.
+            with pytest.raises(ValueError, match="approved Core configuration authority"):
                 remove_connection(leader_ids[0], registry=metadata, secret_store=restarted_store, persist=False)
             assert restarted_store.has(leader_ids[0])
+            assert config_source["architecture"]["leader"]["primary_pool"] == before_primary
+            assert config_source["architecture"]["leader"]["failover_pool"] == before_failover
 
-            # K: explicit removal of the genuinely new unassigned connection.
+            # K: only the genuinely new unassigned connection can be explicitly removed here.
             remove_connection(new_id, registry=metadata, secret_store=restarted_store, persist=False)
             assert metadata["connections"][new_id]["status"] == "REMOVED"
             assert not restarted_store.has(new_id)
