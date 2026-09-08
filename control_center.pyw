@@ -4,6 +4,7 @@ from control_center_safety_view import install_real_safety_view
 from control_center_window_runtime import install_responsive_window
 from control_center_sidebar_runtime import install_scrollable_sidebar
 from control_center_visual_runtime import install_visual_runtime
+from control_center_groq_import_runtime import install_full_groq_import
 
 
 install_real_safety_view(ConnectionControlCenterApp)
@@ -11,4 +12,5 @@ install_bilingual_support(ConnectionControlCenterApp)
 install_responsive_window(ConnectionControlCenterApp)
 install_scrollable_sidebar(ConnectionControlCenterApp)
 install_visual_runtime(ConnectionControlCenterApp)
+install_full_groq_import(ConnectionControlCenterApp)
 raise SystemExit(main())
