@@ -99,7 +99,7 @@ def test_inventory_uses_registry_roles_and_configured_models(tmp_path: Path) -> 
     assert rows["OR-01"].capability_roles == ("Leader:Primary", "Leader:Failover")
 
 
-def test_candidate_matrix_separates_model_and_connection_identity(tmp_path: Path) -> None:
+def test_candidate_matrix_uses_only_registry_configured_shortlisted_models(tmp_path: Path) -> None:
     registry_path, metadata_path, secrets = _write_fixture(tmp_path)
     inventory = discover_connection_inventory(
         authoritative_registry_path=registry_path,
@@ -107,9 +107,9 @@ def test_candidate_matrix_separates_model_and_connection_identity(tmp_path: Path
         secret_store=FakeSecretStore(secrets),
     )
     groq = build_phase_a_candidates(inventory, providers=("groq",))
-    assert {item.model for item in groq} == {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
+    assert {item.model for item in groq} == {"openai/gpt-oss-120b"}
     assert {item.connection_id for item in groq} == {"GROQ-01", "GROQ-02"}
-    assert len(groq) == 4
+    assert len(groq) == 2
 
 
 def test_model_aggregate_macro_averages_connections() -> None:
