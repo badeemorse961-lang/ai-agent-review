@@ -221,22 +221,27 @@ def build_phase_a_candidates(
     *,
     providers: Sequence[str] = ("openrouter", "groq"),
 ) -> list[Candidate]:
-    """Create execution candidates from eligible connections and the existing model shortlist.
+    """Create execution candidates from READY connections and their registry models.
 
-    Model capability is deliberately independent from connection identity. Each eligible
-    connection is an execution/account instance for every shortlisted model of its provider.
-    The benchmark model IDs and scoring logic remain unchanged.
+    Model capability is deliberately independent from connection identity. A connection
+    becomes a candidate only for models that are both configured for that connection by
+    the authoritative registry and present in the existing benchmark shortlist. This
+    prevents the benchmark shortlist from implicitly assigning unconfigured models to a
+    connection.
     """
     candidates: list[Candidate] = []
     allowed = {provider.lower() for provider in providers}
-    model_sets = {
-        "openrouter": OPENROUTER_CANDIDATES,
-        "groq": GROQ_CANDIDATES,
+    benchmark_model_sets = {
+        "openrouter": set(OPENROUTER_CANDIDATES),
+        "groq": set(GROQ_CANDIDATES),
     }
     for item in inventory:
         if not item.ready or item.provider not in allowed:
             continue
-        for model in model_sets.get(item.provider, ()):
+        benchmark_models = benchmark_model_sets.get(item.provider, set())
+        for model in item.configured_models:
+            if model not in benchmark_models:
+                continue
             candidates.append(Candidate(item.provider, model, item.connection_id))
     return candidates
 
