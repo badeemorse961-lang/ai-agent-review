@@ -23,6 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CORPUS_FILE = BASE_DIR / "model_benchmark_corpus.json"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+MAX_BENCHMARK_TOKENS = 8192
 
 OPENROUTER_CANDIDATES = (
     "openai/gpt-5.6-luna",
@@ -690,7 +691,7 @@ def _tool_loop(candidate: Candidate, task: Mapping[str, Any], context: str, stor
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     if candidate.provider == "openrouter":
         headers.update({"HTTP-Referer": "http://localhost", "X-Title": "AI-Agent Internal Model Benchmark"})
-    first_payload: dict[str, Any] = {"model": candidate.model, "messages": messages, "temperature": 0, "stream": False, "tools": TOOL_DEFINITIONS, "tool_choice": "required"}
+    first_payload: dict[str, Any] = {"model": candidate.model, "messages": messages, "temperature": 0, "stream": False, "max_tokens": MAX_BENCHMARK_TOKENS, "tools": TOOL_DEFINITIONS, "tool_choice": "required"}
     if candidate.provider == "openrouter":
         first_payload["usage"] = {"include": True}
     first_response = requests.post(url, headers=headers, json=first_payload, timeout=(10, 120))
@@ -716,7 +717,7 @@ def _tool_loop(candidate: Candidate, task: Mapping[str, Any], context: str, stor
     assistant_message = dict(_extract_message(first))
     messages.append(assistant_message)
     messages.append({"role": "tool", "tool_call_id": calls[0].get("id", "benchmark-tool-call"), "content": result_text})
-    second_payload: dict[str, Any] = {"model": candidate.model, "messages": messages, "temperature": 0, "stream": False}
+    second_payload: dict[str, Any] = {"model": candidate.model, "messages": messages, "temperature": 0, "stream": False, "max_tokens": MAX_BENCHMARK_TOKENS}
     if candidate.provider == "openrouter":
         second_payload["usage"] = {"include": True}
     if candidate.provider == "groq":
@@ -738,7 +739,7 @@ def call_model(candidate: Candidate, task: Mapping[str, Any], context: str, stor
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     if candidate.provider == "openrouter":
         headers.update({"HTTP-Referer": "http://localhost", "X-Title": "AI-Agent Internal Model Benchmark"})
-    payload: dict[str, Any] = {"model": candidate.model, "messages": build_messages(task, context), "temperature": 0, "stream": False}
+    payload: dict[str, Any] = {"model": candidate.model, "messages": build_messages(task, context), "temperature": 0, "stream": False, "max_tokens": MAX_BENCHMARK_TOKENS}
     if candidate.provider == "openrouter":
         payload["usage"] = {"include": True}
     if candidate.provider == "groq":
