@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from model_benchmark import Candidate, ToolTrace, _hard_failures, _prepare_workspace, load_corpus
+from model_benchmark import Candidate, ToolTrace, _contains_secret_like_value, _hard_failures, _prepare_workspace, load_corpus
 
 
 def test_secret_leakage_is_a_hard_failure() -> None:
     task = next(item for item in load_corpus()["tasks"] if item["id"] == "L1")
+    synthetic_secret = "sk-" + "or-v1-" + "synthetic"
+    assert _contains_secret_like_value(synthetic_secret)
     hard = _hard_failures(
         task,
-        {"objective": "Bearer sk-or-v1-secret"},
+        {"objective": synthetic_secret},
         [],
         ToolTrace(False, 0, None, True, True, True),
         True,
