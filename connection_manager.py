@@ -159,15 +159,7 @@ def _set_rotation_pending(item: dict[str, Any], previous_status: str) -> None:
         item["failure_reason"] = "credential replaced; successful provider validation is required"
 
 
-def import_provider(
-    provider: str,
-    keys_path: Path,
-    registry: dict,
-    prefix: str,
-    *,
-    secret_store: SecretStore | None = None,
-    persist: bool = True,
-) -> ImportSummary:
+def import_provider(provider: str, keys_path: Path, registry: dict, prefix: str, *, secret_store: SecretStore | None = None, persist: bool = True) -> ImportSummary:
     """Additive import into protected storage; TXT omission never removes a prior connection."""
     if provider not in PROVIDER_FILES:
         raise ValueError(f"Unsupported provider: {provider}")
@@ -180,15 +172,11 @@ def import_provider(
     by_fingerprint = {
         item.get("key_fingerprint"): connection_id
         for connection_id, item in connections.items()
-        if isinstance(item, dict)
-        and item.get("provider") == provider
+        if isinstance(item, dict) and item.get("provider") == provider
         and item.get("status") != LIFECYCLE_REMOVED
         and isinstance(item.get("key_fingerprint"), str)
     }
-    used_ids = {
-        connection_id for connection_id, item in connections.items()
-        if isinstance(item, dict) and item.get("provider") == provider
-    }
+    used_ids = {connection_id for connection_id, item in connections.items() if isinstance(item, dict) and item.get("provider") == provider}
     imported = already_present = rejected = 0
     touched: list[str] = []
     seen: set[str] = set()
@@ -265,14 +253,7 @@ def import_provider(
     return ImportSummary(provider, imported, already_present, rejected, "PERSISTED" if persist else "TEST_ONLY", tuple(touched))
 
 
-def replace_connection_credential(
-    connection_id: str,
-    keys_path: Path,
-    registry: dict,
-    *,
-    secret_store: SecretStore,
-    persist: bool = True,
-) -> ImportSummary:
+def replace_connection_credential(connection_id: str, keys_path: Path, registry: dict, *, secret_store: SecretStore, persist: bool = True) -> ImportSummary:
     """Replace one credential by an explicitly selected stable connection ID."""
     item = registry.get("connections", {}).get(connection_id)
     if not isinstance(item, dict):
@@ -285,10 +266,15 @@ def replace_connection_credential(
     labeled, unlabeled = read_secret_source(keys_path, PROVIDER_PREFIXES[provider])
     if unlabeled or set(labeled) != {connection_id}:
         raise ValueError(f"Replacement TXT must contain exactly one labeled entry for {connection_id}")
-    secret = labeled[connection_id]
-    fp = fingerprint(secret)
     if item.get("status") == LIFECYCLE_REMOVED:
         raise ValueError(f"Connection has been removed: {connection_id}")
+    secret = labeled[connection_id]
+    fp = fingerprint(secret)
+    for other_id, other in registry.get("connections", {}).items():
+        if other_id == connection_id or not isinstance(other, dict):
+            continue
+        if other.get("provider") == provider and other.get("status") != LIFECYCLE_REMOVED and other.get("key_fingerprint") == fp:
+            raise ValueError(f"Credential fingerprint already belongs to {other_id}")
     current_fp = item.get("key_fingerprint")
     if current_fp == fp and secret_store.has(connection_id):
         return ImportSummary(provider, 0, 1, 0, "PERSISTED" if persist else "TEST_ONLY", (connection_id,))
@@ -370,7 +356,7 @@ def mark_connection_failed(connection_id: str, *, invalid: bool = False, reason:
 
 
 def validate_connection(connection_id: str, *, registry: dict | None = None, secret_store: SecretStore | None = None, validator: Any | None = None, persist: bool = True) -> dict[str, Any]:
-    """Provider-validate a credential, then activate only an assigned connection pending validation."""
+    """Provider-validate a credential, then activate an assigned connection only after success."""
     data = registry or load_registry()
     item = data.get("connections", {}).get(connection_id)
     if not isinstance(item, dict):
@@ -388,7 +374,8 @@ def validate_connection(connection_id: str, *, registry: dict | None = None, sec
         raise ValueError("Protected credential fingerprint does not match connection metadata")
     check = validator or _default_credential_validator
     check(provider, connection_id, store)
-    assigned = connection_id in _assigned_connections(json.loads(AUTHORITATIVE_REGISTRY_FILE.read_text(encoding="utf-8")))
+    authoritative = json.loads(AUTHORITATIVE_REGISTRY_FILE.read_text(encoding="utf-8"))
+    assigned = connection_id in _assigned_connections(authoritative)
     item["credential_validated"] = True
     item["validation_required"] = False
     item.pop("failure_reason", None)
@@ -408,13 +395,7 @@ def _default_credential_validator(provider: str, connection_id: str, store: Secr
     OpenAICompatibleTransport(secret_store=store).validate_connection(provider=provider, account_id=connection_id)
 
 
-def remove_connection(
-    connection_id: str,
-    *,
-    registry: dict | None = None,
-    secret_store: SecretStore | None = None,
-    persist: bool = True,
-) -> bool:
+def remove_connection(connection_id: str, *, registry: dict | None = None, secret_store: SecretStore | None = None, persist: bool = True) -> bool:
     data = registry or load_registry()
     item = data.get("connections", {}).get(connection_id)
     if not isinstance(item, dict):
