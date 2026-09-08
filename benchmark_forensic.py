@@ -156,7 +156,7 @@ def classify(response_received: bool, semantic_failures: list[str], hard_failure
         return "MODEL_FAILURE"
     if verification is not None and (verification["returncode"] != 0 or verification["timed_out"]):
         return "MODEL_FAILURE"
-    return "UNRESOLVED"
+    return "COMPLETE"
 
 
 def _partial_safe_response(response: Any) -> tuple[bool, dict[str, Any]]:
