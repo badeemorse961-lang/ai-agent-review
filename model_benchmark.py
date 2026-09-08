@@ -305,12 +305,7 @@ def _prepare_workspace(root: Path) -> tuple[Path, TerminalExecutor]:
         "\tlogallrefupdates = true\n",
         encoding="utf-8",
     )
-    executor = _executor(temp)
-    result = executor.run(("git", "add", "-A"))
-    if result.returncode != 0:
-        shutil.rmtree(temp, ignore_errors=True)
-        raise RuntimeError("Disposable benchmark workspace setup failed")
-    return temp, executor
+    return temp, _executor(temp)
 
 
 def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bool:
@@ -330,25 +325,128 @@ def _run_verification(executor: TerminalExecutor, task: Mapping[str, Any]) -> bo
     return True
 
 
+def _patch_path(value: str) -> str:
+    value = value.strip()
+    if value == "/dev/null":
+        return value
+    if value.startswith("a/") or value.startswith("b/"):
+        value = value[2:]
+    return _normalise_path(value)
+
+
+def _resolve_patch_path(root: Path, value: str) -> Path:
+    relative = _patch_path(value)
+    if relative == "/dev/null":
+        raise ValueError("/dev/null is not a filesystem path")
+    candidate = (root.resolve() / relative).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError("Benchmark patch path escapes repository root") from exc
+    return candidate
+
+
+def _parse_unified_patch(patch_text: str) -> list[tuple[str, str, list[tuple[int, int, list[str]]]]]:
+    lines = patch_text.splitlines(keepends=True)
+    files: list[tuple[str, str, list[tuple[int, int, list[str]]]]] = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].startswith("--- "):
+            index += 1
+            continue
+        if index + 1 >= len(lines) or not lines[index + 1].startswith("+++ "):
+            raise ValueError("Malformed unified diff file header")
+        old_path = lines[index][4:].rstrip("\r\n").split("\t", 1)[0]
+        new_path = lines[index + 1][4:].rstrip("\r\n").split("\t", 1)[0]
+        index += 2
+        hunks: list[tuple[int, int, list[str]]] = []
+        while index < len(lines) and not lines[index].startswith("--- "):
+            header = lines[index]
+            if not header.startswith("@@ "):
+                index += 1
+                continue
+            match = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", header)
+            if not match:
+                raise ValueError("Malformed unified diff hunk header")
+            old_start = int(match.group(1))
+            old_count = int(match.group(2) or "1")
+            index += 1
+            hunk_lines: list[str] = []
+            while index < len(lines) and not lines[index].startswith("@@ ") and not lines[index].startswith("--- "):
+                line = lines[index]
+                if line.startswith((" ", "+", "-")):
+                    hunk_lines.append(line)
+                elif line.startswith("\\ No newline at end of file"):
+                    pass
+                else:
+                    raise ValueError("Malformed unified diff hunk line")
+                index += 1
+            hunks.append((old_start, old_count, hunk_lines))
+        if not hunks:
+            raise ValueError("Unified diff file contains no hunks")
+        files.append((old_path, new_path, hunks))
+    if not files:
+        raise ValueError("Unified diff contains no file changes")
+    return files
+
+
 def _apply_patch(executor: TerminalExecutor, root: Path, patch_text: str) -> tuple[bool, set[str]]:
+    del executor
     if not patch_text.strip():
         return False, set()
-    patch_file = root / ".benchmark.patch"
-    patch_file.write_text(patch_text, encoding="utf-8")
     try:
-        check = executor.run(("git", "apply", "--check", str(patch_file)))
-        if check.returncode != 0:
-            return False, set()
-        applied = executor.run(("git", "apply", str(patch_file)))
-        if applied.returncode != 0:
-            return False, set()
-        changed_result = executor.run(("git", "diff", "--name-only"))
-        if changed_result.returncode != 0:
-            return False, set()
-        changed = {_normalise_path(line) for line in changed_result.stdout.splitlines() if line.strip()}
+        file_patches = _parse_unified_patch(patch_text)
+        planned: list[tuple[Path | None, Path | None, str]] = []
+        changed: set[str] = set()
+        root_resolved = root.resolve()
+        for old_header, new_header, hunks in file_patches:
+            old_path = None if _patch_path(old_header) == "/dev/null" else _resolve_patch_path(root, old_header)
+            new_path = None if _patch_path(new_header) == "/dev/null" else _resolve_patch_path(root, new_header)
+            if old_path is None and new_path is None:
+                raise ValueError("Patch cannot delete and create /dev/null")
+            original = [] if old_path is None else old_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            cursor = 0
+            updated: list[str] = []
+            for old_start, old_count, hunk_lines in hunks:
+                target = max(0, old_start - 1)
+                if target < cursor or target > len(original):
+                    raise ValueError("Unified diff hunk location is outside the target file")
+                updated.extend(original[cursor:target])
+                consumed = 0
+                for line in hunk_lines:
+                    marker = line[:1]
+                    payload = line[1:]
+                    if marker == " ":
+                        if cursor >= len(original) or original[cursor] != payload:
+                            raise ValueError("Unified diff context does not match target file")
+                        updated.append(original[cursor])
+                        cursor += 1
+                        consumed += 1
+                    elif marker == "-":
+                        if cursor >= len(original) or original[cursor] != payload:
+                            raise ValueError("Unified diff removal does not match target file")
+                        cursor += 1
+                        consumed += 1
+                    elif marker == "+":
+                        updated.append(payload)
+                if consumed != old_count:
+                    raise ValueError("Unified diff hunk old-line count mismatch")
+            updated.extend(original[cursor:])
+            destination = new_path or old_path
+            assert destination is not None
+            relative = destination.relative_to(root_resolved).as_posix()
+            changed.add(relative)
+            planned.append((old_path, new_path, "".join(updated)))
+        for old_path, new_path, content in planned:
+            if new_path is None:
+                assert old_path is not None
+                old_path.unlink()
+            else:
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                new_path.write_text(content, encoding="utf-8")
         return True, changed
-    finally:
-        patch_file.unlink(missing_ok=True)
+    except (OSError, UnicodeError, ValueError):
+        return False, set()
 
 
 def _work_product_compatible(task: Mapping[str, Any], parsed: Mapping[str, Any]) -> bool:
