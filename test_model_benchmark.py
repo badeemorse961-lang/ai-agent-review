@@ -1,12 +1,19 @@
-from pathlib import Path
-
-from model_benchmark import Candidate, SCORE_WEIGHTS, _contains_secret_like_value, _json_object, aggregate, load_corpus
+from model_benchmark import (
+    Candidate,
+    RunResult,
+    SCORE_WEIGHTS,
+    _contains_secret_like_value,
+    _json_object,
+    aggregate,
+    load_corpus,
+)
 
 
 def test_corpus_has_expected_classes_and_no_production_mutation() -> None:
     corpus = load_corpus()
     classes = {task["class"] for task in corpus["tasks"]}
     assert {"SIMPLE", "MEDIUM", "COMPLEX", "LEADER"}.issubset(classes)
+    assert any(task["kind"] == "tool" for task in corpus["tasks"])
     assert corpus["safety"]["production_registry_mutation"] is False
     assert corpus["safety"]["routing_policy_mutation"] is False
     assert corpus["safety"]["raw_credentials_allowed"] is False
@@ -39,11 +46,27 @@ def test_score_weights_sum_to_100() -> None:
 
 
 def test_aggregate_builds_reliability_score() -> None:
-    from model_benchmark import RunResult
-
     candidate = Candidate("groq", "openai/gpt-oss-120b", "GROQ-01")
     dimensions = {key: 0.0 for key in SCORE_WEIGHTS}
-    result = RunResult(candidate, "S1", 1, True, 95.0, dimensions, 100.0, 10, 20, 0.01, True, True, True, None)
-    data = aggregate([result])[candidate.model]
+    result = RunResult(
+        candidate,
+        "S1",
+        "SIMPLE",
+        1,
+        True,
+        95.0,
+        dimensions,
+        100.0,
+        10,
+        20,
+        0.01,
+        True,
+        True,
+        True,
+        True,
+        None,
+    )
+    data = aggregate([result])["openai/gpt-oss-120b::SIMPLE"]
     assert data["success_rate"] == 1.0
     assert data["dimensions"]["reliability"] == 5.0
+    assert data["work_product_compatibility_rate"] == 1.0
