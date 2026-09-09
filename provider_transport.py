@@ -8,8 +8,9 @@ from typing import Any, Mapping
 import requests
 
 from central_leader import LeaderRequest
-from connection_manager import read_secret_source, resolve_secret_file
+from connection_manager import get_secret, read_secret_source, resolve_secret_file
 from http_forensics import build_http_forensic_evidence, classify_http_status, sanitize_error_payload
+from protected_secret_store import SecretStore
 
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -43,17 +44,17 @@ class ChatTransportConfig:
         if self.connect_timeout <= 0 or self.read_timeout <= 0:
             raise ValueError("Provider transport timeouts must be positive")
         if self.max_tokens < 1:
-            raise ValueError("max_tokens must be positive")
+            raise ValueError("Provider transport max_tokens must be positive")
         if not 0 <= self.temperature <= 2:
-            raise ValueError("temperature must be between 0 and 2")
+            raise ValueError("Provider transport temperature must be between 0 and 2")
 
 
 class OpenAICompatibleTransport:
-    """Provider transport for the existing OpenAI-compatible provider APIs.
+    """Existing OpenAI-compatible transport with stable-ID credential lookup.
 
-    Routing identity comes from the authoritative lease passed by CentralLeader.
-    Production secret lookup is keyed by the stable connection ID; positional
-    secret-list mapping is intentionally unsupported here.
+    The normal #53 path resolves credentials from the external secret source.
+    An optional protected-store injection is retained only for compatibility with
+    existing application tests/callers; it does not add another sync or authority.
     """
 
     def __init__(
@@ -61,10 +62,12 @@ class OpenAICompatibleTransport:
         *,
         config: ChatTransportConfig | None = None,
         session: requests.Session | None = None,
+        secret_store: SecretStore | None = None,
     ) -> None:
         self.config = config or ChatTransportConfig()
         self.config.validate()
         self.session = session or requests.Session()
+        self.secret_store = secret_store
 
     def __call__(self, request: LeaderRequest) -> Mapping[str, Any]:
         return self.send(
@@ -266,8 +269,14 @@ class OpenAICompatibleTransport:
             },
         }
 
-    @staticmethod
-    def _resolve_key(provider: str, prefix: str, account_id: str) -> str:
+    def _resolve_key(self, provider: str, prefix: str, account_id: str) -> str:
+        if self.secret_store is not None:
+            try:
+                return get_secret(account_id, provider, secret_store=self.secret_store)
+            except Exception as exc:
+                raise ProviderTransportError(
+                    f"No protected credential is available for {provider}/{account_id}"
+                ) from exc
         path = resolve_secret_file(provider)
         labeled, _ = read_secret_source(path, prefix)
         if account_id not in labeled:
