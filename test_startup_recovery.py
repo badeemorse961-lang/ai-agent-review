@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from durable_execution_evidence import EvidenceLayer
-from durable_execution_state import DurableExecutionState, KeyError as _KeyError
+from durable_execution_state import DurableExecutionState, LineageError, StateConflictError
 from startup_recovery import StartupRecovery, StartupRecoverySafetyStop
 from test_orchestration_durable import build_durable_orchestrator
 from worker_lease_recovery import WorkerLeaseRecovery
