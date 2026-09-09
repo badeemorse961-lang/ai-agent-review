@@ -1,0 +1,73 @@
+name: M3.1 Finalize
+on:
+  push:
+    branches:
+      - milestone/persistent-project-run-recovery
+permissions:
+  contents: write
+jobs:
+  finalize:
+    if: github.actor == 'badeemorse961-lang'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Apply M3.1 and run gates
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess, sys, textwrap
+
+          helper = Path('.github/workflows/_m31_apply4.yml').read_text(encoding='utf-8')
+          start = helper.index('      - name: Apply M3.1 patch and full local gates')
+          body = helper.index('        run: |\n', start) + len('        run: |\n')
+          end = helper.index('      - name: Commit M3.1', body)
+          script = textwrap.dedent(helper[body:end])
+          cut = script.index('          # Targeted M3.1 tests:') if '          # Targeted M3.1 tests:' in script else script.index('          test_file =')
+          preamble = script[:cut]
+          exec(preamble, globals(), globals())
+
+          # Enforce the final M3.1 evidence validation without introducing a second contract implementation.
+          evidence_path = Path('durable_execution_evidence.py')
+          evidence_text = evidence_path.read_text(encoding='utf-8')
+          if 'canonical_workspace_scope' not in evidence_text:
+              evidence_text = evidence_text.replace('    WORKSPACE_SCOPE_VERSION,\n', '    WORKSPACE_SCOPE_VERSION,\n    canonical_workspace_scope,\n', 1)
+          marker = '        if evidence.observed_state not in {"PRESENT_COMPLETE", "PRESENT_PARTIAL", "ABSENT", "MISMATCH", "AMBIGUOUS"}:\n            raise ValueError("Unsupported workspace observed_state")\n'
+          if marker not in evidence_text:
+              raise SystemExit('EvidenceLayer validation marker not found')
+          addition = marker + '        if (evidence.workspace_scope_version is None) != (evidence.workspace_scope_entries is None):\n            raise ValueError("Workspace scope metadata must be provided together")\n        if evidence.workspace_scope_version is not None and evidence.workspace_scope_version != WORKSPACE_SCOPE_VERSION:\n            raise ValueError("Unsupported workspace scope version")\n'
+          if 'Workspace scope metadata must be provided together' not in evidence_text:
+              evidence_text = evidence_text.replace(marker, addition, 1)
+          evidence_path.write_text(evidence_text, encoding='utf-8')
+
+          # Add the M3.1 tests explicitly after the source patch.
+          tests = Path('test_m31_workspace_identity.py')
+          tests.write_text('''from pathlib import Path\nimport json\nimport pytest\n\nfrom durable_execution_evidence import EvidenceLayer\nfrom durable_execution_state import DurableExecutionState, WorkspaceEvidence, WORKSPACE_SCOPE_VERSION, canonical_workspace_scope, workspace_identity_from_scope\nfrom test_orchestration_durable import build_durable_orchestrator\n\ndef new_state(tmp_path):\n    root = tmp_path / "project"; root.mkdir()\n    db = tmp_path / "execution.sqlite3"\n    state = DurableExecutionState(db)\n    project_id = state.create_project(workspace_root=root)\n    run = state.create_run(project_id)\n    state.create_phase(project_id=project_id, run_id=run.run_id, phase_id="phase-1", ordinal=1, name="M3.1")\n    state.create_task(project_id=project_id, run_id=run.run_id, phase_id="phase-1", task_id="task-1")\n    state.create_attempt(project_id=project_id, run_id=run.run_id, phase_id="phase-1", task_id="task-1", attempt_id="attempt-1")\n    return root, db, state, project_id, run.run_id\n\ndef test_scope_canonicalization(tmp_path):\n    root = tmp_path / "p"; root.mkdir()\n    assert canonical_workspace_scope(("b\\\\x.txt", "a.txt", "b/x.txt", "./a.txt"), root) == ("a.txt", "b/x.txt")\n    with pytest.raises(ValueError): canonical_workspace_scope((str((root / "abs.txt").resolve()),), root)\n    with pytest.raises(ValueError): canonical_workspace_scope(("../outside.txt",), root)\n    with pytest.raises(ValueError): canonical_workspace_scope(("C:/outside.txt",), root)\n\ndef test_empty_scope_identity_is_deterministic(tmp_path):\n    root = tmp_path / "p"; root.mkdir()\n    assert canonical_workspace_scope((), root) == ()\n    assert workspace_identity_from_scope((), root) == workspace_identity_from_scope((), root)\n\ndef test_scope_content_boundary_and_path_semantics(tmp_path):\n    root = tmp_path / "p"; root.mkdir()\n    (root / "file.txt").write_text("one", encoding="utf-8")\n    (root / "dir").mkdir()\n    scope = canonical_workspace_scope(("file.txt", "dir", "missing.txt"), root)\n    first = workspace_identity_from_scope(scope, root)\n    (root / "outside.txt").write_text("outside", encoding="utf-8")\n    assert workspace_identity_from_scope(scope, root) == first\n    (root / "file.txt").write_text("two", encoding="utf-8")\n    second = workspace_identity_from_scope(scope, root)\n    assert second != first\n    (root / "missing.txt").write_text("now", encoding="utf-8")\n    assert workspace_identity_from_scope(scope, root) != second\n\ndef test_new_evidence_persists_scope(tmp_path):\n    root, _, state, project_id, run_id = new_state(tmp_path)\n    scope = canonical_workspace_scope(("b.txt", "a.txt", "a.txt"), root)\n    identity = workspace_identity_from_scope(scope, root)\n    evidence = WorkspaceEvidence(project_id, run_id, "phase-1", "task-1", "attempt-1", ".", "MODIFIED", identity, identity, identity, identity, "PRESENT_COMPLETE", None, None, "2026-01-01T00:00:00+00:00", WORKSPACE_SCOPE_VERSION, scope)\n    evidence_id = EvidenceLayer(state).record_workspace_evidence(evidence)\n    row = state._connection.execute("SELECT workspace_scope_version, workspace_scope_entries FROM workspace_evidence WHERE evidence_id=?", (evidence_id,)).fetchone()\n    assert row["workspace_scope_version"] == WORKSPACE_SCOPE_VERSION\n    assert json.loads(row["workspace_scope_entries"]) == ["a.txt", "b.txt"]\n\ndef test_restart_reconstructs_exact_identity(tmp_path):\n    root, db, state, project_id, run_id = new_state(tmp_path)\n    (root / "target.txt").write_text("stable", encoding="utf-8")\n    scope = canonical_workspace_scope(("target.txt",), root)\n    expected = workspace_identity_from_scope(scope, root)\n    evidence = WorkspaceEvidence(project_id, run_id, "phase-1", "task-1", "attempt-1", ".", "MODIFIED", expected, expected, expected, expected, "PRESENT_COMPLETE", None, None, "2026-01-01T00:00:00+00:00", WORKSPACE_SCOPE_VERSION, scope)\n    evidence_id = EvidenceLayer(state).record_workspace_evidence(evidence)\n    state.close()\n    reopened = DurableExecutionState(db)\n    row = reopened._connection.execute("SELECT relative_path, expected_after_identity, workspace_scope_version, workspace_scope_entries FROM workspace_evidence WHERE evidence_id=?", (evidence_id,)).fetchone()\n    reconstructed = workspace_identity_from_scope(tuple(json.loads(row["workspace_scope_entries"])), root)\n    assert row["relative_path"] == "."\n    assert row["workspace_scope_version"] == WORKSPACE_SCOPE_VERSION\n    assert reconstructed == row["expected_after_identity"] == expected\n\ndef test_real_m3_lifecycle_persists_workspace_scope(tmp_path):\n    root = tmp_path / "real"; root.mkdir()\n    db = tmp_path / "real.sqlite3"\n    orchestrator, state, _, _ = build_durable_orchestrator(root, db)\n    result = orchestrator.run("M31-REAL")\n    row = state._connection.execute("SELECT relative_path, expected_after_identity, workspace_scope_version, workspace_scope_entries FROM workspace_evidence WHERE project_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1", (result.durable_project_id, result.durable_run_id)).fetchone()\n    assert row["relative_path"] == "."\n    assert row["workspace_scope_version"] == WORKSPACE_SCOPE_VERSION\n    assert json.loads(row["workspace_scope_entries"]) == []\n    state.close()\n    reopened = DurableExecutionState(db)\n    persisted = reopened._connection.execute("SELECT expected_after_identity, workspace_scope_entries FROM workspace_evidence WHERE project_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1", (result.durable_project_id, result.durable_run_id)).fetchone()\n    assert workspace_identity_from_scope(tuple(json.loads(persisted["workspace_scope_entries"])), root) == persisted["expected_after_identity"]\n\ndef test_legacy_evidence_has_no_scope_metadata(tmp_path):\n    root, _, state, project_id, run_id = new_state(tmp_path)\n    legacy = WorkspaceEvidence(project_id, run_id, "phase-1", "task-1", "attempt-1", ".", "MODIFIED", "x", "x", "x", "x", "PRESENT_COMPLETE", None, None, "2026-01-01T00:00:00+00:00")\n    evidence_id = EvidenceLayer(state).record_workspace_evidence(legacy)\n    row = state._connection.execute("SELECT workspace_scope_version, workspace_scope_entries FROM workspace_evidence WHERE evidence_id=?", (evidence_id,)).fetchone()\n    assert row["workspace_scope_version"] is None and row["workspace_scope_entries"] is None\n\ndef test_unsupported_scope_version_rejected(tmp_path):\n    root, _, state, project_id, run_id = new_state(tmp_path)\n    bad = WorkspaceEvidence(project_id, run_id, "phase-1", "task-1", "attempt-1", ".", "MODIFIED", "x", "x", "x", "x", "PRESENT_COMPLETE", None, None, "2026-01-01T00:00:00+00:00", "workspace-scope-v999", ("a.txt",))\n    with pytest.raises(ValueError, match="Unsupported workspace scope version"):\n        EvidenceLayer(state).record_workspace_evidence(bad)\n''', encoding='utf-8')
+
+          subprocess.run([sys.executable, '-m', 'compileall', '-q', '.'], check=True)
+          subprocess.run([sys.executable, '-m', 'pytest', '-q', 'test_m31_workspace_identity.py', 'test_orchestration_durable.py', 'test_orchestration.py', 'test_production_runtime.py', 'test_provider_transport.py'], check=True)
+          subprocess.run([sys.executable, '-m', 'pytest', '-q'], check=True)
+          subprocess.run([sys.executable, 'repository_security_audit.py'], check=True)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+
+          allowed = {'durable_execution_state.py', 'durable_execution_evidence.py', 'orchestration.py', 'test_m31_workspace_identity.py', '.github/workflows/_m31_apply.yml', '.github/workflows/_m31_apply2.yml', '.github/workflows/_m31_apply3.yml', '.github/workflows/_m31_apply4.yml', '.github/workflows/_m31_apply5.yml', '.github/workflows/_m31_finalize.yml'}
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          if not changed.issubset(allowed): raise SystemExit(f'Unexpected changed files: {sorted(changed - allowed)}')
+          if 'workspace_delivery_recovery.py' in changed: raise SystemExit('M6 modified')
+
+          for p in sorted(Path('.github/workflows').glob('_m31_apply*.yml')): subprocess.run(['git', 'rm', '-f', str(p)], check=True)
+          subprocess.run(['git', 'rm', '-f', '.github/workflows/_m31_finalize.yml'], check=True)
+          subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+          subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'add', 'durable_execution_state.py', 'durable_execution_evidence.py', 'orchestration.py', 'test_m31_workspace_identity.py'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'Implement M3.1 workspace identity contract'], check=True)
+          subprocess.run(['git', 'push', 'origin', 'HEAD:milestone/persistent-project-run-recovery'], check=True)
