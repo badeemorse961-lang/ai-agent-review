@@ -773,9 +773,9 @@ class DurableExecutionState:
                 raise IntegrityError(f"Broken payload_hash at sequence {sequence}")
             previous_hash = computed
             expected_sequence += 1
-        if int(run.sequence) != len(rows):
+        if int(run["sequence"]) != len(rows):
             raise IntegrityError(
-                f"Run sequence mismatch: run={run.sequence}, events={len(rows)}"
+                f"Run sequence mismatch: run={run['sequence']}, events={len(rows)}"
             )
         if rows and previous_hash != str(rows[-1]["event_hash"]):
             raise IntegrityError("Latest event hash does not match chain head")
