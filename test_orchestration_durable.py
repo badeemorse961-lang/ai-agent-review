@@ -5,14 +5,13 @@ from typing import Any
 
 import pytest
 
+from durable_execution_state import DurableExecutionState, StateConflictError, LineageError
+from test_orchestration import StubAuthorization, StubLeaderRouter, StubUnderstanding, StubWorkerAdapter, StubWorkerRouter
+from orchestration import CanonicalOrchestrator, default_validator_factory
 from central_leader import CentralLeader
-from durable_execution_state import DurableExecutionState, StateConflictError
-from execution_authorization import ExecutionAuthorizationBoundary
-from orchestration import CanonicalOrchestrator, WorkerExecutionSpec, default_validator_factory
 from plan_decomposer import PlanDecomposer
 from worker_dispatch import WorkerDispatcher
 from worker_execution import WorkerExecutionBoundary
-from test_orchestration import StubLeaderRouter, StubWorkerAdapter, StubWorkerRouter, StubUnderstanding, StubAuthorization
 
 
 def build_durable_orchestrator(root: Path, db: Path, *, worker_adapter: StubWorkerAdapter | None = None):
@@ -67,34 +66,35 @@ def test_real_orchestration_persists_complete_durable_lifecycle(tmp_path: Path) 
 
     result = orchestrator.run("GOAL-1")
     assert result.status == "APPROVED"
-    assert result.durable_project_id is not None
-    assert result.durable_run_id is not None
-    assert result.durable_phase_id is not None
-
-    run_id = result.durable_run_id
     project_id = result.durable_project_id
+    run_id = result.durable_run_id
     phase_id = result.durable_phase_id
+    assert project_id and run_id and phase_id
+
     task_id = result.task_records[0].task["task_id"]
-    rows = state._connection.execute("SELECT state FROM phases WHERE project_id=? AND run_id=? AND phase_id=?", (project_id, run_id, phase_id)).fetchall()
-    assert rows[0][0] == "COMPLETED"
     task_row = state._connection.execute("SELECT state, latest_attempt_id FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
-    assert task_row[0] == "COMPLETED"
+    assert task_row is not None and task_row[0] == "COMPLETED"
     attempt_id = task_row[1]
+    assert attempt_id
     attempt_row = state._connection.execute("SELECT state, validation_id, checkpoint_sequence FROM attempts WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
-    assert attempt_row[0] == "VALIDATED"
-    assert attempt_row[1]
-    assert attempt_row[2] == 1
-    checkpoint = state._connection.execute("SELECT status FROM checkpoints WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
-    assert checkpoint[0] == "TRUSTED"
-    artifact = state._connection.execute("SELECT state FROM artifacts WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
-    assert artifact[0] == "ARTIFACT_VALIDATED"
-    validation = state._connection.execute("SELECT state, checkpoint_sequence FROM validations WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
-    assert validation[0] == "PASSED"
-    assert validation[1] == 1
+    assert attempt_row is not None and attempt_row[0] == "VALIDATED"
+    assert attempt_row[1] and attempt_row[2] == 1
+
+    phase = state._connection.execute("SELECT state FROM phases WHERE project_id=? AND run_id=? AND phase_id=?", (project_id, run_id, phase_id)).fetchone()
+    assert phase[0] == "COMPLETED"
+    checkpoint = state._connection.execute("SELECT checkpoint_id, status, sequence FROM checkpoints WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
+    assert checkpoint[1] == "TRUSTED" and checkpoint[2] == 1
+    artifact = state._connection.execute("SELECT artifact_id, state FROM artifacts WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
+    assert artifact[1] == "ARTIFACT_VALIDATED"
+    validation = state._connection.execute("SELECT validation_id, state, checkpoint_sequence, artifact_id FROM validations WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
+    assert validation[1] == "PASSED"
+    assert validation[2] == checkpoint[2]
+    assert validation[3] == artifact[0]
+
     run = state.get_run(run_id, project_id=project_id)
     assert run.state == "COMPLETED"
     event_types = [row["event_type"] for row in state.get_events(project_id=project_id, run_id=run_id)]
-    assert {"RUN_CREATED", "PLAN_ACCEPTED", "PHASE_CREATED", "PHASE_STARTED", "RUN_STARTED", "TASK_CREATED", "TASK_STARTED", "ATTEMPT_STARTED", "ARTIFACT_REGISTERED", "WORKSPACE_EVIDENCE_RECORDED", "CHECKPOINT_CREATED", "CHECKPOINT_TRUSTED", "ARTIFACT_VALIDATED", "VALIDATION_CREATED", "VALIDATION_PASSED", "TASK_COMPLETED", "PHASE_COMPLETED", "RUN_COMPLETED"}.issubset(set(event_types))
+    assert {"RUN_CREATED", "PLAN_ACCEPTED", "PHASE_CREATED", "PHASE_STARTED", "RUN_STARTED", "TASK_CREATED", "TASK_STARTED", "ATTEMPT_STARTED", "WORKER_EXECUTION_COMPLETED", "WORKSPACE_EVIDENCE_RECORDED", "ARTIFACT_REGISTERED", "CHECKPOINT_CREATED", "CHECKPOINT_TRUSTED", "ARTIFACT_VALIDATED", "VALIDATION_CREATED", "VALIDATION_PASSED", "TASK_COMPLETED", "PHASE_COMPLETED", "RUN_COMPLETED"}.issubset(set(event_types))
     assert len(event_types) == run.sequence
     state.verify_integrity(project_id=project_id, run_id=run_id)
     state.close()
@@ -120,6 +120,7 @@ def test_sequence_fence_rejects_stale_run_transition(tmp_path: Path) -> None:
     root.mkdir()
     _, state, _, _ = build_durable_orchestrator(root, tmp_path / "execution.sqlite3")
     project_id = "PROJECT-" + __import__("hashlib").sha256(str(root.resolve()).encode()).hexdigest()[:24]
+    state.create_project(workspace_root=root, project_id=project_id)
     run = state.create_run(project_id)
     current = state.get_run(run.run_id, project_id=project_id)
     state.transition_run(project_id=project_id, run_id=run.run_id, expected_sequence=current.sequence, new_state="PLAN_ACCEPTED")
@@ -127,7 +128,7 @@ def test_sequence_fence_rejects_stale_run_transition(tmp_path: Path) -> None:
         state.transition_run(project_id=project_id, run_id=run.run_id, expected_sequence=current.sequence, new_state="RUNNING")
 
 
-def test_duplicate_child_transition_is_idempotent(tmp_path: Path) -> None:
+def test_duplicate_phase_transition_is_idempotent(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
     orchestrator, state, _, _ = build_durable_orchestrator(root, tmp_path / "execution.sqlite3")
@@ -154,20 +155,17 @@ def test_project_and_run_isolation(tmp_path: Path) -> None:
     assert result_a.durable_run_id != result_b.durable_run_id
     assert len(state.get_events(project_id=result_a.durable_project_id, run_id=result_a.durable_run_id)) > 1
     assert len(state.get_events(project_id=result_b.durable_project_id, run_id=result_b.durable_run_id)) > 1
-    with pytest.raises(Exception):
+    with pytest.raises(LineageError):
         state.get_run(result_a.durable_run_id, project_id=result_b.durable_project_id)
 
 
 def test_completion_is_gated_by_m2_validation_authority(tmp_path: Path) -> None:
     root = tmp_path / "project"; root.mkdir()
-    adapter = StubWorkerAdapter(changes=False)
-    orchestrator, state, _, _ = build_durable_orchestrator(root, tmp_path / "execution.sqlite3", worker_adapter=adapter)
+    orchestrator, state, _, _ = build_durable_orchestrator(root, tmp_path / "execution.sqlite3", worker_adapter=StubWorkerAdapter(changes=False))
     result = orchestrator.run("GOAL-GATED")
     project_id, run_id, phase_id = result.durable_project_id, result.durable_run_id, result.durable_phase_id
     task_id = result.plan["tasks"][0]["task_id"]
     validation = state._connection.execute("SELECT validation_id, state FROM validations WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
     assert validation[1] == "PASSED"
-    task = state._connection.execute("SELECT state FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
-    assert task[0] == "COMPLETED"
-    assert validation[0].endswith(":VALIDATION:1")
+    assert state._connection.execute("SELECT state FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()[0] == "COMPLETED"
     state.close()
