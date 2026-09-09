@@ -11,6 +11,7 @@ from application_boundary import ApplicationIntent
 from connection_control_center import ConnectionControlCenterService
 from connection_manager import fingerprint, replace_connection_credential, validate_connection
 from leader_router import LeaderRouter, LeaderUnavailable
+from provider_transport import OpenAICompatibleTransport
 from protected_secret_store import MemorySecretStore
 
 
@@ -112,8 +113,8 @@ def test_all_existing_leader_credentials_failed_then_stable_id_rotation_recovers
 def test_control_center_injects_one_shared_store_into_provider_transport() -> None:
     store = MemorySecretStore()
     service = ConnectionControlCenterService(secret_store=store, autowire_core=False)
-    assert getattr(service, "secret_store") is store
     transport = getattr(service, "leader_transport")
+    assert isinstance(transport, OpenAICompatibleTransport)
     assert getattr(transport, "secret_store") is store
 
 

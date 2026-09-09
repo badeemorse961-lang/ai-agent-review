@@ -7,27 +7,21 @@ def test_connection_ui_uses_file_picker_and_full_lifecycle_surface() -> None:
     source = Path("connection_control_center.py").read_text(encoding="utf-8")
     for token in (
         "filedialog.askopenfilename",
-        "import_provider_connections",
         "replace_connection_credential",
         "validate_connection",
         "disable_connection",
         "enable_connection",
         "remove_connection",
-        "confirmed",
-        "imported_count",
-        "already_present_count",
-        "rejected_count",
-        "persistence_status",
-        "connection_ids",
-        "✓ READY",
-        "● STORED",
-        "⚠ SETUP",
-        "✕ FAILED",
+        "Refresh External Sources",
+        "PENDING_ASSIGNMENT",
+        "routable",
+        "Fingerprint",
         "Credential",
-        "Ready State",
+        "Readiness",
     ):
         assert token in source
-    assert "raw secret" not in source.lower()
+    for forbidden in ("read_secret_source", "import_provider(", "import_known_provider_credentials", "fingerprint(", "SecretStore", "WindowsProtectedSecretStore"):
+        assert forbidden not in source
 
 
 def test_connection_ui_does_not_offer_assignment_authority() -> None:
