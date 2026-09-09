@@ -9,7 +9,8 @@ BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_FILE = BASE_DIR / "config" / "registry.json"
 CONNECTIONS_FILE = BASE_DIR / "connections.json"
 EXPECTED_ROLE_SOURCE = "config/registry.json"
-NON_ELIGIBLE_STATUSES = {"DISABLED", "FAILED", "INVALID", "REMOVED"}
+NON_ELIGIBLE_STATUSES = {"DISABLED", "FAILED", "INVALID", "REMOVED", "PENDING_ASSIGNMENT"}
+PENDING_ASSIGNMENT_STATUS = "PENDING_ASSIGNMENT"
 
 
 class RegistryError(Exception):
@@ -74,6 +75,8 @@ def _validate_connection_metadata(connection_id: str, item: Any) -> None:
     active = item.get("active")
     if not isinstance(active, bool):
         raise RegistryError(f"Connection active flag must be boolean: {connection_id}")
+    if status == PENDING_ASSIGNMENT_STATUS and active:
+        raise RegistryError(f"Pending connection cannot be active: {connection_id}")
 
 
 def _status_is_eligible(item: dict[str, Any]) -> bool:
@@ -92,7 +95,6 @@ def validate_registry() -> dict[str, Any]:
     registry = load_registry()
     connections_data = load_connections()
     connections = connections_data["connections"]
-
     architecture = registry.get("architecture")
     if not isinstance(architecture, dict):
         raise RegistryError("Registry is missing architecture")
@@ -100,19 +102,16 @@ def validate_registry() -> dict[str, Any]:
     workers = architecture.get("workers")
     if not isinstance(leader, dict) or not isinstance(workers, dict):
         raise RegistryError("Registry must define leader and workers")
-
     leader_provider = leader.get("provider")
     worker_provider = workers.get("provider")
     if not isinstance(leader_provider, str) or not isinstance(worker_provider, str):
         raise RegistryError("Leader and worker providers must be strings")
-
     primary_pool = _unique_strings(leader.get("primary_pool"), "leader.primary_pool")
     failover_pool = _unique_strings(leader.get("failover_pool"), "leader.failover_pool")
     if not primary_pool or not failover_pool:
         raise RegistryError("Leader pools must be non-empty")
     if set(primary_pool) != set(failover_pool):
         raise RegistryError("Leader primary and failover pools must cover the same accounts")
-
     roles = workers.get("roles")
     if not isinstance(roles, dict) or not roles:
         raise RegistryError("Worker roles must be a non-empty object")
@@ -126,18 +125,15 @@ def validate_registry() -> dict[str, Any]:
         assigned.extend(role_ids)
     if len(assigned) != len(set(assigned)):
         raise RegistryError("A worker connection is assigned to more than one role")
-
     leader_ids = set(primary_pool)
     worker_ids = set(assigned)
     if leader_ids & worker_ids:
         raise RegistryError(f"Leader/worker connection overlap detected: {sorted(leader_ids & worker_ids)}")
-
     registry_ids = leader_ids | worker_ids
     actual_ids = set(connections)
     missing_metadata = sorted(registry_ids - actual_ids)
     if missing_metadata:
         raise RegistryError(f"Registry references unknown connections: {missing_metadata}")
-
     unassigned_active = sorted(
         connection_id
         for connection_id in actual_ids - registry_ids
@@ -145,7 +141,6 @@ def validate_registry() -> dict[str, Any]:
     )
     if unassigned_active:
         raise RegistryError(f"Eligible connections are not assigned by the authoritative registry: {unassigned_active}")
-
     for connection_id in sorted(actual_ids):
         _validate_connection_metadata(connection_id, connections[connection_id])
     for connection_id in leader_ids:
@@ -154,16 +149,12 @@ def validate_registry() -> dict[str, Any]:
     for connection_id in worker_ids:
         if connections[connection_id]["provider"] != worker_provider:
             raise RegistryError(f"Worker connection {connection_id} has provider {connections[connection_id]['provider']!r}, expected {worker_provider!r}")
-
     effective = copy.deepcopy(registry)
     effective_leader = effective["architecture"]["leader"]
     effective_workers = effective["architecture"]["workers"]
     effective_leader["primary_pool"] = [connection_id for connection_id in primary_pool if _status_is_eligible(connections[connection_id])]
     effective_leader["failover_pool"] = [connection_id for connection_id in failover_pool if _status_is_eligible(connections[connection_id])]
-    effective_workers["roles"] = {
-        role: [connection_id for connection_id in ids if _status_is_eligible(connections[connection_id])]
-        for role, ids in roles.items()
-    }
+    effective_workers["roles"] = {role: [connection_id for connection_id in ids if _status_is_eligible(connections[connection_id])] for role, ids in roles.items()}
     return effective
 
 

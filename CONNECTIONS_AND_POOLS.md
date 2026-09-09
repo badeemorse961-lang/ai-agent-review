@@ -5,57 +5,55 @@ A connection has:
 - stable ID
 - provider
 - secret fingerprint, never the secret
-- lifecycle state
-- runtime health/state
+- health state
+- runtime state
 
 Role and pool membership are routing configuration, not connection metadata. The authoritative assignment source is `config/registry.json`.
 
-`connections.json` is metadata-only. It contains stable identity, provider, fingerprint, lifecycle metadata, and role-source marker; it never stores raw provider secrets.
+`connections.json` is connection metadata only. Its `role_source` marker must remain `config/registry.json`; it must never point to a legacy role file or become an independent role authority.
 
-## Credential storage layers
-The credential lifecycle is intentionally separated:
+## External provider secret sources
 
-```text
-TXT import source
-    ↓ parse / validate / fingerprint
-Windows Protected Local Secret Store (user-scoped DPAPI)
-    +
-connections.json metadata
-    +
-config/registry.json routing authority
-```
+Provider API keys are supplied by the operator through external TXT sources. These files are secret sources only; they are not routing configuration and are never committed to Git.
 
-TXT files are import sources only. They are not the credential source of truth after import, and omission from a later TXT file never deletes or disables an existing connection.
-
-Production Windows persistence uses the current user's Windows DPAPI-backed protected store. Runtime resolves a credential by stable connection ID only when a provider transport request needs it.
-
-## Import semantics
-TXT import is **ADDITIVE**:
-- new fingerprints are added;
-- existing fingerprints are counted as already present and remain idempotent;
-- duplicate imports do not create new connection IDs;
-- existing connections not present in the import file remain unchanged;
-- malformed or rejected source lines are reported without exposing the secret;
-- the import result reports imported, already-present, rejected, and persistence status.
-
-An import operation has no stale/removal pass.
-
-## Connection lifecycle
-Every connection uses one of:
+The single source definition is in `connection_manager.PROVIDER_FILES` and `connection_manager.secret_dir()`:
 
 ```text
-ACTIVE
-DISABLED
-FAILED
-INVALID
-REMOVED
+Base directory:
+%LOCALAPPDATA%\AI-Agent\secrets
+
+Groq:
+%LOCALAPPDATA%\AI-Agent\secrets\groq_keys.txt
+
+OpenRouter:
+%LOCALAPPDATA%\AI-Agent\secrets\openrouter_keys.txt
 ```
 
-`DISABLED`, `FAILED`, `INVALID`, and `REMOVED` are excluded from effective router eligibility. FAILED/INVALID preserves the protected credential and metadata until an explicit disable or remove action.
+`AI_AGENT_SECRET_DIR` may override the base directory when explicitly configured. Repository-relative fallback remains opt-in only through `AI_AGENT_ALLOW_LEGACY_SECRET_PATH`; production startup sync does not enable it.
 
-`Enable` is allowed only for a connection that still exists in the protected store and is explicitly assigned by the authoritative `config/registry.json`. Dynamic auto-assignment is intentionally not performed by this milestone.
+Canonical operator format is one API key per non-empty line. Leading/trailing whitespace is trimmed. Blank/comment lines are ignored. A candidate containing internal whitespace is rejected as malformed without exposing its value. Provider-specific validity is not inferred from string shape; provider health/capability validation remains a separate readiness concern.
 
-`Remove` requires explicit UI confirmation, deletes the credential from protected storage, removes the connection from the authoritative assignment pools when present, and leaves a metadata tombstone with `REMOVED` state. Other connections are not changed.
+Startup synchronization is additive and idempotent:
+
+```text
+external TXT source
+    ↓
+parse + deterministic normalization
+    ↓
+SHA-256 fingerprint
+    ↓
+compare against existing connection metadata
+    ↓
+new fingerprint → new stable connection ID
+known fingerprint → no duplicate
+missing TXT line → no deletion
+```
+
+Raw API keys are held only in memory while being processed or used for provider transport. They are not persisted to `connections.json`, `config/registry.json`, diagnostics, benchmark artifacts, or UI state. Connection metadata persists only the provider, stable ID, SHA-256 fingerprint, lifecycle status, and active flag.
+
+When a new connection is discovered but no authoritative registry assignment exists, it is recorded as `PENDING_ASSIGNMENT` and remains inactive. Startup sync never guesses a model, role, pool, or routing policy. This preserves `config/registry.json` as the sole routing authority.
+
+A missing source file is a non-fatal startup condition and is reported as `source_exists=false`; the sync does not create secrets or fall back into the repository.
 
 ## N-driven pools
 Every pool is logically:
@@ -71,7 +69,7 @@ Use actual configured collection size.
 ## Connection IDs
 IDs are data. `OR-01` and `GROQ-01` are valid identifiers, but routing cannot depend on where numbering ends.
 
-The authoritative registry must assign every **eligible** connection to exactly one leader pool or worker role, with no duplicate assignment or leader/worker overlap. Imported disabled/quarantined metadata may remain unassigned until explicitly admitted by configuration.
+The authoritative registry must assign every routing-eligible connection to exactly one leader pool or worker role, with no duplicate assignment or leader/worker overlap. Pending external imports are explicitly non-routing and are not treated as an assignment.
 
 ## Leadership
 Primary: Nemotron Ultra.
@@ -84,28 +82,40 @@ Each connection has independent health. Failed connections must be excluded from
 Health is runtime state and never becomes routing configuration truth.
 
 ## Key rotation
-Rotate the protected secret and fingerprint/state while preserving the connection ID and historical identity.
+Rotate the secret and fingerprint/state while preserving the connection ID and historical identity.
 
 ## Expansion
 Adding connections requires:
-1. add/import local secret
+1. add local secret
 2. stable ID
 3. model capability discovery
 4. health validation
-5. explicit pool registration
+5. pool registration
 6. regression validation
 
-No automatic routing rewrite is performed by this milestone.
+No routing rewrite.
 
-## Future operational requirement: Dynamic Connection Onboarding & Auto-Assignment
+## Dynamic onboarding status
 
-This remains a **future readiness requirement**, not a current implementation milestone.
+Automatic source discovery and idempotent connection metadata admission are now implemented at the connection-manager boundary. Full automatic routing assignment remains intentionally gated by an explicit authoritative policy because the current `config/registry.json` does not define a deterministic new-connection role classification rule.
 
-The current status is still:
+The safe lifecycle is therefore:
 
-**CONFIGURATION-DRIVEN ONLY**.
+```text
+new external key
+    ↓
+connection metadata + fingerprint
+    ↓
+PENDING_ASSIGNMENT
+    ↓
+explicit authoritative registry assignment
+    ↓
+health/readiness validation
+    ↓
+router eligibility
+```
 
-Automatic capability discovery, deterministic classification, service-side pool insertion without manual registry editing, onboarding health admission, and automatic quarantine/re-admission are not claimed by this milestone.
+No startup path creates a second registry, routing authority, or secret store.
 
 ## Quotas
 Use multiple legitimate connections only within provider terms and configured policy. The system must not implement rotation as a quota-evasion mechanism.
