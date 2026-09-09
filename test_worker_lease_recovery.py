@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from durable_execution_evidence import EvidenceLayer
-from durable_execution_state import DurableExecutionState, LineageError, RecoveryAmbiguityError, StateConflictError
+from durable_execution_state import DurableExecutionState, InvalidTransitionError, LineageError, RecoveryAmbiguityError, StateConflictError
 from test_orchestration_durable import build_durable_orchestrator
 from worker_lease_recovery import WorkerLeaseRecovery
 
@@ -47,10 +47,10 @@ def test_exact_attempt_lease_lineage(tmp_path: Path) -> None:
     _, state, bridge, run_id, phase_id, task_id, attempt_id = lifecycle(tmp_path)
     recovery = WorkerLeaseRecovery(state)
     with pytest.raises(LineageError):
-        recovery.bind_actual_lease(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, lease_id="LEASE-X", worker_id="W-1", expected_sequence=state.get_run(run_id, project_id=bridge.project_id).sequence)
+        recovery.bind_actual_lease(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id="FOREIGN-ATTEMPT", lease_id="LEASE-X", worker_id="W-1", expected_sequence=state.get_run(run_id, project_id=bridge.project_id).sequence)
+    recovery.bind_actual_lease(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, lease_id="LEASE-1", worker_id="W-1")
     other_root, other_state, other_bridge, other_run, other_phase, other_task, other_attempt = lifecycle(tmp_path, "other.sqlite3")
     del other_root, other_state, other_phase, other_task, other_attempt
-    recovery.bind_actual_lease(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, lease_id="LEASE-1", worker_id="W-1")
     with pytest.raises(LineageError):
         recovery.release(project_id=other_bridge.project_id, run_id=other_run, lease_id="LEASE-1")
 
@@ -65,6 +65,17 @@ def test_stale_signal_is_deterministic_and_changes_attempt_task(tmp_path: Path) 
     assert result.attempt_state == "INTERRUPTED"
     assert result.task_state == "INTERRUPTED"
     assert result.recovery_state == "UNKNOWN"
+
+
+def test_stale_transition_is_idempotent(tmp_path: Path) -> None:
+    _, state, bridge, run_id, phase_id, task_id, attempt_id = lifecycle(tmp_path)
+    recovery, record = bind(state, bridge, run_id, phase_id, task_id, attempt_id)
+    first = recovery.mark_stale(project_id=bridge.project_id, run_id=run_id, lease_id=record.lease_id, idempotency_key="stale-idempotent", stale_signal="LEASE_EXPIRED")
+    count = len(state.get_events(project_id=bridge.project_id, run_id=run_id))
+    second = recovery.mark_stale(project_id=bridge.project_id, run_id=run_id, lease_id=record.lease_id, idempotency_key="stale-idempotent", stale_signal="LEASE_EXPIRED")
+    assert first.operation_id == second.operation_id
+    assert first.lease_state == second.lease_state == "STALE"
+    assert count == len(state.get_events(project_id=bridge.project_id, run_id=run_id))
 
 
 def test_safe_reclaim_requires_explicit_effect_evidence(tmp_path: Path) -> None:
@@ -114,10 +125,9 @@ def test_reclaim_is_idempotent_and_operation_durable(tmp_path: Path) -> None:
 def test_stale_sequence_is_rejected(tmp_path: Path) -> None:
     _, state, bridge, run_id, phase_id, task_id, attempt_id = lifecycle(tmp_path)
     recovery, record = bind(state, bridge, run_id, phase_id, task_id, attempt_id)
-    stale_sequence = state.get_run(run_id, project_id=bridge.project_id).sequence
-    state.create_project(workspace_root=tmp_path / "second-project", project_id="PROJECT-SECOND") if False else None
+    current = state.get_run(run_id, project_id=bridge.project_id).sequence
     with pytest.raises(StateConflictError):
-        recovery.mark_stale(project_id=bridge.project_id, run_id=run_id, lease_id=record.lease_id, idempotency_key="stale-fence", stale_signal="LEASE_EXPIRED", expected_sequence=stale_sequence - 1)
+        recovery.mark_stale(project_id=bridge.project_id, run_id=run_id, lease_id=record.lease_id, idempotency_key="stale-fence", stale_signal="LEASE_EXPIRED", expected_sequence=current - 1)
 
 
 def test_event_hash_chain_contains_recovery_events(tmp_path: Path) -> None:
@@ -140,7 +150,7 @@ def test_event_hash_chain_contains_recovery_events(tmp_path: Path) -> None:
 
 
 def test_cross_run_cannot_reclaim_foreign_lease(tmp_path: Path) -> None:
-    root, state, bridge, run_id, phase_id, task_id, attempt_id = lifecycle(tmp_path, "shared.sqlite3")
+    _, state, bridge, run_id, phase_id, task_id, attempt_id = lifecycle(tmp_path, "shared.sqlite3")
     recovery, record = bind(state, bridge, run_id, phase_id, task_id, attempt_id)
     other_root = tmp_path / "other"
     other_root.mkdir()
@@ -151,7 +161,6 @@ def test_cross_run_cannot_reclaim_foreign_lease(tmp_path: Path) -> None:
     with pytest.raises(LineageError):
         recovery.release(project_id=other_project, run_id=other_run.run_id, lease_id=record.lease_id)
     other_state.close()
-    del root
 
 
 def test_completed_task_cannot_acquire_recovery_lease(tmp_path: Path) -> None:
@@ -163,15 +172,15 @@ def test_completed_task_cannot_acquire_recovery_lease(tmp_path: Path) -> None:
     task_id = result.task_records[0].task["task_id"]
     task = state._connection.execute("SELECT latest_attempt_id, state FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
     assert task["state"] == "COMPLETED"
-    with pytest.raises(Exception):
-        WorkerLeaseRecovery(state).bind_actual_lease(project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=result.durable_run_id + ":" + task_id + ":ATTEMPT:1", lease_id="LEASE-COMPLETED", worker_id="W-1")
+    with pytest.raises(InvalidTransitionError):
+        WorkerLeaseRecovery(state).bind_actual_lease(project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=task["latest_attempt_id"], lease_id="LEASE-COMPLETED", worker_id="W-1")
 
 
 def test_interrupted_attempt_cannot_complete_without_validation_evidence(tmp_path: Path) -> None:
     _, state, bridge, run_id, phase_id, task_id, attempt_id = lifecycle(tmp_path)
     recovery, record = bind(state, bridge, run_id, phase_id, task_id, attempt_id)
     recovery.mark_stale(project_id=bridge.project_id, run_id=run_id, lease_id=record.lease_id, idempotency_key="no-complete", stale_signal="LEASE_EXPIRED")
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTransitionError):
         EvidenceLayer(state).complete_task(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, validation_id="missing-validation")
 
 
