@@ -9,6 +9,7 @@ BASE_DIR = Path(__file__).resolve().parent
 REGISTRY_FILE = BASE_DIR / "config" / "registry.json"
 CONNECTIONS_FILE = BASE_DIR / "connections.json"
 EXPECTED_ROLE_SOURCE = "config/registry.json"
+PENDING_ASSIGNMENT_STATUS = "PENDING_ASSIGNMENT"
 
 
 class RegistryError(Exception):
@@ -107,6 +108,11 @@ def _validate_connection_metadata(
             f"Connection active flag must be boolean: {connection_id}"
         )
 
+    if status == PENDING_ASSIGNMENT and active:
+        raise RegistryError(
+            f"Pending connection cannot be active: {connection_id}"
+        )
+
 
 def validate_registry() -> dict[str, Any]:
     registry = load_registry()
@@ -168,9 +174,15 @@ def validate_registry() -> dict[str, Any]:
         raise RegistryError(f"Registry references unknown connections: {missing_metadata}")
 
     unassigned_metadata = sorted(actual_ids - registry_ids)
-    if unassigned_metadata:
+    non_pending_unassigned = [
+        connection_id
+        for connection_id in unassigned_metadata
+        if connections[connection_id].get("status") != PENDING_ASSIGNMENT
+    ]
+    if non_pending_unassigned:
         raise RegistryError(
-            f"Connections are not assigned by the authoritative registry: {unassigned_metadata}"
+            "Connections are not assigned by the authoritative registry: "
+            f"{sorted(non_pending_unassigned)}"
         )
 
     for connection_id in sorted(actual_ids):
@@ -218,6 +230,11 @@ def main() -> int:
     workers = registry["architecture"]["workers"]
     role_count = len(workers["roles"])
     worker_count = sum(len(ids) for ids in workers["roles"].values())
+    pending_count = sum(
+        1
+        for item in load_connections()["connections"].values()
+        if isinstance(item, dict) and item.get("status") == PENDING_ASSIGNMENT
+    )
 
     print("=" * 70)
     print("CONFIGURATION REGISTRY VALIDATION")
@@ -229,6 +246,7 @@ def main() -> int:
     print(f"Worker provider  : {workers['provider']}")
     print(f"Worker roles     : {role_count}")
     print(f"Worker accounts  : {worker_count}")
+    print(f"Pending imports  : {pending_count}")
     print("Result           : VALID ✅")
     print("=" * 70)
     return 0
