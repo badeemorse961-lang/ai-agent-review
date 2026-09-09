@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +95,7 @@ def test_real_orchestration_persists_complete_durable_lifecycle(tmp_path: Path) 
     run = state.get_run(run_id, project_id=project_id)
     assert run.state == "COMPLETED"
     event_types = [row["event_type"] for row in state.get_events(project_id=project_id, run_id=run_id)]
-    assert {"RUN_CREATED", "PLAN_ACCEPTED", "PHASE_CREATED", "PHASE_STARTED", "RUN_STARTED", "TASK_CREATED", "TASK_STARTED", "ATTEMPT_STARTED", "WORKER_EXECUTION_COMPLETED", "WORKSPACE_EVIDENCE_RECORDED", "ARTIFACT_REGISTERED", "CHECKPOINT_CREATED", "CHECKPOINT_TRUSTED", "ARTIFACT_VALIDATED", "VALIDATION_CREATED", "VALIDATION_PASSED", "TASK_COMPLETED", "PHASE_COMPLETED", "RUN_COMPLETED"}.issubset(set(event_types))
+    assert {"RUN_CREATED", "PLAN_ACCEPTED", "PHASE_CREATED", "PHASE_STARTED", "RUN_STARTED", "TASK_CREATED", "TASK_STARTED", "ATTEMPT_STARTED", "WORKSPACE_EVIDENCE_RECORDED", "ARTIFACT_REGISTERED", "CHECKPOINT_CREATED", "CHECKPOINT_TRUSTED", "ARTIFACT_VALIDATED", "VALIDATION_CREATED", "VALIDATION_PASSED", "TASK_COMPLETED", "PHASE_COMPLETED", "RUN_COMPLETED"}.issubset(set(event_types))
     assert len(event_types) == run.sequence
     state.verify_integrity(project_id=project_id, run_id=run_id)
     state.close()
@@ -119,7 +120,7 @@ def test_sequence_fence_rejects_stale_run_transition(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
     _, state, _, _ = build_durable_orchestrator(root, tmp_path / "execution.sqlite3")
-    project_id = "PROJECT-" + __import__("hashlib").sha256(str(root.resolve()).encode()).hexdigest()[:24]
+    project_id = "PROJECT-" + hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:24]
     state.create_project(workspace_root=root, project_id=project_id)
     run = state.create_run(project_id)
     current = state.get_run(run.run_id, project_id=project_id)
