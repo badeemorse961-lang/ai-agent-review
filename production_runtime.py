@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from central_leader import CentralLeader
+from connection_manager import sync_external_secret_sources
 from execution_authorization import ExecutionAuthorizationBoundary
 from independent_validation import IndependentValidator, ValidationHook
 from leader_router import LeaderRouter
@@ -76,6 +77,7 @@ class ProductionRuntime:
         validator_factory: Callable[[ValidationHook], IndependentValidator] | None = None,
     ) -> None:
         config.validate()
+        self.secret_sync_report = sync_external_secret_sources()
         dependencies = {
             "leader_transport": leader_transport,
             "worker_adapter": worker_adapter,
