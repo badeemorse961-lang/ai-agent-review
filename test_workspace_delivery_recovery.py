@@ -35,7 +35,11 @@ def _fixture(tmp_path: Path, *, artifact_state: str = "ARTIFACT_VALIDATED", deli
     validation = EvidenceLayer(state).create_validation(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, checkpoint_sequence=1, validation_id="VAL-1", artifact_id="ART-1")
     if artifact_state == "ARTIFACT_VALIDATED":
         EvidenceLayer(state).transition_validation(project_id=bridge.project_id, run_id=run_id, validation_id=validation.validation_id, new_state="PASSED", evidence_hash=evidence_digest(evidence))
-    state._connection.execute("UPDATE runs SET delivery_state=? WHERE project_id=? AND run_id=?", (delivery_state, bridge.project_id, run_id))
+    evidence_layer = EvidenceLayer(state)
+    if delivery_state != "DELIVERY_PENDING":
+        evidence_layer.set_delivery_state(project_id=bridge.project_id, run_id=run_id, new_state="DELIVERY_STARTED")
+        if delivery_state != "DELIVERY_STARTED":
+            evidence_layer.set_delivery_state(project_id=bridge.project_id, run_id=run_id, new_state=delivery_state)
     return root, state, bridge, run_id, phase_id, task_id, attempt_id, path, identity
 
 
@@ -90,9 +94,10 @@ def test_partial_workspace_is_durable(tmp_path: Path):
 
 def test_ambiguous_non_file_reference_never_completes(tmp_path: Path):
     root, state, bridge, run_id, phase_id, task_id, attempt_id, *_ = _fixture(tmp_path)
-    state._connection.execute("UPDATE artifacts SET reference='artifact.txt/child' WHERE artifact_id='ART-1'")
+    ambiguous_root = root / "ambiguous"; ambiguous_root.mkdir()
+    state._connection.execute("UPDATE artifacts SET reference='ambiguous' WHERE artifact_id='ART-1'")
     decision = WorkspaceDeliveryRecovery(state, root).inspect_artifact(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id="ART-1")
-    assert decision.classification == "ABSENT"
+    assert decision.classification == "AMBIGUOUS"
 
 
 def test_no_destructive_cleanup(tmp_path: Path):
@@ -145,7 +150,7 @@ def test_sequence_fence_rejects_stale_workspace_observation(tmp_path: Path):
 def test_cross_project_run_isolation(tmp_path: Path):
     root, state, bridge, run_id, phase_id, task_id, attempt_id, *_ = _fixture(tmp_path)
     other_root = tmp_path / "other"; other_root.mkdir(); other_project = _project_id(other_root)
-    state.create_project(other_root, other_project); other_run = state.create_run(other_project)
+    state.create_project(workspace_root=other_root, project_id=other_project); other_run = state.create_run(other_project)
     with pytest.raises(Exception):
         WorkspaceDeliveryRecovery(state, root).inspect_artifact(project_id=other_project, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id="ART-1")
     assert state.get_run(other_run.run_id, project_id=other_project).state == "CREATED"
@@ -161,8 +166,7 @@ def test_completion_gate_remains_closed_after_mismatch(tmp_path: Path):
 def test_close_reopen_preserves_workspace_recovery_evidence(tmp_path: Path):
     root, state, bridge, run_id, phase_id, task_id, attempt_id, path, _ = _fixture(tmp_path)
     path.write_text("v2", encoding="utf-8")
-    recovery = WorkspaceDeliveryRecovery(state, root)
-    recovery.inspect_artifact(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id="ART-1")
+    WorkspaceDeliveryRecovery(state, root).inspect_artifact(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id="ART-1")
     db = state.database_path; project_id = bridge.project_id; state.close()
     reopened = DurableExecutionState(db)
     row = reopened._connection.execute("SELECT observed_state FROM workspace_evidence WHERE project_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1", (project_id, run_id)).fetchone()
