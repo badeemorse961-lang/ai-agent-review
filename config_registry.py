@@ -108,7 +108,7 @@ def _validate_connection_metadata(
             f"Connection active flag must be boolean: {connection_id}"
         )
 
-    if status == PENDING_ASSIGNMENT and active:
+    if status == PENDING_ASSIGNMENT_STATUS and active:
         raise RegistryError(
             f"Pending connection cannot be active: {connection_id}"
         )
@@ -174,11 +174,11 @@ def validate_registry() -> dict[str, Any]:
         raise RegistryError(f"Registry references unknown connections: {missing_metadata}")
 
     unassigned_metadata = sorted(actual_ids - registry_ids)
-    non_pending_unassigned = [
-        connection_id
-        for connection_id in unassigned_metadata
-        if connections[connection_id].get("status") != PENDING_ASSIGNMENT
-    ]
+    non_pending_unassigned = []
+    for connection_id in unassigned_metadata:
+        item = connections[connection_id]
+        if not isinstance(item, dict) or item.get("status") != PENDING_ASSIGNMENT_STATUS:
+            non_pending_unassigned.append(connection_id)
     if non_pending_unassigned:
         raise RegistryError(
             "Connections are not assigned by the authoritative registry: "
@@ -233,7 +233,7 @@ def main() -> int:
     pending_count = sum(
         1
         for item in load_connections()["connections"].values()
-        if isinstance(item, dict) and item.get("status") == PENDING_ASSIGNMENT
+        if isinstance(item, dict) and item.get("status") == PENDING_ASSIGNMENT_STATUS
     )
 
     print("=" * 70)
