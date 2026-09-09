@@ -8,7 +8,6 @@ from typing import Optional
 
 from durable_execution_evidence import EvidenceLayer, evidence_digest
 from durable_execution_state import (
-    ARTIFACT_STATES,
     DELIVERY_STATES,
     DurableExecutionState,
     IntegrityError,
@@ -76,17 +75,7 @@ class WorkspaceDeliveryRecovery:
         self.evidence = EvidenceLayer(state)
         self.project_id = "PROJECT-" + hashlib.sha256(str(self.workspace_root).encode("utf-8")).hexdigest()[:24]
 
-    def inspect_artifact(
-        self,
-        *,
-        project_id: str,
-        run_id: str,
-        phase_id: str,
-        task_id: str,
-        attempt_id: str,
-        artifact_id: str,
-        expected_sequence: Optional[int] = None,
-    ) -> WorkspaceRecoveryDecision:
+    def inspect_artifact(self, *, project_id: str, run_id: str, phase_id: str, task_id: str, attempt_id: str, artifact_id: str, expected_sequence: Optional[int] = None) -> WorkspaceRecoveryDecision:
         with self.state._transaction() as conn:
             artifact = self.state._require_artifact(conn, artifact_id)
             self._require_lineage(artifact, project_id, run_id, phase_id, task_id, attempt_id)
@@ -98,111 +87,58 @@ class WorkspaceDeliveryRecovery:
             observed_identity, checksum, observed_state = self._observe_path(path)
             expected_identity = str(artifact["identity"])
             classification = self._classify_artifact(artifact, observed_state, observed_identity, checksum)
-            evidence = WorkspaceEvidence(
-                project_id=project_id,
-                run_id=run_id,
-                phase_id=phase_id,
-                task_id=task_id,
-                attempt_id=attempt_id,
-                relative_path=relative_path,
-                change_kind="MODIFIED" if observed_state == "PRESENT_COMPLETE" else "CREATED" if observed_state == "ABSENT" else "MODIFIED",
-                expected_before_identity=None,
-                observed_before_identity=None,
-                expected_after_identity=expected_identity,
-                observed_after_identity=observed_identity,
-                observed_state=self._evidence_state(classification),
-                checkpoint_id=None,
-                artifact_id=artifact_id,
-                evidence_created_at=utc_now(),
-            )
-            evidence_id = self._record_evidence_tx(conn, evidence)
             action = self._action_for(classification, artifact["state"])
-            operation_id, operation_key = self._record_workspace_operation_tx(
-                conn,
-                project_id=project_id,
-                run_id=run_id,
-                phase_id=phase_id,
-                task_id=task_id,
-                attempt_id=attempt_id,
-                artifact_id=artifact_id,
-                classification=classification,
-                action=action,
-                evidence=evidence,
-            )
-            current_artifact_state = str(artifact["state"])
-            if current_artifact_state == "ARTIFACT_VALIDATED" and classification != "COMPLETE":
-                if classification in {"MISMATCH", "PARTIAL", "AMBIGUOUS", "ABSENT"}:
-                    next_sequence = self._next_sequence(conn, project_id, run_id)
-                    conn.execute("UPDATE artifacts SET state='ARTIFACT_INVALID' WHERE artifact_id=?", (artifact_id,))
-                    conn.execute(
-                        "UPDATE validations SET state='REQUIRES_REVALIDATION' WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND artifact_id=? AND state='PASSED'",
-                        (project_id, run_id, phase_id, task_id, attempt_id, artifact_id),
-                    )
-                    self.state._append_event_tx(
-                        conn,
-                        project_id=project_id,
-                        run_id=run_id,
-                        sequence=next_sequence,
-                        event_type="WORKSPACE_ARTIFACT_INVALIDATED",
-                        entity_type="artifact",
-                        entity_id=artifact_id,
-                        payload={"classification": classification, "observed_identity": observed_identity, "observed_checksum": checksum, "evidence_id": evidence_id},
-                    )
-                    self._bump_sequence(conn, project_id, run_id, next_sequence)
-            if classification != "COMPLETE" and str(artifact["state"]) == "ARTIFACT_UNVALIDATED":
-                pass
-            return WorkspaceRecoveryDecision(project_id, run_id, phase_id, task_id, attempt_id, classification, action, artifact_id, evidence_id, operation_id, operation_key)
+            key = self._workspace_operation_key(project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification)
+            existing = conn.execute("SELECT * FROM recovery_operations WHERE idempotency_key=?", (key,)).fetchone()
+            if existing is not None:
+                return WorkspaceRecoveryDecision(project_id, run_id, phase_id, task_id, attempt_id, classification, action, artifact_id, self._operation_evidence_id(existing), str(existing["operation_id"]), key)
+            evidence = WorkspaceEvidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, "MODIFIED" if observed_state == "PRESENT_COMPLETE" else "CREATED" if observed_state == "ABSENT" else "MODIFIED", None, None, expected_identity, observed_identity, self._evidence_state(classification), None, artifact_id, utc_now())
+            evidence_id = self._record_evidence_tx(conn, evidence)
+            operation_id = self._record_workspace_operation_tx(conn, project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id=artifact_id, classification=classification, action=action, evidence=evidence, evidence_id=evidence_id, key=key)
+            if str(artifact["state"]) == "ARTIFACT_VALIDATED" and classification != "COMPLETE":
+                if classification in self.CLASSIFICATIONS - {"COMPLETE"}:
+                    self._invalidate_artifact_tx(conn, project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification, observed_identity, checksum, evidence_id)
+            return WorkspaceRecoveryDecision(project_id, run_id, phase_id, task_id, attempt_id, classification, action, artifact_id, evidence_id, operation_id, key)
 
-    def inspect_checkpoint(
-        self,
-        *,
-        project_id: str,
-        run_id: str,
-        phase_id: str,
-        task_id: str,
-        attempt_id: str,
-        checkpoint_id: str,
-        expected_sequence: Optional[int] = None,
-    ) -> WorkspaceRecoveryDecision:
+    def inspect_checkpoint(self, *, project_id: str, run_id: str, phase_id: str, task_id: str, attempt_id: str, checkpoint_id: str, expected_sequence: Optional[int] = None) -> WorkspaceRecoveryDecision:
         with self.state._transaction() as conn:
             checkpoint = self.state._require_checkpoint(conn, checkpoint_id)
             self._require_lineage(checkpoint, project_id, run_id, phase_id, task_id, attempt_id)
             run = self.state._require_run(conn, project_id, run_id)
             if expected_sequence is not None and int(run["sequence"]) != expected_sequence:
                 raise StateConflictError("Stale durable run sequence")
-            evidence_rows = conn.execute(
-                "SELECT * FROM workspace_evidence WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? ORDER BY evidence_id DESC",
-                (project_id, run_id, phase_id, task_id, attempt_id),
-            ).fetchall()
+            evidence_rows = conn.execute("SELECT * FROM workspace_evidence WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? ORDER BY evidence_id DESC", (project_id, run_id, phase_id, task_id, attempt_id)).fetchall()
             matching = [row for row in evidence_rows if row["checkpoint_id"] == checkpoint_id and self._row_digest(row) == checkpoint["workspace_evidence_hash"]]
             expected_identity = str(checkpoint["workspace_evidence_identity"])
             path = self._safe_path(str(matching[0]["relative_path"])) if matching else None
             observed_identity, checksum, observed_state = self._observe_path(path) if path else (None, None, "AMBIGUOUS")
             classification = "COMPLETE" if matching and observed_identity == expected_identity else "AMBIGUOUS" if not matching or observed_state == "AMBIGUOUS" else "MISMATCH" if observed_state == "PRESENT_COMPLETE" else "ABSENT"
-            evidence_id = None
+            action = "PRESERVE" if classification == "COMPLETE" else "RECOVERY_REQUIRED"
             operation_id = None
             operation_key = None
+            evidence_id = None
+            artifact_id = matching[0]["artifact_id"] if matching else None
+            key = self._workspace_operation_key(project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification)
+            existing = conn.execute("SELECT * FROM recovery_operations WHERE idempotency_key=?", (key,)).fetchone()
+            if existing is not None:
+                return WorkspaceRecoveryDecision(project_id, run_id, phase_id, task_id, attempt_id, classification, action, artifact_id, self._operation_evidence_id(existing), str(existing["operation_id"]), key)
             if matching:
                 source = matching[0]
-                observation = WorkspaceEvidence(
-                    project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id,
-                    relative_path=str(source["relative_path"]), change_kind="MODIFIED", expected_before_identity=source["expected_before_identity"],
-                    observed_before_identity=source["observed_before_identity"], expected_after_identity=expected_identity, observed_after_identity=observed_identity,
-                    observed_state=self._evidence_state(classification), checkpoint_id=checkpoint_id, artifact_id=source["artifact_id"], evidence_created_at=utc_now(),
-                )
+                observation = WorkspaceEvidence(project_id, run_id, phase_id, task_id, attempt_id, str(source["relative_path"]), "MODIFIED", source["expected_before_identity"], source["observed_before_identity"], expected_identity, observed_identity, self._evidence_state(classification), checkpoint_id, artifact_id, utc_now())
                 evidence_id = self._record_evidence_tx(conn, observation)
-                operation_id, operation_key = self._record_workspace_operation_tx(conn, project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id=source["artifact_id"], classification=classification, action="PRESERVE" if classification == "COMPLETE" else "RECOVERY_REQUIRED", evidence=observation)
-            action = "PRESERVE" if classification == "COMPLETE" else "RECOVERY_REQUIRED"
-            return WorkspaceRecoveryDecision(project_id, run_id, phase_id, task_id, attempt_id, classification, action, None, evidence_id, operation_id, operation_key)
+                operation_id = self._record_workspace_operation_tx(conn, project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id=artifact_id, classification=classification, action=action, evidence=observation, evidence_id=evidence_id, key=key)
+                if classification != "COMPLETE" and str(checkpoint["status"]) == "TRUSTED":
+                    next_sequence = self._next_sequence(conn, project_id, run_id)
+                    conn.execute("UPDATE checkpoints SET status='INVALID' WHERE checkpoint_id=?", (checkpoint_id,))
+                    if artifact_id is not None:
+                        conn.execute("UPDATE validations SET state='REQUIRES_REVALIDATION' WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND artifact_id=? AND state='PASSED'", (project_id, run_id, phase_id, task_id, attempt_id, artifact_id))
+                    else:
+                        conn.execute("UPDATE validations SET state='REQUIRES_REVALIDATION' WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND checkpoint_sequence=? AND state='PASSED'", (project_id, run_id, phase_id, task_id, attempt_id, int(checkpoint["sequence"])))
+                    self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=next_sequence, event_type="CHECKPOINT_INVALIDATED_BY_WORKSPACE", entity_type="checkpoint", entity_id=checkpoint_id, payload={"classification": classification, "observed_identity": observed_identity, "observed_checksum": checksum, "evidence_id": evidence_id})
+                    self._bump_sequence(conn, project_id, run_id, next_sequence)
+            return WorkspaceRecoveryDecision(project_id, run_id, phase_id, task_id, attempt_id, classification, action, artifact_id, evidence_id, operation_id, operation_key)
 
-    def recover_delivery(
-        self,
-        *,
-        project_id: str,
-        run_id: str,
-        expected_sequence: Optional[int] = None,
-        effect_state: Optional[str] = None,
-    ) -> DeliveryRecoveryDecision:
+    def recover_delivery(self, *, project_id: str, run_id: str, expected_sequence: Optional[int] = None, effect_state: Optional[str] = None) -> DeliveryRecoveryDecision:
         with self.state._transaction() as conn:
             run = self.state._require_run(conn, project_id, run_id)
             current = str(run["delivery_state"])
@@ -213,70 +149,72 @@ class WorkspaceDeliveryRecovery:
             key = f"m6-delivery-recovery:v1:{project_id}:{run_id}"
             operation = conn.execute("SELECT * FROM recovery_operations WHERE idempotency_key=?", (key,)).fetchone()
             if operation is None:
-                operation_id = hashlib.sha256(f"{project_id}|{run_id}|{key}".encode("utf-8")).hexdigest()[:32]
-                conn.execute(
-                    "INSERT INTO recovery_operations(operation_id,idempotency_key,project_id,run_id,phase_id,task_id,attempt_id,operation_kind,state) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (operation_id, key, project_id, run_id, None, None, None, "M6_DELIVERY_RECOVERY", "PLANNED"),
-                )
+                operation_id = hashlib.sha256(f"{project_id}|{run_id}|{key}".encode()).hexdigest()[:32]
+                conn.execute("INSERT INTO recovery_operations(operation_id,idempotency_key,project_id,run_id,phase_id,task_id,attempt_id,operation_kind,state) VALUES(?,?,?,?,?,?,?,?,?)", (operation_id,key,project_id,run_id,None,None,None,"M6_DELIVERY_RECOVERY","PLANNED"))
                 seq = self._next_sequence(conn, project_id, run_id)
                 self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type="RECOVERY_OPERATION_PLANNED", entity_type="recovery_operation", entity_id=operation_id, payload={"operation_kind":"M6_DELIVERY_RECOVERY","idempotency_key":key})
                 self._bump_sequence(conn, project_id, run_id, seq)
                 operation = conn.execute("SELECT * FROM recovery_operations WHERE operation_id=?", (operation_id,)).fetchone()
             operation_id = str(operation["operation_id"])
-            if str(operation["state"]) not in {"COMMITTED", "RECOVERY_REQUIRED", "SAFE_STOP"}:
+            if str(operation["state"]) not in {"UNKNOWN", "RECOVERY_REQUIRED", "SAFE_STOP"}:
                 seq = self._next_sequence(conn, project_id, run_id)
                 now = utc_now()
-                conn.execute("UPDATE recovery_operations SET state='UNKNOWN', started_at=COALESCE(started_at,?), effect_reference=?, effect_hash=? WHERE operation_id=?", (now, json.dumps({"effect_state": effect_state or "UNKNOWN", "delivery_state": current}, sort_keys=True, separators=(",", ":")), hashlib.sha256(f"{current}|{effect_state or 'UNKNOWN'}".encode()).hexdigest(), operation_id))
-                self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type="RECOVERY_OPERATION_UNKNOWN", entity_type="recovery_operation", entity_id=operation_id, payload={"operation_kind":"M6_DELIVERY_RECOVERY","delivery_state":current,"effect_state":effect_state or "UNKNOWN"})
+                effect = effect_state or "UNKNOWN"
+                conn.execute("UPDATE recovery_operations SET state='UNKNOWN', started_at=COALESCE(started_at,?), effect_reference=?, effect_hash=? WHERE operation_id=?", (now, json.dumps({"effect_state":effect,"delivery_state":current}, sort_keys=True, separators=(",", ":")), hashlib.sha256(f"{current}|{effect}".encode()).hexdigest(), operation_id))
+                self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type="RECOVERY_OPERATION_UNKNOWN", entity_type="recovery_operation", entity_id=operation_id, payload={"operation_kind":"M6_DELIVERY_RECOVERY","delivery_state":current,"effect_state":effect})
                 self._bump_sequence(conn, project_id, run_id, seq)
                 if current in {"DELIVERY_STARTED", "DELIVERY_INTERRUPTED", "DELIVERY_RECOVERY_REQUIRED"}:
-                    next_state = "DELIVERY_RECOVERY_REQUIRED"
-                    if current != next_state:
-                        self._transition_delivery_tx(conn, project_id, run_id, next_state)
+                    self._transition_delivery_tx(conn, project_id, run_id, "DELIVERY_RECOVERY_REQUIRED")
             final = self.state._require_run(conn, project_id, run_id)
             return DeliveryRecoveryDecision(project_id, run_id, current, str(final["delivery_state"]), operation_id, key, effect_state or "UNKNOWN")
 
-    def _transition_delivery_tx(self, conn, project_id: str, run_id: str, new_state: str) -> None:
+    def _invalidate_artifact_tx(self, conn, project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification, observed_identity, observed_checksum, evidence_id):
+        next_sequence = self._next_sequence(conn, project_id, run_id)
+        conn.execute("UPDATE artifacts SET state='ARTIFACT_INVALID' WHERE artifact_id=?", (artifact_id,))
+        conn.execute("UPDATE validations SET state='REQUIRES_REVALIDATION' WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND artifact_id=? AND state='PASSED'", (project_id, run_id, phase_id, task_id, attempt_id, artifact_id))
+        self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=next_sequence, event_type="WORKSPACE_ARTIFACT_INVALIDATED", entity_type="artifact", entity_id=artifact_id, payload={"classification":classification,"observed_identity":observed_identity,"observed_checksum":observed_checksum,"evidence_id":evidence_id})
+        self._bump_sequence(conn, project_id, run_id, next_sequence)
+
+    def _transition_delivery_tx(self, conn, project_id, run_id, new_state):
         run = self.state._require_run(conn, project_id, run_id)
         current = str(run["delivery_state"])
-        allowed = {
-            "DELIVERY_PENDING": {"DELIVERY_STARTED"},
-            "DELIVERY_STARTED": {"DELIVERY_INTERRUPTED", "DELIVERY_COMMITTED", "DELIVERY_RECOVERY_REQUIRED"},
-            "DELIVERY_INTERRUPTED": {"DELIVERY_STARTED", "DELIVERY_RECOVERY_REQUIRED", "DELIVERY_COMMITTED"},
-            "DELIVERY_RECOVERY_REQUIRED": {"DELIVERY_STARTED", "DELIVERY_COMMITTED"},
-            "DELIVERY_COMMITTED": {"DELIVERY_VERIFIED"},
-            "DELIVERY_VERIFIED": set(),
-        }
-        if new_state not in DELIVERY_STATES or new_state not in allowed.get(current, set()):
+        allowed = {"DELIVERY_PENDING":{"DELIVERY_STARTED"},"DELIVERY_STARTED":{"DELIVERY_INTERRUPTED","DELIVERY_COMMITTED","DELIVERY_RECOVERY_REQUIRED"},"DELIVERY_INTERRUPTED":{"DELIVERY_STARTED","DELIVERY_RECOVERY_REQUIRED","DELIVERY_COMMITTED"},"DELIVERY_RECOVERY_REQUIRED":{"DELIVERY_STARTED","DELIVERY_COMMITTED"},"DELIVERY_COMMITTED":{"DELIVERY_VERIFIED"},"DELIVERY_VERIFIED":set()}
+        if new_state not in DELIVERY_STATES or new_state not in allowed.get(current,set()):
             raise InvalidTransitionError(f"Forbidden delivery transition: {current} -> {new_state}")
         seq = self._next_sequence(conn, project_id, run_id)
         self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type=new_state, entity_type="delivery", entity_id=run_id, payload={"delivery_state":new_state})
-        self._bump_sequence(conn, project_id, run_id, seq)
-        conn.execute("UPDATE runs SET delivery_state=? WHERE project_id=? AND run_id=?", (new_state, project_id, run_id))
+        conn.execute("UPDATE runs SET delivery_state=?, sequence=? WHERE project_id=? AND run_id=?", (new_state,seq,project_id,run_id))
 
-    def _record_evidence_tx(self, conn, evidence: WorkspaceEvidence) -> int:
+    def _record_evidence_tx(self, conn, evidence: WorkspaceEvidence):
         self.state._require_attempt(conn, evidence.project_id, evidence.run_id, evidence.phase_id, evidence.task_id, evidence.attempt_id)
-        cur = conn.execute(
-            "INSERT INTO workspace_evidence(project_id,run_id,phase_id,task_id,attempt_id,relative_path,change_kind,expected_before_identity,observed_before_identity,expected_after_identity,observed_after_identity,observed_state,checkpoint_id,artifact_id,evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (evidence.project_id,evidence.run_id,evidence.phase_id,evidence.task_id,evidence.attempt_id,evidence.relative_path,evidence.change_kind,evidence.expected_before_identity,evidence.observed_before_identity,evidence.expected_after_identity,evidence.observed_after_identity,evidence.observed_state,evidence.checkpoint_id,evidence.artifact_id,evidence.evidence_created_at),
-        )
+        cur = conn.execute("INSERT INTO workspace_evidence(project_id,run_id,phase_id,task_id,attempt_id,relative_path,change_kind,expected_before_identity,observed_before_identity,expected_after_identity,observed_after_identity,observed_state,checkpoint_id,artifact_id,evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (evidence.project_id,evidence.run_id,evidence.phase_id,evidence.task_id,evidence.attempt_id,evidence.relative_path,evidence.change_kind,evidence.expected_before_identity,evidence.observed_before_identity,evidence.expected_after_identity,evidence.observed_after_identity,evidence.observed_state,evidence.checkpoint_id,evidence.artifact_id,evidence.evidence_created_at))
         evidence_id = int(cur.lastrowid)
         seq = self._next_sequence(conn, evidence.project_id, evidence.run_id)
         self.state._append_event_tx(conn, project_id=evidence.project_id, run_id=evidence.run_id, sequence=seq, event_type="WORKSPACE_EVIDENCE_RECORDED", entity_type="workspace_evidence", entity_id=str(evidence_id), payload={"phase_id":evidence.phase_id,"task_id":evidence.task_id,"attempt_id":evidence.attempt_id,"relative_path":evidence.relative_path,"observed_state":evidence.observed_state,"artifact_id":evidence.artifact_id,"checkpoint_id":evidence.checkpoint_id,"evidence_digest":evidence_digest(evidence)})
         self._bump_sequence(conn, evidence.project_id, evidence.run_id, seq)
         return evidence_id
 
-    def _record_workspace_operation_tx(self, conn, *, project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification, action, evidence):
-        key = f"m6-workspace:v1:{project_id}:{run_id}:{phase_id}:{task_id}:{attempt_id}:{artifact_id or 'checkpoint'}:{classification}"
-        existing = conn.execute("SELECT * FROM recovery_operations WHERE idempotency_key=?", (key,)).fetchone()
-        if existing is not None:
-            return str(existing["operation_id"]), key
+    def _record_workspace_operation_tx(self, conn, *, project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification, action, evidence, evidence_id, key):
         operation_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
-        conn.execute("INSERT INTO recovery_operations(operation_id,idempotency_key,project_id,run_id,phase_id,task_id,attempt_id,operation_kind,state,effect_reference,effect_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (operation_id,key,project_id,run_id,phase_id,task_id,attempt_id,"M6_WORKSPACE_RECOVERY","COMMITTED",json.dumps({"classification":classification,"action":action,"evidence_id":"pending"}, sort_keys=True, separators=(",", ":")), hashlib.sha256(f"{key}|{classification}|{action}".encode()).hexdigest()))
+        conn.execute("INSERT INTO recovery_operations(operation_id,idempotency_key,project_id,run_id,phase_id,task_id,attempt_id,operation_kind,state,effect_reference,effect_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (operation_id,key,project_id,run_id,phase_id,task_id,attempt_id,"M6_WORKSPACE_RECOVERY","COMMITTED",json.dumps({"classification":classification,"action":action,"evidence_id":evidence_id}, sort_keys=True, separators=(",", ":")), hashlib.sha256(f"{key}|{classification}|{action}|{evidence_id}".encode()).hexdigest()))
         seq = self._next_sequence(conn, project_id, run_id)
-        self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type="M6_WORKSPACE_RECOVERY_DECISION", entity_type="recovery_operation", entity_id=operation_id, payload={"operation_kind":"M6_WORKSPACE_RECOVERY","idempotency_key":key,"classification":classification,"action":action,"artifact_id":artifact_id,"relative_path":evidence.relative_path,"effect_state":"NO_EXTERNAL_EFFECT"})
+        self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type="M6_WORKSPACE_RECOVERY_DECISION", entity_type="recovery_operation", entity_id=operation_id, payload={"operation_kind":"M6_WORKSPACE_RECOVERY","idempotency_key":key,"classification":classification,"action":action,"artifact_id":artifact_id,"relative_path":evidence.relative_path,"effect_state":"NO_EXTERNAL_EFFECT","evidence_id":evidence_id})
         self._bump_sequence(conn, project_id, run_id, seq)
-        return operation_id, key
+        return operation_id
+
+    @staticmethod
+    def _operation_evidence_id(operation):
+        if operation["effect_reference"] is None:
+            return None
+        try:
+            value = json.loads(str(operation["effect_reference"]))
+            return int(value["evidence_id"]) if value.get("evidence_id") not in {None, "pending"} else None
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _workspace_operation_key(project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification):
+        return f"m6-workspace:v1:{project_id}:{run_id}:{phase_id}:{task_id}:{attempt_id}:{artifact_id or 'checkpoint'}:{classification}"
 
     @staticmethod
     def _require_lineage(row, project_id, run_id, phase_id, task_id, attempt_id):
@@ -320,11 +258,7 @@ class WorkspaceDeliveryRecovery:
 
     @staticmethod
     def _action_for(classification, artifact_state):
-        if classification == "COMPLETE" and artifact_state == "ARTIFACT_VALIDATED":
-            return "PRESERVE"
-        if classification in {"PARTIAL", "MISMATCH", "ABSENT", "AMBIGUOUS"}:
-            return "RECOVERY_REQUIRED"
-        return "RECOVERY_REQUIRED"
+        return "PRESERVE" if classification == "COMPLETE" and artifact_state == "ARTIFACT_VALIDATED" else "RECOVERY_REQUIRED"
 
     @staticmethod
     def _evidence_state(classification):
