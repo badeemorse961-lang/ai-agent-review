@@ -1,0 +1,186 @@
+name: M3.1 Contract Correction Apply 4
+
+on:
+  push:
+    branches:
+      - milestone/persistent-project-run-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor == 'badeemorse961-lang'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply M3.1 patch and full local gates
+        shell: python
+        run: |
+          from pathlib import Path
+          import json
+          import subprocess
+          import sys
+
+          root = Path('.')
+          state = root / 'durable_execution_state.py'
+          evidence = root / 'durable_execution_evidence.py'
+          orchestration = root / 'orchestration.py'
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, got {count}: {old[:120]!r}')
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # durable_execution_state.py: one source of truth for scope canonicalization and identity.
+          replace_once(
+              state,
+              'from pathlib import Path\nfrom typing import Any, Iterable, Mapping, Optional\n',
+              'from pathlib import Path, PurePosixPath, PureWindowsPath\nfrom typing import Any, Iterable, Mapping, Optional\n',
+          )
+          replace_once(
+              state,
+              'SCHEMA_VERSION = 1\nGENESIS_HASH = "GENESIS"\n',
+              '''SCHEMA_VERSION = 1\nGENESIS_HASH = "GENESIS"\n\nWORKSPACE_SCOPE_VERSION = "workspace-scope-v1"\nWORKSPACE_IDENTITY_ENCODING = "utf-8"\nWORKSPACE_IDENTITY_JSON_SEPARATORS = (",", ":")\n\n\ndef canonical_workspace_scope(targets: Iterable[str], workspace_root: Path) -> tuple[str, ...]:\n    """Canonicalize the exact M3 target set used for workspace identity."""\n    root = Path(workspace_root).resolve()\n    canonical: set[str] = set()\n    for raw_target in targets:\n        raw = str(raw_target).replace("\\\\", "/")\n        if not raw or raw.startswith("/"):\n            raise ValueError(f"Workspace target must be workspace-relative: {raw_target!r}")\n        windows = PureWindowsPath(raw)\n        if windows.is_absolute() or windows.drive:\n            raise ValueError(f"Workspace target must not be absolute: {raw_target!r}")\n        candidate = (root / Path(*PurePosixPath(raw).parts)).resolve(strict=False)\n        try:\n            relative = candidate.relative_to(root).as_posix()\n        except ValueError as exc:\n            raise ValueError(f"Workspace target escapes workspace root: {raw_target!r}") from exc\n        if relative == ".":\n            canonical.add(".")\n        else:\n            canonical.add(relative)\n    return tuple(sorted(canonical))\n\n\ndef workspace_path_identity(path: Path) -> str:\n    """Apply the existing M3 path identity semantics without mtime or listing state."""\n    if not path.exists():\n        return "ABSENT"\n    if path.is_file():\n        import hashlib\n        digest = hashlib.sha256()\n        with path.open("rb") as handle:\n            for chunk in iter(lambda: handle.read(1024 * 1024), b""):\n                digest.update(chunk)\n        return "sha256:" + digest.hexdigest()\n    return "DIRECTORY"\n\n\ndef workspace_identity_from_scope(scope: tuple[str, ...], workspace_root: Path) -> str:\n    """Recompute the M3 workspace identity from a durable canonical scope."""\n    root = Path(workspace_root).resolve()\n    canonical_scope = canonical_workspace_scope(scope, root)\n    entries = []\n    for relative in canonical_scope:\n        candidate = (root / Path(*relative.split("/"))).resolve(strict=False)\n        entries.append((relative, workspace_path_identity(candidate)))\n    material = json.dumps(entries, sort_keys=True, separators=WORKSPACE_IDENTITY_JSON_SEPARATORS)\n    import hashlib\n    return hashlib.sha256(material.encode(WORKSPACE_IDENTITY_ENCODING)).hexdigest()\n\n''',
+          )
+          replace_once(
+              state,
+              '    artifact_id: Optional[str]\n    evidence_created_at: str\n\n    def to_dict',
+              '    artifact_id: Optional[str]\n    evidence_created_at: str\n    workspace_scope_version: Optional[str] = None\n    workspace_scope_entries: Optional[tuple[str, ...]] = None\n\n    def to_dict',
+          )
+          replace_once(
+              state,
+              '            "artifact_id": self.artifact_id,\n            "evidence_created_at": self.evidence_created_at,\n',
+              '            "artifact_id": self.artifact_id,\n            "evidence_created_at": self.evidence_created_at,\n            "workspace_scope_version": self.workspace_scope_version,\n            "workspace_scope_entries": list(self.workspace_scope_entries) if self.workspace_scope_entries is not None else None,\n',
+          )
+          replace_once(
+              state,
+              '            artifact_id TEXT,\n            evidence_created_at TEXT NOT NULL,\n            FOREIGN KEY(project_id) REFERENCES projects(project_id),\n            FOREIGN KEY(project_id, run_id, phase_id, task_id, attempt_id)\n                REFERENCES attempts(project_id, run_id, phase_id, task_id, attempt_id),\n            FOREIGN KEY(checkpoint_id) REFERENCES checkpoints(checkpoint_id),\n            FOREIGN KEY(artifact_id) REFERENCES artifacts(artifact_id)\n',
+              '            artifact_id TEXT,\n            evidence_created_at TEXT NOT NULL,\n            workspace_scope_version TEXT,\n            workspace_scope_entries TEXT,\n            FOREIGN KEY(project_id) REFERENCES projects(project_id),\n            FOREIGN KEY(project_id, run_id, phase_id, task_id, attempt_id)\n                REFERENCES attempts(project_id, run_id, phase_id, task_id, attempt_id),\n            FOREIGN KEY(checkpoint_id) REFERENCES checkpoints(checkpoint_id),\n            FOREIGN KEY(artifact_id) REFERENCES artifacts(artifact_id)\n',
+          )
+          replace_once(
+              state,
+              '        with self._lock:\n            self._connection.executescript(schema)\n            row = self._connection.execute("SELECT schema_version FROM schema_meta LIMIT 1").fetchone()\n',
+              '''        with self._lock:\n            self._connection.executescript(schema)\n            columns = {str(item["name"]) for item in self._connection.execute("PRAGMA table_info(workspace_evidence)").fetchall()}\n            if "workspace_scope_version" not in columns:\n                self._connection.execute("ALTER TABLE workspace_evidence ADD COLUMN workspace_scope_version TEXT")\n            if "workspace_scope_entries" not in columns:\n                self._connection.execute("ALTER TABLE workspace_evidence ADD COLUMN workspace_scope_entries TEXT")\n            row = self._connection.execute("SELECT schema_version FROM schema_meta LIMIT 1").fetchone()\n''',
+          )
+          replace_once(
+              state,
+              '"INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",',
+              '"INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at, workspace_scope_version, workspace_scope_entries) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",',
+          )
+          replace_once(
+              state,
+              '                    artifact_id,\n                    evidence.evidence_created_at,\n                ),',
+              '                    artifact_id,\n                    evidence.evidence_created_at,\n                    evidence.workspace_scope_version,\n                    json.dumps(list(evidence.workspace_scope_entries), separators=(",", ":")) if evidence.workspace_scope_entries is not None else None,\n                ),',
+          )
+
+          # durable_execution_evidence.py: new digests include scope; legacy NULL scope keeps the old digest.
+          replace_once(
+              evidence,
+              '    WorkspaceEvidence,\n    utc_now,\n',
+              '    WorkspaceEvidence,\n    WORKSPACE_SCOPE_VERSION,\n    utc_now,\n',
+          )
+          old_digest = '''        "artifact_id": evidence.artifact_id,\n        "evidence_created_at": evidence.evidence_created_at,\n    }\n    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()\n'''
+          new_digest = '''        "artifact_id": evidence.artifact_id,\n        "evidence_created_at": evidence.evidence_created_at,\n    }\n    if evidence.workspace_scope_version is not None or evidence.workspace_scope_entries is not None:\n        payload["workspace_scope_version"] = evidence.workspace_scope_version\n        payload["workspace_scope_entries"] = list(evidence.workspace_scope_entries or ())\n    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()\n'''
+          replace_once(evidence, old_digest, new_digest)
+          replace_once(
+              evidence,
+              '        if evidence.observed_state not in {"PRESENT_COMPLETE", "PRESENT_PARTIAL", "ABSENT", "MISMATCH", "AMBIGUOUS"}:\n            raise ValueError("Unsupported workspace observed_state")\n',
+              '''        if evidence.observed_state not in {"PRESENT_COMPLETE", "PRESENT_PARTIAL", "ABSENT", "MISMATCH", "AMBIGUOUS"}:\n            raise ValueError("Unsupported workspace observed_state")\n        if (evidence.workspace_scope_version is None) != (evidence.workspace_scope_entries is None):\n            raise ValueError("Workspace scope metadata must be provided together")\n        if evidence.workspace_scope_version is not None and evidence.workspace_scope_version != WORKSPACE_SCOPE_VERSION:\n            raise ValueError("Unsupported workspace scope version")\n''',
+          )
+          replace_once(
+              evidence,
+              'workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+              'workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at, workspace_scope_version, workspace_scope_entries) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          )
+          replace_once(
+              evidence,
+              'evidence.artifact_id, evidence.evidence_created_at))',
+              'evidence.artifact_id, evidence.evidence_created_at, evidence.workspace_scope_version, json.dumps(list(evidence.workspace_scope_entries or ()), separators=(",", ":")) if evidence.workspace_scope_entries is not None else None))',
+          )
+          replace_once(
+              evidence,
+              '        payload = {"project_id": row["project_id"], "run_id": row["run_id"], "phase_id": row["phase_id"], "task_id": row["task_id"], "attempt_id": row["attempt_id"], "relative_path": row["relative_path"], "change_kind": row["change_kind"], "expected_before_identity": row["expected_before_identity"], "observed_before_identity": row["observed_before_identity"], "expected_after_identity": row["expected_after_identity"], "observed_after_identity": row["observed_after_identity"], "observed_state": row["observed_state"], "checkpoint_id": row["checkpoint_id"], "artifact_id": row["artifact_id"], "evidence_created_at": row["evidence_created_at"]}\n        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()\n',
+              '''        payload = {"project_id": row["project_id"], "run_id": row["run_id"], "phase_id": row["phase_id"], "task_id": row["task_id"], "attempt_id": row["attempt_id"], "relative_path": row["relative_path"], "change_kind": row["change_kind"], "expected_before_identity": row["expected_before_identity"], "observed_before_identity": row["observed_before_identity"], "expected_after_identity": row["expected_after_identity"], "observed_after_identity": row["observed_after_identity"], "observed_state": row["observed_state"], "checkpoint_id": row["checkpoint_id"], "artifact_id": row["artifact_id"], "evidence_created_at": row["evidence_created_at"]}\n        if row["workspace_scope_version"] is not None or row["workspace_scope_entries"] is not None:\n            payload["workspace_scope_version"] = row["workspace_scope_version"]\n            payload["workspace_scope_entries"] = list(json.loads(row["workspace_scope_entries"] or "[]"))\n        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()\n''',
+          )
+
+          # orchestration.py: use the extracted contract everywhere, persist the exact scope.
+          replace_once(
+              orchestration,
+              'from durable_execution_state import DurableExecutionState, LineageError, WorkspaceEvidence, utc_now\n',
+              'from durable_execution_state import DurableExecutionState, LineageError, WorkspaceEvidence, WORKSPACE_SCOPE_VERSION, canonical_workspace_scope, utc_now, workspace_identity_from_scope, workspace_path_identity\n',
+          )
+          replace_once(
+              orchestration,
+              'def persist_post_execution(self, run_id: str, phase_id: str, task_id: str, attempt_id: str, raw_checkpoint_id: str, before_identity: str, after_identity: str, observed_state: str) -> tuple[str, str, str, int]:',
+              'def persist_post_execution(self, run_id: str, phase_id: str, task_id: str, attempt_id: str, raw_checkpoint_id: str, before_identity: str, after_identity: str, observed_state: str, workspace_scope: tuple[str, ...]) -> tuple[str, str, str, int]:',
+          )
+          replace_once(
+              orchestration,
+              'evidence = WorkspaceEvidence(project_id=self.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, relative_path=".", change_kind="MODIFIED", expected_before_identity=before_identity, observed_before_identity=before_identity, expected_after_identity=after_identity, observed_after_identity=after_identity, observed_state=observed_state, checkpoint_id=None, artifact_id=artifact_id, evidence_created_at=utc_now())',
+              'evidence = WorkspaceEvidence(project_id=self.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, relative_path=".", change_kind="MODIFIED", expected_before_identity=before_identity, observed_before_identity=before_identity, expected_after_identity=after_identity, observed_after_identity=after_identity, observed_state=observed_state, checkpoint_id=None, artifact_id=artifact_id, evidence_created_at=utc_now(), workspace_scope_version=WORKSPACE_SCOPE_VERSION, workspace_scope_entries=workspace_scope)',
+          )
+          replace_once(
+              orchestration,
+              '''    def _workspace_identity(self, targets: tuple[str, ...]) -> str:\n        entries: list[tuple[str, str]] = []\n        for target in sorted(set(targets)):\n            candidate = (self.workspace_root / target).resolve(strict=False)\n            try:\n                candidate.relative_to(self.workspace_root)\n            except ValueError as exc:\n                raise OrchestrationSafetyStop(f"Workspace target escapes durable workspace: {target!r}") from exc\n            entries.append((target, self._path_identity(candidate)))\n        return hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()\n''',
+              '''    def _workspace_identity(self, targets: tuple[str, ...]) -> str:\n        try:\n            scope = canonical_workspace_scope(targets, self.workspace_root)\n        except ValueError as exc:\n            raise OrchestrationSafetyStop(str(exc)) from exc\n        return workspace_identity_from_scope(scope, self.workspace_root)\n''',
+          )
+          replace_once(
+              orchestration,
+              '''    @staticmethod\n    def _path_identity(path: Path) -> str:\n        if not path.exists():\n            return "ABSENT"\n        if path.is_file():\n            digest = hashlib.sha256()\n            with path.open("rb") as handle:\n                for chunk in iter(lambda: handle.read(1024 * 1024), b""):\n                    digest.update(chunk)\n            return "sha256:" + digest.hexdigest()\n        return "DIRECTORY"\n''',
+              '''    @staticmethod\n    def _path_identity(path: Path) -> str:\n        return workspace_path_identity(path)\n''',
+          )
+          replace_once(
+              orchestration,
+              '''    @staticmethod\n    def _observed_state(targets: tuple[str, ...], root: Path) -> str:\n        if not targets:\n            return "PRESENT_COMPLETE"\n        states = [_DurableLifecycleBridge._path_identity((root / target).resolve(strict=False)) for target in targets]\n        if all(value == "ABSENT" for value in states):\n            return "ABSENT"\n        if any(value == "ABSENT" for value in states):\n            return "PRESENT_PARTIAL"\n        return "PRESENT_COMPLETE"\n''',
+              '''    @staticmethod\n    def _observed_state(targets: tuple[str, ...], root: Path) -> str:\n        canonical = canonical_workspace_scope(targets, root)\n        if not canonical:\n            return "PRESENT_COMPLETE"\n        states = [_DurableLifecycleBridge._path_identity((root / target).resolve(strict=False)) for target in canonical]\n        if all(value == "ABSENT" for value in states):\n            return "ABSENT"\n        if any(value == "ABSENT" for value in states):\n            return "PRESENT_PARTIAL"\n        return "PRESENT_COMPLETE"\n''',
+          )
+          replace_once(
+              orchestration,
+              'return WorkspaceEvidence(project_id=str(row["project_id"]), run_id=str(row["run_id"]), phase_id=str(row["phase_id"]), task_id=str(row["task_id"]), attempt_id=str(row["attempt_id"]), relative_path=str(row["relative_path"]), change_kind=str(row["change_kind"]), expected_before_identity=row["expected_before_identity"], observed_before_identity=row["observed_before_identity"], expected_after_identity=row["expected_after_identity"], observed_after_identity=row["observed_after_identity"], observed_state=str(row["observed_state"]), checkpoint_id=row["checkpoint_id"], artifact_id=row["artifact_id"], evidence_created_at=str(row["evidence_created_at"]))',
+              'return WorkspaceEvidence(project_id=str(row["project_id"]), run_id=str(row["run_id"]), phase_id=str(row["phase_id"]), task_id=str(row["task_id"]), attempt_id=str(row["attempt_id"]), relative_path=str(row["relative_path"]), change_kind=str(row["change_kind"]), expected_before_identity=row["expected_before_identity"], observed_before_identity=row["observed_before_identity"], expected_after_identity=row["expected_after_identity"], observed_after_identity=row["observed_after_identity"], observed_state=str(row["observed_state"]), checkpoint_id=row["checkpoint_id"], artifact_id=row["artifact_id"], evidence_created_at=str(row["evidence_created_at"]), workspace_scope_version=row["workspace_scope_version"], workspace_scope_entries=tuple(json.loads(row["workspace_scope_entries"])) if row["workspace_scope_entries"] is not None else None)',
+          )
+          replace_once(
+              orchestration,
+              '                before_identity = self._durable._workspace_identity(spec.changed_targets) if self._durable is not None else ""\n',
+              '                workspace_scope = canonical_workspace_scope(spec.changed_targets, self.workspace_root) if self._durable is not None else ()\n                before_identity = self._durable._workspace_identity(workspace_scope) if self._durable is not None else ""\n',
+          )
+          replace_once(
+              orchestration,
+              '                    _, durable_evidence_hash, durable_artifact_id, durable_checkpoint_sequence = self._durable.persist_post_execution(durable_run_id, durable_phase_id, current_task_id, attempt_id, raw_checkpoint_id, before_identity, after_identity, self._durable._observed_state(spec.changed_targets, self.workspace_root))\n',
+              '                    _, durable_evidence_hash, durable_artifact_id, durable_checkpoint_sequence = self._durable.persist_post_execution(durable_run_id, durable_phase_id, current_task_id, attempt_id, raw_checkpoint_id, before_identity, after_identity, self._durable._observed_state(workspace_scope, self.workspace_root), workspace_scope)\n',
+          )
+
+          # Targeted M3.1 tests: real M3 lifecycle plus direct deterministic contract tests.
+          test_file = root / 'test_m31_workspace_identity.py'
+          test_file.write_text('''from pathlib import Path\nimport json\n\nimport pytest\n\nfrom durable_execution_evidence import EvidenceLayer\nfrom durable_execution_state import (\n    DurableExecutionState,\n    WORKSPACE_SCOPE_VERSION,\n    WorkspaceEvidence,\n    canonical_workspace_scope,\n    workspace_identity_from_scope,\n)\nfrom test_orchestration_durable import build_durable_orchestrator\n\n\ndef _new_state(tmp_path: Path):\n    root = tmp_path / "project"\n    root.mkdir()\n    db = tmp_path / "execution.sqlite3"\n    state = DurableExecutionState(db)\n    project_id = state.create_project(workspace_root=root)\n    run = state.create_run(project_id)\n    state.create_phase(project_id=project_id, run_id=run.run_id, phase_id="phase-1", ordinal=1, name="M3.1")\n    state.transition_run(project_id=project_id, run_id=run.run_id, expected_sequence=run.sequence, new_state="PLAN_ACCEPTED")\n    state.create_task(project_id=project_id, run_id=run.run_id, phase_id="phase-1", task_id="task-1")\n    state.create_attempt(project_id=project_id, run_id=run.run_id, phase_id="phase-1", task_id="task-1", attempt_id="attempt-1")\n    return root, db, state, project_id, run.run_id\n\n\ndef _evidence(root, project_id, run_id, state, scope, identity):\n    evidence = WorkspaceEvidence(\n        project_id, run_id, "phase-1", "task-1", "attempt-1", ".", "MODIFIED",\n        identity, identity, identity, identity, "PRESENT_COMPLETE", None, None,\n        "2026-01-01T00:00:00+00:00", WORKSPACE_SCOPE_VERSION, scope,\n    )\n    evidence_id = EvidenceLayer(state).record_workspace_evidence(evidence)\n    return evidence_id\n\n\ndef test_new_evidence_persists_scope_metadata_and_canonical_order(tmp_path):\n    root, _, state, project_id, run_id = _new_state(tmp_path)\n    scope = canonical_workspace_scope(("b.txt", "a.txt", "a.txt"), root)\n    identity = workspace_identity_from_scope(scope, root)\n    evidence_id = _evidence(root, project_id, run_id, state, scope, identity)\n    row = state._connection.execute("SELECT workspace_scope_version, workspace_scope_entries FROM workspace_evidence WHERE evidence_id=?", (evidence_id,)).fetchone()\n    assert row["workspace_scope_version"] == WORKSPACE_SCOPE_VERSION\n    assert json.loads(row["workspace_scope_entries"]) == ["a.txt", "b.txt"]\n\n\ndef test_scope_normalization_rejects_absolute_and_escape(tmp_path):\n    root = tmp_path / "project"; root.mkdir()\n    assert canonical_workspace_scope(("b\\\\x.txt", "a.txt", "./b/x.txt", "a.txt"), root) == ("a.txt", "b/x.txt")\n    with pytest.raises(ValueError): canonical_workspace_scope((str((root / "absolute.txt").resolve()),), root)\n    with pytest.raises(ValueError): canonical_workspace_scope(("../outside.txt",), root)\n    with pytest.raises(ValueError): canonical_workspace_scope(("C:/outside.txt",), root)\n\n\ndef test_empty_scope_is_canonical_empty_list_and_deterministic(tmp_path):\n    root = tmp_path / "project"; root.mkdir()\n    assert canonical_workspace_scope((), root) == ()\n    assert workspace_identity_from_scope((), root) == workspace_identity_from_scope((), root)\n\n\ndef test_identity_changes_for_in_scope_content_but_not_outside_scope(tmp_path):\n    root = tmp_path / "project"; root.mkdir()\n    (root / "target.txt").write_text("one", encoding="utf-8")\n    scope = canonical_workspace_scope(("target.txt",), root)\n    first = workspace_identity_from_scope(scope, root)\n    (root / "outside.txt").write_text("outside", encoding="utf-8")\n    assert workspace_identity_from_scope(scope, root) == first\n    (root / "target.txt").write_text("two", encoding="utf-8")\n    assert workspace_identity_from_scope(scope, root) != first\n\n\ndef test_directory_and_absent_targets_keep_m3_path_identity_semantics(tmp_path):\n    root = tmp_path / "project"; root.mkdir()\n    (root / "directory").mkdir()\n    scope = canonical_workspace_scope(("directory", "missing.txt"), root)\n    first = workspace_identity_from_scope(scope, root)\n    assert first == workspace_identity_from_scope(scope, root)\n    (root / "missing.txt").write_text("now-present", encoding="utf-8")\n    assert workspace_identity_from_scope(scope, root) != first\n\n\ndef test_restart_reconstructs_persisted_identity_from_scope_only(tmp_path):\n    root, db, state, project_id, run_id = _new_state(tmp_path)\n    (root / "target.txt").write_text("stable", encoding="utf-8")\n    scope = canonical_workspace_scope(("target.txt",), root)\n    expected = workspace_identity_from_scope(scope, root)\n    evidence_id = _evidence(root, project_id, run_id, state, scope, expected)\n    state.close()\n    reopened = DurableExecutionState(db)\n    row = reopened._connection.execute("SELECT relative_path, expected_after_identity, workspace_scope_version, workspace_scope_entries FROM workspace_evidence WHERE evidence_id=?", (evidence_id,)).fetchone()\n    persisted_scope = tuple(json.loads(row["workspace_scope_entries"]))\n    reconstructed = workspace_identity_from_scope(persisted_scope, root)\n    assert row["relative_path"] == "."\n    assert row["workspace_scope_version"] == WORKSPACE_SCOPE_VERSION\n    assert reconstructed == row["expected_after_identity"] == expected\n\n\ndef test_real_m3_lifecycle_persists_empty_scope_and_restarts(tmp_path):\n    root = tmp_path / "project"\n    root.mkdir()\n    db = tmp_path / "execution.sqlite3"\n    orchestrator, state, _, _ = build_durable_orchestrator(root, db)\n    result = orchestrator.run("M31-REAL")\n    row = state._connection.execute("SELECT expected_after_identity, workspace_scope_version, workspace_scope_entries, relative_path FROM workspace_evidence WHERE project_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1", (result.durable_project_id, result.durable_run_id)).fetchone()\n    assert row["relative_path"] == "."\n    assert row["workspace_scope_version"] == WORKSPACE_SCOPE_VERSION\n    assert json.loads(row["workspace_scope_entries"]) == []\n    expected = workspace_identity_from_scope((), root)\n    assert row["expected_after_identity"] == expected\n    state.close()\n    reopened = DurableExecutionState(db)\n    persisted = reopened._connection.execute("SELECT expected_after_identity, workspace_scope_entries FROM workspace_evidence WHERE project_id=? AND run_id=? ORDER BY evidence_id DESC LIMIT 1", (result.durable_project_id, result.durable_run_id)).fetchone()\n    reconstructed = workspace_identity_from_scope(tuple(json.loads(persisted["workspace_scope_entries"])), root)\n    assert reconstructed == persisted["expected_after_identity"]\n\n\ndef test_legacy_evidence_keeps_insufficient_metadata_and_legacy_digest(tmp_path):\n    root, _, state, project_id, run_id = _new_state(tmp_path)\n    legacy = WorkspaceEvidence(project_id, run_id, "phase-1", "task-1", "attempt-1", ".", "MODIFIED", "x", "x", "x", "x", "PRESENT_COMPLETE", None, None, "2026-01-01T00:00:00+00:00")\n    evidence_id = EvidenceLayer(state).record_workspace_evidence(legacy)\n    row = state._connection.execute("SELECT workspace_scope_version, workspace_scope_entries FROM workspace_evidence WHERE evidence_id=?", (evidence_id,)).fetchone()\n    assert row["workspace_scope_version"] is None\n    assert row["workspace_scope_entries"] is None\n    EvidenceLayer(state).verify_integrity(project_id=project_id, run_id=run_id)\n\n\ndef test_unsupported_scope_version_is_rejected(tmp_path):\n    root, _, state, project_id, run_id = _new_state(tmp_path)\n    bad = WorkspaceEvidence(project_id, run_id, "phase-1", "task-1", "attempt-1", ".", "MODIFIED", "x", "x", "x", "x", "PRESENT_COMPLETE", None, None, "2026-01-01T00:00:00+00:00", "workspace-scope-v999", ("a.txt",))\n    with pytest.raises(ValueError, match="Unsupported workspace scope version"):\n        EvidenceLayer(state).record_workspace_evidence(bad)\n''', encoding='utf-8')
+
+          subprocess.run([sys.executable, '-m', 'compileall', '-q', 'durable_execution_state.py', 'durable_execution_evidence.py', 'orchestration.py', 'test_m31_workspace_identity.py'], check=True)
+          subprocess.run([sys.executable, '-m', 'pytest', '-q', 'test_m31_workspace_identity.py', 'test_orchestration_durable.py'], check=True)
+          subprocess.run([sys.executable, '-m', 'pytest', '-q'], check=True)
+          subprocess.run([sys.executable, 'repository_security_audit.py'], check=True)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+
+          # Enforce boundary: only the intended M3.1 files may differ from the pre-M3.1 tree,
+          # plus temporary helper workflows which are removed before commit.
+          allowed = {'durable_execution_state.py', 'durable_execution_evidence.py', 'orchestration.py', 'test_m31_workspace_identity.py', '.github/workflows/_m31_apply.yml', '.github/workflows/_m31_apply2.yml', '.github/workflows/_m31_apply3.yml', '.github/workflows/_m31_apply4.yml'}
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          if not changed.issubset(allowed):
+              raise SystemExit(f'Unexpected changed files: {sorted(changed - allowed)}')
+
+      - name: Commit M3.1 and remove all temporary apply workflows
+        shell: bash
+        run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add durable_execution_state.py durable_execution_evidence.py orchestration.py test_m31_workspace_identity.py
+          git rm -f .github/workflows/_m31_apply.yml .github/workflows/_m31_apply2.yml .github/workflows/_m31_apply3.yml .github/workflows/_m31_apply4.yml
+          git commit -m "Correct M3 workspace identity contract"
+          git push origin HEAD:milestone/persistent-project-run-recovery
