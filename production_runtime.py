@@ -77,7 +77,6 @@ class ProductionRuntime:
         validator_factory: Callable[[ValidationHook], IndependentValidator] | None = None,
     ) -> None:
         config.validate()
-        self.secret_sync_report = sync_external_secret_sources()
         dependencies = {
             "leader_transport": leader_transport,
             "worker_adapter": worker_adapter,
@@ -98,6 +97,7 @@ class ProductionRuntime:
                 "A worker checkpoint hook is required; execution cannot proceed without explicit checkpoint authority"
             )
 
+        self.secret_sync_report = sync_external_secret_sources()
         root = config.workspace_root.resolve()
         self.config = config
         self.leader_router = leader_router
