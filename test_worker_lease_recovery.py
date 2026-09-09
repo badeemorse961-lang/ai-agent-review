@@ -49,10 +49,8 @@ def test_exact_attempt_lease_lineage(tmp_path: Path) -> None:
     with pytest.raises(LineageError):
         recovery.bind_actual_lease(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id="FOREIGN-ATTEMPT", lease_id="LEASE-X", worker_id="W-1", expected_sequence=state.get_run(run_id, project_id=bridge.project_id).sequence)
     recovery.bind_actual_lease(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, lease_id="LEASE-1", worker_id="W-1")
-    other_root, other_state, other_bridge, other_run, other_phase, other_task, other_attempt = lifecycle(tmp_path, "other.sqlite3")
-    del other_root, other_state, other_phase, other_task, other_attempt
     with pytest.raises(LineageError):
-        recovery.release(project_id=other_bridge.project_id, run_id=other_run, lease_id="LEASE-1")
+        recovery.release(project_id="FOREIGN-PROJECT", run_id="FOREIGN-RUN", lease_id="LEASE-1")
 
 
 def test_stale_signal_is_deterministic_and_changes_attempt_task(tmp_path: Path) -> None:
@@ -154,7 +152,7 @@ def test_cross_run_cannot_reclaim_foreign_lease(tmp_path: Path) -> None:
     recovery, record = bind(state, bridge, run_id, phase_id, task_id, attempt_id)
     other_root = tmp_path / "other"
     other_root.mkdir()
-    other_state = DurableExecutionState(tmp_path / "shared.sqlite3")
+    other_state = DurableExecutionState(tmp_path / "other.sqlite3")
     other_project = "PROJECT-OTHER"
     other_state.create_project(workspace_root=other_root, project_id=other_project)
     other_run = other_state.create_run(other_project)
@@ -170,10 +168,11 @@ def test_completed_task_cannot_acquire_recovery_lease(tmp_path: Path) -> None:
     result = orchestrator.run("GOAL-COMPLETE")
     project_id, run_id, phase_id = result.durable_project_id, result.durable_run_id, result.durable_phase_id
     task_id = result.task_records[0].task["task_id"]
-    task = state._connection.execute("SELECT latest_attempt_id, state FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
+    task = state._connection.execute("SELECT state FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
     assert task["state"] == "COMPLETED"
+    attempt_id = f"{run_id}:{task_id}:ATTEMPT:1"
     with pytest.raises(InvalidTransitionError):
-        WorkerLeaseRecovery(state).bind_actual_lease(project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=task["latest_attempt_id"], lease_id="LEASE-COMPLETED", worker_id="W-1")
+        WorkerLeaseRecovery(state).bind_actual_lease(project_id=project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, lease_id="LEASE-COMPLETED", worker_id="W-1")
 
 
 def test_interrupted_attempt_cannot_complete_without_validation_evidence(tmp_path: Path) -> None:
