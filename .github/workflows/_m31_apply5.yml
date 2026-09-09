@@ -1,0 +1,70 @@
+name: M3.1 Contract Correction Apply 5
+
+on:
+  push:
+    branches:
+      - milestone/persistent-project-run-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-commit:
+    if: github.actor == 'badeemorse961-lang'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Apply correction, test, audit, and commit
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          import textwrap
+          import sys
+
+          workflow = Path('.github/workflows/_m31_apply4.yml').read_text(encoding='utf-8')
+          marker = '        run: |\n'
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index('      - name: Commit M3.1', start)
+          script = textwrap.dedent(workflow[start:end])
+          cut = script.index("subprocess.run([sys.executable, '-m', 'compileall'")
+          exec(script[:cut], globals(), globals())
+
+          evidence_path = Path('durable_execution_evidence.py')
+          evidence_text = evidence_path.read_text(encoding='utf-8')
+          old = '''        if evidence.observed_state not in {"PRESENT_COMPLETE", "PRESENT_PARTIAL", "ABSENT", "MISMATCH", "AMBIGUOUS"}:\n            raise ValueError("Unsupported workspace observed_state")\n'''
+          new = old + '''        if (evidence.workspace_scope_version is None) != (evidence.workspace_scope_entries is None):\n            raise ValueError("Workspace scope metadata must be provided together")\n        if evidence.workspace_scope_version is not None and evidence.workspace_scope_version != WORKSPACE_SCOPE_VERSION:\n            raise ValueError("Unsupported workspace scope version")\n        if evidence.workspace_scope_version is not None:\n            project = self.state._require_project(conn, evidence.project_id)\n            canonical = canonical_workspace_scope(evidence.workspace_scope_entries or (), Path(project["workspace_root"]))\n            if tuple(evidence.workspace_scope_entries or ()) != canonical:\n                raise ValueError("Workspace scope entries must use the canonical M3 representation")\n'''
+          if evidence_text.count(old) != 1:
+              raise SystemExit('EvidenceLayer observed_state validation marker not found')
+          evidence_text = evidence_text.replace(old, new, 1)
+          evidence_path.write_text(evidence_text, encoding='utf-8')
+
+          # Strong boundary checks before tests.
+          diff_names = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          allowed = {'durable_execution_state.py', 'durable_execution_evidence.py', 'orchestration.py', 'test_m31_workspace_identity.py', '.github/workflows/_m31_apply.yml', '.github/workflows/_m31_apply2.yml', '.github/workflows/_m31_apply3.yml', '.github/workflows/_m31_apply4.yml', '.github/workflows/_m31_apply5.yml'}
+          if not diff_names.issubset(allowed):
+              raise SystemExit(f'Unexpected changed files: {sorted(diff_names - allowed)}')
+          if 'workspace_delivery_recovery.py' in subprocess.check_output(['git', 'diff', '--name-only'], text=True):
+              raise SystemExit('M6 implementation file was modified')
+
+          subprocess.run([sys.executable, '-m', 'compileall', '-q', 'durable_execution_state.py', 'durable_execution_evidence.py', 'orchestration.py', 'test_m31_workspace_identity.py'], check=True)
+          subprocess.run([sys.executable, '-m', 'pytest', '-q', 'test_m31_workspace_identity.py', 'test_orchestration_durable.py'], check=True)
+          subprocess.run([sys.executable, '-m', 'pytest', '-q'], check=True)
+          subprocess.run([sys.executable, 'repository_security_audit.py'], check=True)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+
+          # Do not persist helper workflow files in the final tree.
+          subprocess.run(['git', 'rm', '-f', '.github/workflows/_m31_apply.yml', '.github/workflows/_m31_apply2.yml', '.github/workflows/_m31_apply3.yml', '.github/workflows/_m31_apply4.yml', '.github/workflows/_m31_apply5.yml'], check=True)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          subprocess.run(['git', 'diff', '--name-only'], check=True)
+          subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+          subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'add', 'durable_execution_state.py', 'durable_execution_evidence.py', 'orchestration.py', 'test_m31_workspace_identity.py'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'Correct M3 workspace identity contract'], check=True)
+          subprocess.run(['git', 'push', 'origin', 'HEAD:milestone/persistent-project-run-recovery'], check=True)
