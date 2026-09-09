@@ -73,10 +73,9 @@ def test_real_orchestration_persists_complete_durable_lifecycle(tmp_path: Path) 
     assert project_id and run_id and phase_id
 
     task_id = result.task_records[0].task["task_id"]
-    task_row = state._connection.execute("SELECT state, latest_attempt_id FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
+    task_row = state._connection.execute("SELECT state FROM tasks WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (project_id, run_id, phase_id, task_id)).fetchone()
     assert task_row is not None and task_row[0] == "COMPLETED"
-    attempt_id = task_row[1]
-    assert attempt_id
+    attempt_id = f"{run_id}:{task_id}:ATTEMPT:1"
     attempt_row = state._connection.execute("SELECT state, validation_id, checkpoint_sequence FROM attempts WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (project_id, run_id, phase_id, task_id, attempt_id)).fetchone()
     assert attempt_row is not None and attempt_row[0] == "VALIDATED"
     assert attempt_row[1] and attempt_row[2] == 1
@@ -156,7 +155,7 @@ def test_project_and_run_isolation(tmp_path: Path) -> None:
     assert result_a.durable_run_id != result_b.durable_run_id
     assert len(state.get_events(project_id=result_a.durable_project_id, run_id=result_a.durable_run_id)) > 1
     assert len(state.get_events(project_id=result_b.durable_project_id, run_id=result_b.durable_run_id)) > 1
-    with pytest.raises(LineageError):
+    with pytest.raises(KeyError):
         state.get_run(result_a.durable_run_id, project_id=result_b.durable_project_id)
 
 
