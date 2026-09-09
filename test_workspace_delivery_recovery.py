@@ -25,9 +25,9 @@ def _fixture(tmp_path: Path, *, artifact_state: str = "ARTIFACT_VALIDATED", deli
     attempt_id = run_id + ":TASK-1:ATTEMPT:1"; bridge.start_attempt(run_id, phase_id, task_id, attempt_id, "W-1")
     path = root / "artifact.txt"; path.write_text("v1", encoding="utf-8")
     identity = "sha256:" + hashlib.sha256(b"v1").hexdigest(); checksum = identity.removeprefix("sha256:")
+    EvidenceLayer(state).register_artifact(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id="ART-1", reference="artifact.txt", identity=identity, checksum=checksum)
     evidence = WorkspaceEvidence(bridge.project_id, run_id, phase_id, task_id, attempt_id, "artifact.txt", "CREATED", None, None, identity, identity, "PRESENT_COMPLETE", None, "ART-1", "2026-09-09T00:00:00+00:00")
     EvidenceLayer(state).record_workspace_evidence(evidence)
-    EvidenceLayer(state).register_artifact(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id="ART-1", reference="artifact.txt", identity=identity, checksum=checksum)
     checkpoint = EvidenceLayer(state).create_checkpoint(project_id=bridge.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, sequence=1, checkpoint_kind="WORKSPACE", workspace_evidence_identity=identity, workspace_evidence_hash=evidence_digest(evidence), checkpoint_id="CP-1")
     EvidenceLayer(state).transition_checkpoint(project_id=bridge.project_id, run_id=run_id, checkpoint_id=checkpoint.checkpoint_id, new_status="TRUSTED")
     if artifact_state == "ARTIFACT_VALIDATED":
