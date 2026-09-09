@@ -244,6 +244,8 @@ class EvidenceLayer:
                     self._require_exact_lineage(artifact, project_id, run_id, phase_id, task_id, attempt_id)
                     if artifact["state"] != "ARTIFACT_VALIDATED":
                         return False
+                    if not self._checkpoint_evidence_matches_artifact(conn, checkpoint, validation["artifact_id"]):
+                        return False
                 return str(task["state"]) == "IN_PROGRESS"
         except (IntegrityError, LineageError):
             return False
@@ -273,6 +275,8 @@ class EvidenceLayer:
                 self._require_exact_lineage(artifact, project_id, run_id, phase_id, task_id, attempt_id)
                 if artifact["state"] != "ARTIFACT_VALIDATED":
                     raise IntegrityError("Task completion requires a currently validated artifact")
+                if not self._checkpoint_evidence_matches_artifact(conn, checkpoint, validation["artifact_id"]):
+                    raise IntegrityError("Task completion artifact does not match checkpoint workspace evidence")
             run = self.state._require_run(conn, project_id, run_id)
             next_sequence = int(run["sequence"]) + 1
             now = utc_now()
@@ -374,7 +378,7 @@ class EvidenceLayer:
             next_sequence = int(run["sequence"]) + 1
             conn.execute("UPDATE artifacts SET state=? WHERE artifact_id=?", (new_state, artifact_id))
             if current == "ARTIFACT_VALIDATED" and new_state != "ARTIFACT_VALIDATED":
-                conn.execute("UPDATE validations SET state='REQUIRES_REVALIDATION' WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND state='PASSED'", (row["project_id"], row["run_id"], row["phase_id"], row["task_id"], row["attempt_id"]))
+                conn.execute("UPDATE validations SET state='REQUIRES_REVALIDATION' WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND artifact_id=? AND state='PASSED'", (row["project_id"], row["run_id"], row["phase_id"], row["task_id"], row["attempt_id"], artifact_id))
             self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=next_sequence, event_type=f"ARTIFACT_{new_state.removeprefix('ARTIFACT_')}", entity_type="artifact", entity_id=artifact_id, payload={"state": new_state})
             conn.execute("UPDATE runs SET sequence=? WHERE project_id=? AND run_id=?", (next_sequence, project_id, run_id))
             return self._artifact_record(conn.execute("SELECT * FROM artifacts WHERE artifact_id=?", (artifact_id,)).fetchone())
@@ -418,8 +422,13 @@ class EvidenceLayer:
             if new_state == "PASSED":
                 if checkpoint["status"] != "TRUSTED" or evidence_hash != checkpoint["workspace_evidence_hash"]:
                     raise IntegrityError("Validation evidence does not match trusted checkpoint")
-                if row["artifact_id"] is not None and self.state._require_artifact(conn, row["artifact_id"])["state"] != "ARTIFACT_VALIDATED":
-                    raise IntegrityError("Validation cannot pass an unvalidated artifact")
+                if row["artifact_id"] is not None:
+                    artifact = self.state._require_artifact(conn, row["artifact_id"])
+                    self._require_exact_lineage(artifact, project_id, run_id, row["phase_id"], row["task_id"], row["attempt_id"])
+                    if artifact["state"] != "ARTIFACT_VALIDATED":
+                        raise IntegrityError("Validation cannot pass an unvalidated artifact")
+                    if not self._checkpoint_evidence_matches_artifact(conn, checkpoint, row["artifact_id"]):
+                        raise IntegrityError("Validation artifact does not match checkpoint workspace evidence")
             run = self.state._require_run(conn, project_id, run_id)
             next_sequence = int(run["sequence"]) + 1
             conn.execute("UPDATE validations SET state=?, validated_at=?, evidence_hash=COALESCE(?, evidence_hash) WHERE validation_id=?", (new_state, utc_now() if new_state == "PASSED" else row["validated_at"], evidence_hash, validation_id))
@@ -524,6 +533,11 @@ class EvidenceLayer:
             self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=next_sequence, event_type=new_state, entity_type="delivery", entity_id=run_id, payload={"delivery_state": new_state})
             conn.execute("UPDATE runs SET delivery_state=?, sequence=? WHERE project_id=? AND run_id=?", (new_state, next_sequence, project_id, run_id))
         return self.state.get_run(run_id, project_id=project_id)
+
+    @staticmethod
+    def _checkpoint_evidence_matches_artifact(conn: Any, checkpoint: Mapping[str, Any], artifact_id: str) -> bool:
+        rows = conn.execute("SELECT * FROM workspace_evidence WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (checkpoint["project_id"], checkpoint["run_id"], checkpoint["phase_id"], checkpoint["task_id"], checkpoint["attempt_id"])).fetchall()
+        return any(item["artifact_id"] == artifact_id and self_digest == checkpoint["workspace_evidence_hash"] for item, self_digest in ((item, EvidenceLayer._evidence_row_digest(item)) for item in rows))
 
     @staticmethod
     def _require_run_lineage(row: Mapping[str, Any], project_id: str, run_id: str) -> None:
