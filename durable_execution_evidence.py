@@ -537,7 +537,7 @@ class EvidenceLayer:
     @staticmethod
     def _checkpoint_evidence_matches_artifact(conn: Any, checkpoint: Mapping[str, Any], artifact_id: str) -> bool:
         rows = conn.execute("SELECT * FROM workspace_evidence WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (checkpoint["project_id"], checkpoint["run_id"], checkpoint["phase_id"], checkpoint["task_id"], checkpoint["attempt_id"])).fetchall()
-        return any(item["artifact_id"] == artifact_id and self_digest == checkpoint["workspace_evidence_hash"] for item, self_digest in ((item, EvidenceLayer._evidence_row_digest(item)) for item in rows))
+        return any(item["artifact_id"] == artifact_id and EvidenceLayer._evidence_row_digest(item) == checkpoint["workspace_evidence_hash"] for item in rows)
 
     @staticmethod
     def _require_run_lineage(row: Mapping[str, Any], project_id: str, run_id: str) -> None:
