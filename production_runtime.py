@@ -15,6 +15,7 @@ from plan_decomposer import PlanDecomposer
 from project_understanding_pipeline import ProjectUnderstandingPipeline
 from worker_dispatch import WorkerDispatcher
 from worker_execution import CheckpointHook, WorkerExecutionBoundary
+from worker_lease_recovery import WorkerLeaseRecovery
 from worker_router import WorkerRouter
 
 
@@ -73,6 +74,7 @@ class ProductionRuntime:
         self.authorization = ExecutionAuthorizationBoundary(root)
         state_path = (config.durable_state_path or (root / ".agent_runtime" / "execution_state.sqlite3")).resolve()
         self.durable_state = DurableExecutionState(state_path)
+        self.worker_lease_recovery = WorkerLeaseRecovery(self.durable_state)
         self.orchestrator = CanonicalOrchestrator(root, understanding=self.understanding, leader=self.leader, decomposer=self.decomposer, dispatcher=self.dispatcher, worker_execution=self.worker_execution, worker_adapter=self.worker_adapter, validator_factory=self.validator_factory, authorization=self.authorization, durable_state=self.durable_state)
 
     def run(self, task_id: str) -> OrchestrationResult:
