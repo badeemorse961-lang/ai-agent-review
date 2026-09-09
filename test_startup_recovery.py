@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from durable_execution_evidence import EvidenceLayer
-from durable_execution_state import DurableExecutionState, LineageError, StateConflictError
+from durable_execution_state import DurableExecutionState, KeyError as _KeyError
 from startup_recovery import StartupRecovery, StartupRecoverySafetyStop
 from test_orchestration_durable import build_durable_orchestrator
 from worker_lease_recovery import WorkerLeaseRecovery
@@ -145,7 +145,7 @@ def test_cross_project_isolation(tmp_path: Path) -> None:
     assert report.discovered_runs == (run_a.run_id,)
     assert state.get_run(run_a.run_id, project_id=project_a).state == "RECOVERY_REQUIRED"
     assert state.get_run(run_b.run_id, project_id=project_b).state == "RUNNING"
-    with pytest.raises(LineageError):
+    with pytest.raises(KeyError):
         state.get_run(run_a.run_id, project_id=project_b)
 
 
