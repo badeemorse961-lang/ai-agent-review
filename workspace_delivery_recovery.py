@@ -108,7 +108,7 @@ class WorkspaceDeliveryRecovery:
             if expected_sequence is not None and int(run["sequence"]) != expected_sequence:
                 raise StateConflictError("Stale durable run sequence")
             evidence_rows = conn.execute("SELECT * FROM workspace_evidence WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? ORDER BY evidence_id DESC", (project_id, run_id, phase_id, task_id, attempt_id)).fetchall()
-            matching = [row for row in evidence_rows if row["checkpoint_id"] == checkpoint_id and self._row_digest(row) == checkpoint["workspace_evidence_hash"]]
+            matching = [row for row in evidence_rows if self._row_digest(row) == checkpoint["workspace_evidence_hash"] and (row["checkpoint_id"] in {None, checkpoint_id})]
             expected_identity = str(checkpoint["workspace_evidence_identity"])
             path = self._safe_path(str(matching[0]["relative_path"])) if matching else None
             observed_identity, checksum, observed_state = self._observe_path(path) if path else (None, None, "AMBIGUOUS")
@@ -149,7 +149,7 @@ class WorkspaceDeliveryRecovery:
             key = f"m6-delivery-recovery:v1:{project_id}:{run_id}"
             operation = conn.execute("SELECT * FROM recovery_operations WHERE idempotency_key=?", (key,)).fetchone()
             if operation is None:
-                operation_id = hashlib.sha256(f"{project_id}|{run_id}|{key}".encode()).hexdigest()[:32]
+                operation_id = hashlib.sha256(f"{project_id}|{run_id}|{key}".encode("utf-8")).hexdigest()[:32]
                 conn.execute("INSERT INTO recovery_operations(operation_id,idempotency_key,project_id,run_id,phase_id,task_id,attempt_id,operation_kind,state) VALUES(?,?,?,?,?,?,?,?,?)", (operation_id,key,project_id,run_id,None,None,None,"M6_DELIVERY_RECOVERY","PLANNED"))
                 seq = self._next_sequence(conn, project_id, run_id)
                 self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type="RECOVERY_OPERATION_PLANNED", entity_type="recovery_operation", entity_id=operation_id, payload={"operation_kind":"M6_DELIVERY_RECOVERY","idempotency_key":key})
@@ -195,7 +195,7 @@ class WorkspaceDeliveryRecovery:
         return evidence_id
 
     def _record_workspace_operation_tx(self, conn, *, project_id, run_id, phase_id, task_id, attempt_id, artifact_id, classification, action, evidence, evidence_id, key):
-        operation_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        operation_id = hashlib.sha256(key.encode()).hexdigest()[:32]
         conn.execute("INSERT INTO recovery_operations(operation_id,idempotency_key,project_id,run_id,phase_id,task_id,attempt_id,operation_kind,state,effect_reference,effect_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (operation_id,key,project_id,run_id,phase_id,task_id,attempt_id,"M6_WORKSPACE_RECOVERY","COMMITTED",json.dumps({"classification":classification,"action":action,"evidence_id":evidence_id}, sort_keys=True, separators=(",", ":")), hashlib.sha256(f"{key}|{classification}|{action}|{evidence_id}".encode()).hexdigest()))
         seq = self._next_sequence(conn, project_id, run_id)
         self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=seq, event_type="M6_WORKSPACE_RECOVERY_DECISION", entity_type="recovery_operation", entity_id=operation_id, payload={"operation_kind":"M6_WORKSPACE_RECOVERY","idempotency_key":key,"classification":classification,"action":action,"artifact_id":artifact_id,"relative_path":evidence.relative_path,"effect_state":"NO_EXTERNAL_EFFECT","evidence_id":evidence_id})
@@ -258,7 +258,11 @@ class WorkspaceDeliveryRecovery:
 
     @staticmethod
     def _action_for(classification, artifact_state):
-        return "PRESERVE" if classification == "COMPLETE" and artifact_state == "ARTIFACT_VALIDATED" else "RECOVERY_REQUIRED"
+        if classification == "COMPLETE" and artifact_state == "ARTIFACT_VALIDATED":
+            return "PRESERVE"
+        if classification in {"PARTIAL", "MISMATCH", "ABSENT", "AMBIGUOUS"}:
+            return "RECOVERY_REQUIRED"
+        return "RECOVERY_REQUIRED"
 
     @staticmethod
     def _evidence_state(classification):
