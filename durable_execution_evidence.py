@@ -43,6 +43,15 @@ _LEASE_TRANSITIONS = {
     "RECLAIMED": set(),
     "AMBIGUOUS": {"RECLAIMED"},
 }
+_TASK_TRANSITIONS = {
+    "PENDING": {"IN_PROGRESS", "SAFE_STOP"},
+    "IN_PROGRESS": {"COMPLETED", "FAILED", "INTERRUPTED", "RECOVERY_REQUIRED", "SAFE_STOP"},
+    "INTERRUPTED": {"RECOVERY_REQUIRED", "IN_PROGRESS", "SAFE_STOP"},
+    "RECOVERY_REQUIRED": {"IN_PROGRESS", "SAFE_STOP"},
+    "COMPLETED": set(),
+    "FAILED": set(),
+    "SAFE_STOP": set(),
+}
 _RECOVERY_STATES = set(RECOVERY_OPERATION_STATES) | {"RECOVERY_REQUIRED", "SAFE_STOP"}
 _RECOVERY_OPERATION_TRANSITIONS = {
     "PLANNED": {"STARTED", "FAILED"},
@@ -186,9 +195,91 @@ class EvidenceLayer:
             next_sequence = int(run["sequence"]) + 1
             cursor = conn.execute("INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (evidence.project_id, evidence.run_id, evidence.phase_id, evidence.task_id, evidence.attempt_id, evidence.relative_path, evidence.change_kind, evidence.expected_before_identity, evidence.observed_before_identity, evidence.expected_after_identity, evidence.observed_after_identity, evidence.observed_state, evidence.checkpoint_id, evidence.artifact_id, evidence.evidence_created_at))
             evidence_id = int(cursor.lastrowid)
-            self.state._append_event_tx(conn, project_id=evidence.project_id, run_id=evidence.run_id, sequence=next_sequence, event_type="WORKSPACE_EVIDENCE_RECORDED", entity_type="workspace_evidence", entity_id=str(evidence_id), payload={"phase_id": evidence.phase_id, "task_id": evidence.task_id, "attempt_id": evidence.attempt_id, "relative_path": evidence.relative_path, "change_kind": evidence.change_kind, "observed_state": evidence.observed_state, "checkpoint_id": evidence.checkpoint_id, "artifact_id": evidence.artifact_id})
+            digest = evidence_digest(evidence)
+            self.state._append_event_tx(conn, project_id=evidence.project_id, run_id=evidence.run_id, sequence=next_sequence, event_type="WORKSPACE_EVIDENCE_RECORDED", entity_type="workspace_evidence", entity_id=str(evidence_id), payload={"phase_id": evidence.phase_id, "task_id": evidence.task_id, "attempt_id": evidence.attempt_id, "relative_path": evidence.relative_path, "change_kind": evidence.change_kind, "observed_state": evidence.observed_state, "checkpoint_id": evidence.checkpoint_id, "artifact_id": evidence.artifact_id, "evidence_digest": digest})
             conn.execute("UPDATE runs SET sequence=? WHERE project_id=? AND run_id=?", (next_sequence, evidence.project_id, evidence.run_id))
             return evidence_id
+
+    def verify_integrity(self, *, project_id: str, run_id: str) -> None:
+        """Verify the canonical event chain plus workspace-evidence row bindings."""
+        self.state.verify_integrity(project_id=project_id, run_id=run_id)
+        with self.state._lock:
+            events = self.state._connection.execute("SELECT entity_id, payload_json FROM execution_events WHERE project_id=? AND run_id=? AND event_type='WORKSPACE_EVIDENCE_RECORDED' ORDER BY sequence", (project_id, run_id)).fetchall()
+            for event in events:
+                try:
+                    payload = json.loads(str(event["payload_json"]))
+                except json.JSONDecodeError as exc:
+                    raise IntegrityError("Workspace evidence event payload is not valid JSON") from exc
+                evidence_row = self.state._connection.execute("SELECT * FROM workspace_evidence WHERE evidence_id=?", (int(event["entity_id"]),)).fetchone()
+                if evidence_row is None:
+                    raise IntegrityError(f"Workspace evidence row {event['entity_id']} is missing")
+                recorded_digest = payload.get("evidence_digest")
+                if not isinstance(recorded_digest, str) or not recorded_digest:
+                    raise IntegrityError(f"Workspace evidence event {event['entity_id']} has no evidence_digest")
+                actual_digest = self._evidence_row_digest(evidence_row)
+                if actual_digest != recorded_digest:
+                    raise IntegrityError(f"Workspace evidence digest mismatch for row {event['entity_id']}")
+
+    def task_completion_ready(self, *, project_id: str, run_id: str, phase_id: str, task_id: str, attempt_id: str, validation_id: str) -> bool:
+        """Return whether the exact validation evidence is sufficient to complete the task."""
+        try:
+            with self.state._transaction() as conn:
+                task = self.state._require_task(conn, project_id, run_id, phase_id, task_id)
+                attempt = self.state._require_attempt(conn, project_id, run_id, phase_id, task_id, attempt_id)
+                validation = conn.execute("SELECT * FROM validations WHERE validation_id=?", (validation_id,)).fetchone()
+                if validation is None:
+                    return False
+                self._require_exact_lineage(validation, project_id, run_id, phase_id, task_id, attempt_id)
+                if validation["state"] != "PASSED":
+                    return False
+                checkpoint = conn.execute("SELECT * FROM checkpoints WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND sequence=?", (project_id, run_id, phase_id, task_id, attempt_id, validation["checkpoint_sequence"])).fetchone()
+                if checkpoint is None or checkpoint["status"] != "TRUSTED":
+                    return False
+                if validation["evidence_hash"] != checkpoint["workspace_evidence_hash"]:
+                    return False
+                if int(attempt["checkpoint_sequence"] or 0) != int(validation["checkpoint_sequence"]):
+                    return False
+                if validation["artifact_id"] is not None:
+                    artifact = self.state._require_artifact(conn, validation["artifact_id"])
+                    self._require_exact_lineage(artifact, project_id, run_id, phase_id, task_id, attempt_id)
+                    if artifact["state"] != "ARTIFACT_VALIDATED":
+                        return False
+                return str(task["state"]) == "IN_PROGRESS"
+        except (IntegrityError, LineageError):
+            return False
+
+    def complete_task(self, *, project_id: str, run_id: str, phase_id: str, task_id: str, attempt_id: str, validation_id: str) -> None:
+        """Complete a task only from an exact PASSED validation contract."""
+        with self.state._transaction() as conn:
+            task = self.state._require_task(conn, project_id, run_id, phase_id, task_id)
+            if str(task["state"]) != "IN_PROGRESS" or "COMPLETED" not in _TASK_TRANSITIONS[str(task["state"])]:
+                raise InvalidTransitionError(f"Task cannot be completed from {task['state']}")
+            attempt = self.state._require_attempt(conn, project_id, run_id, phase_id, task_id, attempt_id)
+            validation = conn.execute("SELECT * FROM validations WHERE validation_id=?", (validation_id,)).fetchone()
+            if validation is None:
+                raise IntegrityError("Task completion requires a ValidationRecord")
+            self._require_exact_lineage(validation, project_id, run_id, phase_id, task_id, attempt_id)
+            if validation["state"] != "PASSED":
+                raise IntegrityError("Task completion requires ValidationRecord.PASSED")
+            checkpoint = conn.execute("SELECT * FROM checkpoints WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? AND sequence=?", (project_id, run_id, phase_id, task_id, attempt_id, validation["checkpoint_sequence"])).fetchone()
+            if checkpoint is None or checkpoint["status"] != "TRUSTED":
+                raise IntegrityError("Task completion requires the exact trusted checkpoint")
+            if validation["evidence_hash"] != checkpoint["workspace_evidence_hash"]:
+                raise IntegrityError("Task completion validation evidence does not match checkpoint")
+            if int(attempt["checkpoint_sequence"] or 0) != int(validation["checkpoint_sequence"]):
+                raise IntegrityError("Task completion checkpoint sequence does not match attempt")
+            if validation["artifact_id"] is not None:
+                artifact = self.state._require_artifact(conn, validation["artifact_id"])
+                self._require_exact_lineage(artifact, project_id, run_id, phase_id, task_id, attempt_id)
+                if artifact["state"] != "ARTIFACT_VALIDATED":
+                    raise IntegrityError("Task completion requires a currently validated artifact")
+            run = self.state._require_run(conn, project_id, run_id)
+            next_sequence = int(run["sequence"]) + 1
+            now = utc_now()
+            conn.execute("UPDATE tasks SET state='COMPLETED', completed_at=? WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=?", (now, project_id, run_id, phase_id, task_id))
+            conn.execute("UPDATE attempts SET state='VALIDATED', validation_id=? WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=?", (validation_id, project_id, run_id, phase_id, task_id, attempt_id))
+            self.state._append_event_tx(conn, project_id=project_id, run_id=run_id, sequence=next_sequence, event_type="TASK_COMPLETED", entity_type="task", entity_id=task_id, payload={"phase_id": phase_id, "task_id": task_id, "attempt_id": attempt_id, "validation_id": validation_id, "checkpoint_sequence": int(validation["checkpoint_sequence"]), "artifact_id": validation["artifact_id"]})
+            conn.execute("UPDATE runs SET sequence=? WHERE project_id=? AND run_id=?", (next_sequence, project_id, run_id))
 
     def create_checkpoint(self, *, project_id: str, run_id: str, phase_id: str, task_id: str, attempt_id: str, sequence: int, checkpoint_kind: str, workspace_evidence_identity: str, workspace_evidence_hash: str, checkpoint_id: str) -> CheckpointRecord:
         if sequence <= 0 or not workspace_evidence_identity or not workspace_evidence_hash:
@@ -463,7 +554,7 @@ class EvidenceLayer:
 
     @staticmethod
     def _lease_record(row: Mapping[str, Any]) -> LeaseBindingRecord:
-        return LeaseBindingRecord(str(row["lease_id"]), str(row["project_id"]), str(row["run_id"]), str(row["phase_id"]), str(row["task_id"]), str(row["attempt_id"]), row["worker_id"], str(row["bound_at"]), row["released_at"], str(row["state"]))
+        return LeaseBindingRecord(str(row["lease_id"]), str(row["project_id"]), str(row["run_id"]), str(row["phase_id"]), str(row["task_id"]), str(row["attempt_id"]), row["worker_id"], row["bound_at"], row["released_at"], str(row["state"]))
 
     @staticmethod
     def _recovery_record(row: Mapping[str, Any]) -> RecoveryOperationRecord:
