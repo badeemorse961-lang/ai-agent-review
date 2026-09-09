@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -57,7 +58,7 @@ def metadata(connection_id: str, provider: str, secret: str, status: str = "VALI
         "key_fingerprint": connection_manager.fingerprint(secret),
         "role": None,
         "status": status,
-        "active": status != "PENDING_ASSIGNMENT",
+        "active": False,
     }
 
 
@@ -70,19 +71,31 @@ def write_fixture(
     connections_path = root / "connections.json"
     registry_path = root / "registry.json"
     source_dir = root / "secrets"
-    source_dir.mkdir()
+    source_dir.mkdir(exist_ok=True)
     registry_path.write_text(
-        __import__("json").dumps(registry or {"version": 3, "connections": {}}, indent=2),
+        json.dumps(registry or {"version": 3, "connections": {}}, indent=2),
         encoding="utf-8",
     )
     connections_path.write_text(
-        __import__("json").dumps({"version": 3, "role_source": "config/registry.json", "connections": {}}, indent=2),
+        json.dumps(
+            {
+                "version": 3,
+                "role_source": "config/registry.json",
+                "connections": {},
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     for filename, content in (sources or {}).items():
         if content is not None:
             (source_dir / filename).write_text(content, encoding="utf-8")
-    return connections_path, registry_path, source_dir / "groq_keys.txt", source_dir / "openrouter_keys.txt"
+    return (
+        connections_path,
+        registry_path,
+        source_dir / "groq_keys.txt",
+        source_dir / "openrouter_keys.txt",
+    )
 
 
 class ExternalSecretSourceSyncTests(unittest.TestCase):
@@ -238,9 +251,7 @@ class ExternalSecretSourceSyncTests(unittest.TestCase):
                 connection_manager, "REGISTRY_FILE", connections_path
             ), patch.dict(
                 os.environ,
-                {
-                    "AI_AGENT_SECRET_DIR": str(root / "missing"),
-                },
+                {"AI_AGENT_SECRET_DIR": str(root / "missing")},
                 clear=False,
             ):
                 os.environ.pop("AI_AGENT_ALLOW_LEGACY_SECRET_PATH", None)
@@ -263,7 +274,7 @@ class ExternalSecretSourceSyncTests(unittest.TestCase):
                 clear=False,
             ):
                 report = connection_manager.sync_external_secret_sources()
-                serialized = __import__("json").dumps(report)
+                serialized = json.dumps(report)
 
             self.assertNotIn(secret, serialized)
             self.assertIn("newly_imported", serialized)
@@ -273,17 +284,19 @@ class ExternalSecretSourceSyncTests(unittest.TestCase):
             root = Path(temp_dir)
             registry_path = root / "config_registry.json"
             connections_path = root / "connections.json"
-            registry_path.write_text(__import__("json").dumps(VALID_REGISTRY, indent=2), encoding="utf-8")
+            registry_path.write_text(json.dumps(VALID_REGISTRY, indent=2), encoding="utf-8")
             connections = {
                 "version": 3,
                 "role_source": "config/registry.json",
                 "connections": {
                     "OR-01": metadata("OR-01", "openrouter", "or-secret"),
                     "GROQ-01": metadata("GROQ-01", "groq", "groq-secret"),
-                    "GROQ-02": metadata("GROQ-02", "groq", "pending-secret", "PENDING_ASSIGNMENT"),
+                    "GROQ-02": metadata(
+                        "GROQ-02", "groq", "pending-secret", "PENDING_ASSIGNMENT"
+                    ),
                 },
             }
-            connections_path.write_text(__import__("json").dumps(connections, indent=2), encoding="utf-8")
+            connections_path.write_text(json.dumps(connections, indent=2), encoding="utf-8")
             with patch("config_registry.REGISTRY_FILE", registry_path), patch(
                 "config_registry.CONNECTIONS_FILE", connections_path
             ):
