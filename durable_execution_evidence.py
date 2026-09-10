@@ -15,6 +15,7 @@ from durable_execution_state import (
     VALIDATION_STATES,
     DurableExecutionState,
     IntegrityError,
+    reconstruct_workspace_scope,
     InvalidTransitionError,
     LineageError,
     StateConflictError,
@@ -75,6 +76,14 @@ _DELIVERY_TRANSITIONS = {
 
 
 def evidence_digest(evidence: WorkspaceEvidence) -> str:
+    if evidence.workspace_scope_version is None and evidence.workspace_scope_entries is None:
+        scope_entries = None
+    else:
+        scope_entries = reconstruct_workspace_scope(
+            evidence.workspace_scope_version,
+            evidence.workspace_scope_entries,
+        )
+
     payload = {
         "project_id": evidence.project_id,
         "run_id": evidence.run_id,
@@ -91,8 +100,20 @@ def evidence_digest(evidence: WorkspaceEvidence) -> str:
         "checkpoint_id": evidence.checkpoint_id,
         "artifact_id": evidence.artifact_id,
         "evidence_created_at": evidence.evidence_created_at,
+        "workspace_scope_version": evidence.workspace_scope_version,
+        "workspace_scope_entries": (
+            list(scope_entries)
+            if scope_entries is not None
+            else None
+        ),
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -183,21 +204,155 @@ class EvidenceLayer:
             raise ValueError("Unsupported workspace change_kind")
         if evidence.observed_state not in {"PRESENT_COMPLETE", "PRESENT_PARTIAL", "ABSENT", "MISMATCH", "AMBIGUOUS"}:
             raise ValueError("Unsupported workspace observed_state")
+
+        if evidence.workspace_scope_version is None and evidence.workspace_scope_entries is not None:
+            raise IntegrityError("Workspace scope entries require a scope version")
+
+        if (
+            evidence.workspace_scope_version is not None
+            or evidence.workspace_scope_entries is not None
+        ):
+            reconstructed_scope = reconstruct_workspace_scope(
+                evidence.workspace_scope_version,
+                evidence.workspace_scope_entries,
+            )
+        else:
+            reconstructed_scope = None
+
         with self.state._transaction() as conn:
-            self.state._require_attempt(conn, evidence.project_id, evidence.run_id, evidence.phase_id, evidence.task_id, evidence.attempt_id)
+            self.state._require_attempt(
+                conn,
+                evidence.project_id,
+                evidence.run_id,
+                evidence.phase_id,
+                evidence.task_id,
+                evidence.attempt_id,
+            )
             if evidence.checkpoint_id is not None:
-                checkpoint = self.state._require_checkpoint(conn, evidence.checkpoint_id)
-                self._require_exact_lineage(checkpoint, evidence.project_id, evidence.run_id, evidence.phase_id, evidence.task_id, evidence.attempt_id)
+                checkpoint = self.state._require_checkpoint(
+                    conn,
+                    evidence.checkpoint_id,
+                )
+                self._require_exact_lineage(
+                    checkpoint,
+                    evidence.project_id,
+                    evidence.run_id,
+                    evidence.phase_id,
+                    evidence.task_id,
+                    evidence.attempt_id,
+                )
             if evidence.artifact_id is not None:
                 artifact = self.state._require_artifact(conn, evidence.artifact_id)
-                self._require_exact_lineage(artifact, evidence.project_id, evidence.run_id, evidence.phase_id, evidence.task_id, evidence.attempt_id)
-            run = self.state._require_run(conn, evidence.project_id, evidence.run_id)
-            next_sequence = int(run["sequence"]) + 1
-            cursor = conn.execute("INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (evidence.project_id, evidence.run_id, evidence.phase_id, evidence.task_id, evidence.attempt_id, evidence.relative_path, evidence.change_kind, evidence.expected_before_identity, evidence.observed_before_identity, evidence.expected_after_identity, evidence.observed_after_identity, evidence.observed_state, evidence.checkpoint_id, evidence.artifact_id, evidence.evidence_created_at))
+                self._require_exact_lineage(
+                    artifact,
+                    evidence.project_id,
+                    evidence.run_id,
+                    evidence.phase_id,
+                    evidence.task_id,
+                    evidence.attempt_id,
+                )
+
+            columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    "PRAGMA table_info(workspace_evidence)"
+                ).fetchall()
+            }
+            has_scope_columns = {
+                "workspace_scope_version",
+                "workspace_scope_entries",
+            }.issubset(columns)
+
+            if reconstructed_scope is not None and not has_scope_columns:
+                raise IntegrityError(
+                    "Durable workspace scope columns are unavailable in this store"
+                )
+
+            if has_scope_columns:
+                scope_entries = (
+                    json.dumps(
+                        list(reconstructed_scope),
+                        separators=(",", ":"),
+                    )
+                    if reconstructed_scope is not None
+                    else None
+                )
+                cursor = conn.execute(
+                    "INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at, workspace_scope_version, workspace_scope_entries) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        evidence.project_id,
+                        evidence.run_id,
+                        evidence.phase_id,
+                        evidence.task_id,
+                        evidence.attempt_id,
+                        evidence.relative_path,
+                        evidence.change_kind,
+                        evidence.expected_before_identity,
+                        evidence.observed_before_identity,
+                        evidence.expected_after_identity,
+                        evidence.observed_after_identity,
+                        evidence.observed_state,
+                        evidence.checkpoint_id,
+                        evidence.artifact_id,
+                        evidence.evidence_created_at,
+                        evidence.workspace_scope_version,
+                        scope_entries,
+                    ),
+                )
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        evidence.project_id,
+                        evidence.run_id,
+                        evidence.phase_id,
+                        evidence.task_id,
+                        evidence.attempt_id,
+                        evidence.relative_path,
+                        evidence.change_kind,
+                        evidence.expected_before_identity,
+                        evidence.observed_before_identity,
+                        evidence.expected_after_identity,
+                        evidence.observed_after_identity,
+                        evidence.observed_state,
+                        evidence.checkpoint_id,
+                        evidence.artifact_id,
+                        evidence.evidence_created_at,
+                    ),
+                )
+
             evidence_id = int(cursor.lastrowid)
             digest = evidence_digest(evidence)
-            self.state._append_event_tx(conn, project_id=evidence.project_id, run_id=evidence.run_id, sequence=next_sequence, event_type="WORKSPACE_EVIDENCE_RECORDED", entity_type="workspace_evidence", entity_id=str(evidence_id), payload={"phase_id": evidence.phase_id, "task_id": evidence.task_id, "attempt_id": evidence.attempt_id, "relative_path": evidence.relative_path, "change_kind": evidence.change_kind, "observed_state": evidence.observed_state, "checkpoint_id": evidence.checkpoint_id, "artifact_id": evidence.artifact_id, "evidence_digest": digest})
-            conn.execute("UPDATE runs SET sequence=? WHERE project_id=? AND run_id=?", (next_sequence, evidence.project_id, evidence.run_id))
+            run = self.state._require_run(
+                conn,
+                evidence.project_id,
+                evidence.run_id,
+            )
+            next_sequence = int(run["sequence"]) + 1
+            self.state._append_event_tx(
+                conn,
+                project_id=evidence.project_id,
+                run_id=evidence.run_id,
+                sequence=next_sequence,
+                event_type="WORKSPACE_EVIDENCE_RECORDED",
+                entity_type="workspace_evidence",
+                entity_id=str(evidence_id),
+                payload={
+                    "phase_id": evidence.phase_id,
+                    "task_id": evidence.task_id,
+                    "attempt_id": evidence.attempt_id,
+                    "relative_path": evidence.relative_path,
+                    "change_kind": evidence.change_kind,
+                    "observed_state": evidence.observed_state,
+                    "checkpoint_id": evidence.checkpoint_id,
+                    "artifact_id": evidence.artifact_id,
+                    "evidence_digest": digest,
+                },
+            )
+            conn.execute(
+                "UPDATE runs SET sequence=? WHERE project_id=? AND run_id=?",
+                (next_sequence, evidence.project_id, evidence.run_id),
+            )
             return evidence_id
 
     def verify_integrity(self, *, project_id: str, run_id: str) -> None:
@@ -551,8 +706,76 @@ class EvidenceLayer:
 
     @staticmethod
     def _evidence_row_digest(row: Mapping[str, Any]) -> str:
-        payload = {"project_id": row["project_id"], "run_id": row["run_id"], "phase_id": row["phase_id"], "task_id": row["task_id"], "attempt_id": row["attempt_id"], "relative_path": row["relative_path"], "change_kind": row["change_kind"], "expected_before_identity": row["expected_before_identity"], "observed_before_identity": row["observed_before_identity"], "expected_after_identity": row["expected_after_identity"], "observed_after_identity": row["observed_after_identity"], "observed_state": row["observed_state"], "checkpoint_id": row["checkpoint_id"], "artifact_id": row["artifact_id"], "evidence_created_at": row["evidence_created_at"]}
-        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
+
+        workspace_scope_version = (
+            row["workspace_scope_version"]
+            if "workspace_scope_version" in keys
+            else None
+        )
+        raw_entries = (
+            row["workspace_scope_entries"]
+            if "workspace_scope_entries" in keys
+            else None
+        )
+
+        if raw_entries is None:
+            scope_entries = None
+        else:
+            try:
+                parsed_entries = json.loads(str(raw_entries))
+            except json.JSONDecodeError as exc:
+                raise IntegrityError(
+                    "Workspace scope entries are not valid JSON"
+                ) from exc
+            if (
+                not isinstance(parsed_entries, list)
+                or any(not isinstance(item, str) for item in parsed_entries)
+            ):
+                raise IntegrityError(
+                    "Workspace scope entries must be a JSON string list"
+                )
+            scope_entries = parsed_entries
+
+        if workspace_scope_version is None and scope_entries is None:
+            canonical_entries = None
+        else:
+            reconstructed = reconstruct_workspace_scope(
+                workspace_scope_version,
+                tuple(scope_entries) if scope_entries is not None else None,
+            )
+            canonical_entries = (
+                list(reconstructed)
+                if reconstructed is not None
+                else None
+            )
+
+        payload = {
+            "project_id": row["project_id"],
+            "run_id": row["run_id"],
+            "phase_id": row["phase_id"],
+            "task_id": row["task_id"],
+            "attempt_id": row["attempt_id"],
+            "relative_path": row["relative_path"],
+            "change_kind": row["change_kind"],
+            "expected_before_identity": row["expected_before_identity"],
+            "observed_before_identity": row["observed_before_identity"],
+            "expected_after_identity": row["expected_after_identity"],
+            "observed_after_identity": row["observed_after_identity"],
+            "observed_state": row["observed_state"],
+            "checkpoint_id": row["checkpoint_id"],
+            "artifact_id": row["artifact_id"],
+            "evidence_created_at": row["evidence_created_at"],
+            "workspace_scope_version": workspace_scope_version,
+            "workspace_scope_entries": canonical_entries,
+        }
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def _checkpoint_record(row: Mapping[str, Any]) -> CheckpointRecord:

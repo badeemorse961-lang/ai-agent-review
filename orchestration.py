@@ -9,7 +9,18 @@ from typing import Any, Callable, Mapping, Protocol
 
 from central_leader import CentralLeader, LeaderResponse
 from durable_execution_evidence import EvidenceLayer, evidence_digest
-from durable_execution_state import DurableExecutionState, LineageError, WorkspaceEvidence, utc_now
+from durable_execution_state import (
+    DurableExecutionState,
+    IntegrityError,
+    LineageError,
+    WORKSPACE_SCOPE_VERSION,
+    WorkspaceEvidence,
+    canonical_workspace_scope,
+    reconstruct_workspace_scope,
+    utc_now,
+    workspace_identity,
+    workspace_path_identity,
+)
 from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
 from independent_validation import IndependentValidator, ValidationHook, ValidationVerdict
@@ -131,28 +142,112 @@ class _DurableLifecycleBridge:
             self.state._append_event_tx(conn, project_id=self.project_id, run_id=run_id, sequence=next_sequence, event_type="ATTEMPT_STARTED", entity_type="attempt", entity_id=attempt_id, payload={"phase_id": phase_id, "task_id": task_id, "worker_id": worker_id})
             conn.execute("UPDATE runs SET sequence=? WHERE project_id=? AND run_id=?", (next_sequence, self.project_id, run_id))
 
-    def persist_post_execution(self, run_id: str, phase_id: str, task_id: str, attempt_id: str, raw_checkpoint_id: str, before_identity: str, after_identity: str, observed_state: str) -> tuple[str, str, str, int]:
+    def persist_post_execution(
+        self,
+        run_id: str,
+        phase_id: str,
+        task_id: str,
+        attempt_id: str,
+        raw_checkpoint_id: str,
+        before_identity: str,
+        after_identity: str,
+        observed_state: str,
+        workspace_scope_entries: tuple[str, ...] | None = None,
+    ) -> tuple[str, str, str, int]:
+        if workspace_scope_entries is not None:
+            workspace_scope_entries = reconstruct_workspace_scope(
+                WORKSPACE_SCOPE_VERSION,
+                workspace_scope_entries,
+            )
+
         artifact_id = f"{run_id}:{task_id}:ARTIFACT:1"
         artifact_identity = self._artifact_identity(task_id, after_identity)
         layer = EvidenceLayer(self.state)
-        layer.register_artifact(project_id=self.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, artifact_id=artifact_id, reference=f"artifact://{run_id}/{task_id}", identity=artifact_identity, checksum=artifact_identity)
-        evidence = WorkspaceEvidence(project_id=self.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, relative_path=".", change_kind="MODIFIED", expected_before_identity=before_identity, observed_before_identity=before_identity, expected_after_identity=after_identity, observed_after_identity=after_identity, observed_state=observed_state, checkpoint_id=None, artifact_id=artifact_id, evidence_created_at=utc_now())
+        layer.register_artifact(
+            project_id=self.project_id,
+            run_id=run_id,
+            phase_id=phase_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            artifact_id=artifact_id,
+            reference=f"artifact://{run_id}/{task_id}",
+            identity=artifact_identity,
+            checksum=artifact_identity,
+        )
+        evidence = WorkspaceEvidence(
+            project_id=self.project_id,
+            run_id=run_id,
+            phase_id=phase_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            relative_path=".",
+            change_kind="MODIFIED",
+            expected_before_identity=before_identity,
+            observed_before_identity=before_identity,
+            expected_after_identity=after_identity,
+            observed_after_identity=after_identity,
+            observed_state=observed_state,
+            checkpoint_id=None,
+            artifact_id=artifact_id,
+            evidence_created_at=utc_now(),
+            workspace_scope_version=(
+                WORKSPACE_SCOPE_VERSION
+                if workspace_scope_entries is not None
+                else None
+            ),
+            workspace_scope_entries=workspace_scope_entries,
+        )
         evidence_id = None
         with self.state._lock:
             digest = evidence_digest(evidence)
-            rows = self.state._connection.execute("SELECT * FROM workspace_evidence WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? ORDER BY evidence_id DESC LIMIT 10", (self.project_id, run_id, phase_id, task_id, attempt_id)).fetchall()
+            rows = self.state._connection.execute(
+                "SELECT * FROM workspace_evidence "
+                "WHERE project_id=? AND run_id=? AND phase_id=? AND task_id=? AND attempt_id=? "
+                "ORDER BY evidence_id DESC LIMIT 10",
+                (
+                    self.project_id,
+                    run_id,
+                    phase_id,
+                    task_id,
+                    attempt_id,
+                ),
+            ).fetchall()
             for row in rows:
                 if EvidenceLayer._evidence_row_digest(row) == digest:
                     evidence_id = int(row["evidence_id"])
                     evidence = self._evidence_from_row(row)
                     break
+
         if evidence_id is None:
             evidence_id = layer.record_workspace_evidence(evidence)
+
         checkpoint_id = f"{run_id}:{raw_checkpoint_id}"
-        checkpoint = layer.create_checkpoint(project_id=self.project_id, run_id=run_id, phase_id=phase_id, task_id=task_id, attempt_id=attempt_id, sequence=1, checkpoint_kind="TASK_CHECKPOINT", workspace_evidence_identity=after_identity, workspace_evidence_hash=evidence_digest(evidence), checkpoint_id=checkpoint_id)
+        checkpoint = layer.create_checkpoint(
+            project_id=self.project_id,
+            run_id=run_id,
+            phase_id=phase_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            sequence=1,
+            checkpoint_kind="TASK_CHECKPOINT",
+            workspace_evidence_identity=after_identity,
+            workspace_evidence_hash=evidence_digest(evidence),
+            checkpoint_id=checkpoint_id,
+        )
         if checkpoint.status == "CREATED":
-            layer.transition_checkpoint(project_id=self.project_id, run_id=run_id, checkpoint_id=checkpoint_id, new_status="TRUSTED")
-        layer.validate_artifact(project_id=self.project_id, run_id=run_id, artifact_id=artifact_id, observed_identity=artifact_identity, observed_checksum=artifact_identity)
+            layer.transition_checkpoint(
+                project_id=self.project_id,
+                run_id=run_id,
+                checkpoint_id=checkpoint_id,
+                new_status="TRUSTED",
+            )
+        layer.validate_artifact(
+            project_id=self.project_id,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            observed_identity=artifact_identity,
+            observed_checksum=artifact_identity,
+        )
         return checkpoint_id, evidence_digest(evidence), artifact_id, checkpoint.sequence
 
     def create_and_pass_validation(self, run_id: str, phase_id: str, task_id: str, attempt_id: str, checkpoint_sequence: int, evidence_hash: str, artifact_id: str) -> str:
@@ -235,34 +330,26 @@ class _DurableLifecycleBridge:
     def _artifact_identity(task_id: str, after_identity: str) -> str:
         return hashlib.sha256(json.dumps({"task_id": task_id, "after": after_identity}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
-    def _workspace_identity(self, targets: tuple[str, ...]) -> str:
-        entries: list[tuple[str, str]] = []
-        for target in sorted(set(targets)):
-            candidate = (self.workspace_root / target).resolve(strict=False)
-            try:
-                candidate.relative_to(self.workspace_root)
-            except ValueError as exc:
-                raise OrchestrationSafetyStop(f"Workspace target escapes durable workspace: {target!r}") from exc
-            entries.append((target, self._path_identity(candidate)))
-        return hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    def _workspace_scope(self, targets: tuple[str, ...]) -> tuple[str, ...]:
+        try:
+            return canonical_workspace_scope(targets)
+        except IntegrityError as exc:
+            raise OrchestrationSafetyStop(str(exc)) from exc
 
-    @staticmethod
-    def _path_identity(path: Path) -> str:
-        if not path.exists():
-            return "ABSENT"
-        if path.is_file():
-            digest = hashlib.sha256()
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return "sha256:" + digest.hexdigest()
-        return "DIRECTORY"
+    def _workspace_identity(self, targets: tuple[str, ...]) -> str:
+        return self._workspace_identity_for_scope(self._workspace_scope(targets))
+
+    def _workspace_identity_for_scope(self, scope: tuple[str, ...]) -> str:
+        try:
+            return workspace_identity(self.workspace_root, scope)
+        except IntegrityError as exc:
+            raise OrchestrationSafetyStop(str(exc)) from exc
 
     @staticmethod
     def _observed_state(targets: tuple[str, ...], root: Path) -> str:
         if not targets:
             return "PRESENT_COMPLETE"
-        states = [_DurableLifecycleBridge._path_identity((root / target).resolve(strict=False)) for target in targets]
+        states = [workspace_path_identity((root / target).resolve(strict=False)) for target in targets]
         if all(value == "ABSENT" for value in states):
             return "ABSENT"
         if any(value == "ABSENT" for value in states):
@@ -271,7 +358,64 @@ class _DurableLifecycleBridge:
 
     @staticmethod
     def _evidence_from_row(row: Any) -> WorkspaceEvidence:
-        return WorkspaceEvidence(project_id=str(row["project_id"]), run_id=str(row["run_id"]), phase_id=str(row["phase_id"]), task_id=str(row["task_id"]), attempt_id=str(row["attempt_id"]), relative_path=str(row["relative_path"]), change_kind=str(row["change_kind"]), expected_before_identity=row["expected_before_identity"], observed_before_identity=row["observed_before_identity"], expected_after_identity=row["expected_after_identity"], observed_after_identity=row["observed_after_identity"], observed_state=str(row["observed_state"]), checkpoint_id=row["checkpoint_id"], artifact_id=row["artifact_id"], evidence_created_at=str(row["evidence_created_at"]))
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
+
+        workspace_scope_version = (
+            row["workspace_scope_version"]
+            if "workspace_scope_version" in keys
+            else None
+        )
+        raw_scope_entries = (
+            row["workspace_scope_entries"]
+            if "workspace_scope_entries" in keys
+            else None
+        )
+
+        if raw_scope_entries is None:
+            scope_entries = None
+        else:
+            try:
+                decoded = json.loads(str(raw_scope_entries))
+            except json.JSONDecodeError as exc:
+                raise OrchestrationSafetyStop(
+                    "Malformed persisted workspace scope entries"
+                ) from exc
+            if not isinstance(decoded, list):
+                raise OrchestrationSafetyStop(
+                    "Malformed persisted workspace scope entries"
+                )
+            scope_entries = tuple(decoded)
+
+        if workspace_scope_version is None and scope_entries is None:
+            reconstructed_scope = None
+        else:
+            try:
+                reconstructed_scope = reconstruct_workspace_scope(
+                    workspace_scope_version,
+                    scope_entries,
+                )
+            except IntegrityError as exc:
+                raise OrchestrationSafetyStop(str(exc)) from exc
+
+        return WorkspaceEvidence(
+            project_id=str(row["project_id"]),
+            run_id=str(row["run_id"]),
+            phase_id=str(row["phase_id"]),
+            task_id=str(row["task_id"]),
+            attempt_id=str(row["attempt_id"]),
+            relative_path=str(row["relative_path"]),
+            change_kind=str(row["change_kind"]),
+            expected_before_identity=row["expected_before_identity"],
+            observed_before_identity=row["observed_before_identity"],
+            expected_after_identity=row["expected_after_identity"],
+            observed_after_identity=row["observed_after_identity"],
+            observed_state=str(row["observed_state"]),
+            checkpoint_id=row["checkpoint_id"],
+            artifact_id=row["artifact_id"],
+            evidence_created_at=str(row["evidence_created_at"]),
+            workspace_scope_version=workspace_scope_version,
+            workspace_scope_entries=reconstructed_scope,
+        )
 
 class CanonicalOrchestrator:
     """Compose validated AI-Agent boundaries into one canonical flow."""
@@ -338,7 +482,16 @@ class CanonicalOrchestrator:
                     self._durable.start_attempt(durable_run_id, durable_phase_id, current_task_id, attempt_id, str(assignment_dict["worker_id"]))
                 spec = self.worker_adapter.prepare(task, assignment_dict)
                 self._validate_worker_spec(spec, task)
-                before_identity = self._durable._workspace_identity(spec.changed_targets) if self._durable is not None else ""
+                workspace_scope = (
+                    self._durable._workspace_scope(spec.changed_targets)
+                    if self._durable is not None
+                    else ()
+                )
+                before_identity = (
+                    self._durable._workspace_identity_for_scope(workspace_scope)
+                    if self._durable is not None
+                    else ""
+                )
                 result = self.worker_execution.execute(assignment_dict, task, command=spec.command, targets=spec.targets, external_reads=spec.external_reads, external_writes=spec.external_writes)
                 request = self._request_from_execution(task, assignment_dict, spec)
                 durable_artifact_id: str | None = None
@@ -348,8 +501,21 @@ class CanonicalOrchestrator:
                     raw_checkpoint_id = result.checkpoint.get("checkpoint_id") if isinstance(result.checkpoint, Mapping) else None
                     if not isinstance(raw_checkpoint_id, str) or not raw_checkpoint_id.strip():
                         raise OrchestrationSafetyStop("Execution checkpoint_id is required for durable lifecycle")
-                    after_identity = self._durable._workspace_identity(spec.changed_targets)
-                    _, durable_evidence_hash, durable_artifact_id, durable_checkpoint_sequence = self._durable.persist_post_execution(durable_run_id, durable_phase_id, current_task_id, attempt_id, raw_checkpoint_id, before_identity, after_identity, self._durable._observed_state(spec.changed_targets, self.workspace_root))
+                    after_identity = self._durable._workspace_identity_for_scope(workspace_scope)
+                    _, durable_evidence_hash, durable_artifact_id, durable_checkpoint_sequence = self._durable.persist_post_execution(
+                        durable_run_id,
+                        durable_phase_id,
+                        current_task_id,
+                        attempt_id,
+                        raw_checkpoint_id,
+                        before_identity,
+                        after_identity,
+                        self._durable._observed_state(
+                            workspace_scope,
+                            self.workspace_root,
+                        ),
+                        workspace_scope_entries=workspace_scope,
+                    )
                 validation_hook: ValidationHook = lambda hook_request, hook_task, hook_result: self.worker_adapter.validate(hook_request, hook_task, hook_result, spec)
                 validator = self.validator_factory(validation_hook)
                 if not isinstance(validator, IndependentValidator):
