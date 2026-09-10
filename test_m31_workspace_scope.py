@@ -1,4 +1,5 @@
 import hashlib
+import sqlite3
 import json
 from pathlib import Path
 
@@ -324,3 +325,112 @@ def test_workspace_evidence_serialization_contains_scope():
     payload = evidence.to_dict()
     assert payload["workspace_scope_version"] == WORKSPACE_SCOPE_VERSION
     assert payload["workspace_scope_entries"] == ["a.txt", "b.txt"]
+
+
+def test_existing_legacy_store_rejects_new_scoped_evidence_without_migration(
+    tmp_path: Path,
+):
+    database = tmp_path / "legacy.db"
+    state = DurableExecutionState(database)
+    bridge = _DurableLifecycleBridge(state, tmp_path)
+    bridge.ensure_project()
+    run_id = bridge.create_run()
+    task_id = "task-legacy"
+    phase_id = f"{run_id}:PHASE:1"
+    bridge.accept_plan(run_id, task_id, {"tasks": [{"task_id": task_id}]})
+    bridge.start_phase(run_id, phase_id)
+    bridge.start_running(run_id)
+    bridge.start_task(run_id, phase_id, {"task_id": task_id})
+    attempt_id = f"{run_id}:{task_id}:ATTEMPT:1"
+    bridge.start_attempt(run_id, phase_id, task_id, attempt_id, "worker-legacy")
+    state.close()
+
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA foreign_keys=OFF")
+    connection.execute(
+        "ALTER TABLE workspace_evidence RENAME TO workspace_evidence_current"
+    )
+    connection.execute(
+        """
+        CREATE TABLE workspace_evidence (
+            evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            phase_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            change_kind TEXT NOT NULL,
+            expected_before_identity TEXT,
+            observed_before_identity TEXT,
+            expected_after_identity TEXT,
+            observed_after_identity TEXT,
+            observed_state TEXT NOT NULL,
+            checkpoint_id TEXT,
+            artifact_id TEXT,
+            evidence_created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO workspace_evidence(
+            evidence_id, project_id, run_id, phase_id, task_id, attempt_id,
+            relative_path, change_kind, expected_before_identity,
+            observed_before_identity, expected_after_identity,
+            observed_after_identity, observed_state, checkpoint_id,
+            artifact_id, evidence_created_at
+        )
+        SELECT
+            evidence_id, project_id, run_id, phase_id, task_id, attempt_id,
+            relative_path, change_kind, expected_before_identity,
+            observed_before_identity, expected_after_identity,
+            observed_after_identity, observed_state, checkpoint_id,
+            artifact_id, evidence_created_at
+        FROM workspace_evidence_current
+        """
+    )
+    connection.execute("DROP TABLE workspace_evidence_current")
+    connection.commit()
+    connection.close()
+
+    reopened = DurableExecutionState(database)
+    columns = {
+        row[1]
+        for row in reopened._connection.execute(
+            "PRAGMA table_info(workspace_evidence)"
+        ).fetchall()
+    }
+    assert "workspace_scope_version" not in columns
+    assert "workspace_scope_entries" not in columns
+
+    evidence = WorkspaceEvidence(
+        project_id=bridge.project_id,
+        run_id=run_id,
+        phase_id=phase_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        relative_path="legacy.txt",
+        change_kind="MODIFIED",
+        expected_before_identity=None,
+        observed_before_identity=None,
+        expected_after_identity="after",
+        observed_after_identity="after",
+        observed_state="PRESENT_COMPLETE",
+        checkpoint_id=None,
+        artifact_id=None,
+        evidence_created_at="2026-09-10T00:00:00+00:00",
+        workspace_scope_version=WORKSPACE_SCOPE_VERSION,
+        workspace_scope_entries=("legacy.txt",),
+    )
+
+    with pytest.raises(
+        IntegrityError,
+        match="Durable workspace scope columns are unavailable in this store",
+    ):
+        EvidenceLayer(reopened).record_workspace_evidence(evidence)
+
+    assert reopened._connection.execute(
+        "SELECT COUNT(*) FROM workspace_evidence"
+    ).fetchone()[0] == 0
+    reopened.close()

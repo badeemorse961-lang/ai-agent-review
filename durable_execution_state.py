@@ -234,6 +234,19 @@ def reconstruct_workspace_scope(
     return reconstructed
 
 
+def workspace_path_identity(path: Path) -> str:
+    """Return the canonical M3 identity for one workspace path."""
+    if not path.exists():
+        return "ABSENT"
+    if path.is_file():
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+    return "DIRECTORY"
+
+
 def workspace_identity(
     workspace_root: Path,
     scope: tuple[str, ...],
@@ -252,20 +265,7 @@ def workspace_identity(
                 f"Workspace scope escapes durable workspace: {relative_path!r}"
             ) from exc
 
-        if not candidate.exists():
-            identity = "ABSENT"
-        elif candidate.is_file():
-            digest = hashlib.sha256()
-            with candidate.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            identity = "sha256:" + digest.hexdigest()
-        elif candidate.is_dir():
-            identity = "DIRECTORY"
-        else:
-            identity = "ABSENT"
-
-        entries.append((relative_path, identity))
+        entries.append((relative_path, workspace_path_identity(candidate)))
 
     return hashlib.sha256(
         json.dumps(

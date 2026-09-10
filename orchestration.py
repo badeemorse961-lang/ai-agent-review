@@ -19,6 +19,7 @@ from durable_execution_state import (
     reconstruct_workspace_scope,
     utc_now,
     workspace_identity,
+    workspace_path_identity,
 )
 from execution_authorization import ExecutionAuthorizationBoundary
 from execution_gate import FileChange
@@ -345,22 +346,10 @@ class _DurableLifecycleBridge:
             raise OrchestrationSafetyStop(str(exc)) from exc
 
     @staticmethod
-    def _path_identity(path: Path) -> str:
-        if not path.exists():
-            return "ABSENT"
-        if path.is_file():
-            digest = hashlib.sha256()
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return "sha256:" + digest.hexdigest()
-        return "DIRECTORY"
-
-    @staticmethod
     def _observed_state(targets: tuple[str, ...], root: Path) -> str:
         if not targets:
             return "PRESENT_COMPLETE"
-        states = [_DurableLifecycleBridge._path_identity((root / target).resolve(strict=False)) for target in targets]
+        states = [workspace_path_identity((root / target).resolve(strict=False)) for target in targets]
         if all(value == "ABSENT" for value in states):
             return "ABSENT"
         if any(value == "ABSENT" for value in states):
