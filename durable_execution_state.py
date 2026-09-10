@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import sqlite3
 import threading
 import uuid
@@ -12,6 +13,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 SCHEMA_VERSION = 1
 GENESIS_HASH = "GENESIS"
+WORKSPACE_SCOPE_VERSION = "workspace-scope-v1"
 
 PROJECT_STATES = {"ACTIVE", "PAUSED", "COMPLETED", "SAFE_STOP"}
 RUN_STATES = {
@@ -157,6 +159,123 @@ class RecoveryAmbiguityError(DurableExecutionStateError):
     """Raised when an ambiguous recovery operation cannot be safely replayed."""
 
 
+
+def canonical_workspace_scope(targets: Iterable[str]) -> tuple[str, ...]:
+    """Return the deterministic workspace-relative scope used by M3 identity."""
+    raw_targets = tuple(targets)
+    if not raw_targets:
+        return ()
+
+    normalized: set[str] = set()
+
+    for raw_target in raw_targets:
+        if not isinstance(raw_target, str):
+            raise IntegrityError("Workspace scope entries must be strings")
+
+        value = raw_target.replace("\\", "/")
+        if not value:
+            raise IntegrityError("Workspace scope entries must not be empty")
+
+        if value.startswith("/"):
+            raise IntegrityError(
+                f"Workspace scope entry must be relative: {raw_target!r}"
+            )
+
+        drive, _ = ntpath.splitdrive(value)
+        if drive:
+            raise IntegrityError(
+                f"Workspace scope entry must be relative: {raw_target!r}"
+            )
+
+        parts: list[str] = []
+        for part in value.split("/"):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if not parts:
+                    raise IntegrityError(
+                        f"Workspace scope entry escapes durable workspace: {raw_target!r}"
+                    )
+                parts.pop()
+                continue
+            parts.append(part)
+
+        canonical = "/".join(parts)
+        if not canonical:
+            raise IntegrityError(
+                f"Workspace scope entry resolves to workspace root: {raw_target!r}"
+            )
+
+        normalized.add(canonical)
+
+    return tuple(sorted(normalized))
+
+
+def reconstruct_workspace_scope(
+    version: Optional[str],
+    entries: Optional[Iterable[str]],
+) -> Optional[tuple[str, ...]]:
+    """Validate persisted M3 scope; legacy None/None remains unreconstructed."""
+    if version is None and entries is None:
+        return None
+
+    if version != WORKSPACE_SCOPE_VERSION or entries is None:
+        raise IntegrityError("Unsupported or malformed workspace scope version")
+
+    if not isinstance(entries, (tuple, list)):
+        raise IntegrityError("Persisted workspace scope entries must be a sequence")
+
+    original = tuple(entries)
+    reconstructed = canonical_workspace_scope(original)
+
+    if original != reconstructed:
+        raise IntegrityError("Persisted workspace scope is not canonical")
+
+    return reconstructed
+
+
+def workspace_identity(
+    workspace_root: Path,
+    scope: tuple[str, ...],
+) -> str:
+    """Hash exactly the supplied canonical workspace scope."""
+    entries: list[tuple[str, str]] = []
+    resolved_root = workspace_root.resolve(strict=False)
+
+    for relative_path in scope:
+        candidate = (workspace_root / relative_path).resolve(strict=False)
+
+        try:
+            candidate.relative_to(resolved_root)
+        except ValueError as exc:
+            raise IntegrityError(
+                f"Workspace scope escapes durable workspace: {relative_path!r}"
+            ) from exc
+
+        if not candidate.exists():
+            identity = "ABSENT"
+        elif candidate.is_file():
+            digest = hashlib.sha256()
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            identity = "sha256:" + digest.hexdigest()
+        elif candidate.is_dir():
+            identity = "DIRECTORY"
+        else:
+            identity = "ABSENT"
+
+        entries.append((relative_path, identity))
+
+    return hashlib.sha256(
+        json.dumps(
+            entries,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class RunRecord:
     run_id: str
@@ -190,6 +309,8 @@ class WorkspaceEvidence:
     checkpoint_id: Optional[str]
     artifact_id: Optional[str]
     evidence_created_at: str
+    workspace_scope_version: Optional[str] = None
+    workspace_scope_entries: Optional[tuple[str, ...]] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -208,6 +329,12 @@ class WorkspaceEvidence:
             "checkpoint_id": self.checkpoint_id,
             "artifact_id": self.artifact_id,
             "evidence_created_at": self.evidence_created_at,
+            "workspace_scope_version": self.workspace_scope_version,
+            "workspace_scope_entries": (
+                list(self.workspace_scope_entries)
+                if self.workspace_scope_entries is not None
+                else None
+            ),
         }
 
 
@@ -442,6 +569,8 @@ class DurableExecutionState:
             checkpoint_id TEXT,
             artifact_id TEXT,
             evidence_created_at TEXT NOT NULL,
+            workspace_scope_version TEXT,
+            workspace_scope_entries TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(project_id),
             FOREIGN KEY(project_id, run_id, phase_id, task_id, attempt_id)
                 REFERENCES attempts(project_id, run_id, phase_id, task_id, attempt_id),
@@ -659,6 +788,21 @@ class DurableExecutionState:
             raise ValueError("Unsupported workspace change_kind")
         if evidence.observed_state not in {"PRESENT_COMPLETE", "PRESENT_PARTIAL", "ABSENT", "MISMATCH", "AMBIGUOUS"}:
             raise ValueError("Unsupported workspace observed_state")
+
+        if evidence.workspace_scope_version is None and evidence.workspace_scope_entries is not None:
+            raise IntegrityError("Workspace scope entries require a scope version")
+
+        if (
+            evidence.workspace_scope_version is not None
+            or evidence.workspace_scope_entries is not None
+        ):
+            reconstructed_scope = reconstruct_workspace_scope(
+                evidence.workspace_scope_version,
+                evidence.workspace_scope_entries,
+            )
+        else:
+            reconstructed_scope = None
+
         with self._transaction() as conn:
             self._require_attempt(
                 conn,
@@ -674,26 +818,76 @@ class DurableExecutionState:
                 self._require_checkpoint(conn, checkpoint_id)
             if artifact_id is not None:
                 self._require_artifact(conn, artifact_id)
-            cursor = conn.execute(
-                "INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    evidence.project_id,
-                    evidence.run_id,
-                    evidence.phase_id,
-                    evidence.task_id,
-                    evidence.attempt_id,
-                    evidence.relative_path,
-                    evidence.change_kind,
-                    evidence.expected_before_identity,
-                    evidence.observed_before_identity,
-                    evidence.expected_after_identity,
-                    evidence.observed_after_identity,
-                    evidence.observed_state,
-                    checkpoint_id,
-                    artifact_id,
-                    evidence.evidence_created_at,
-                ),
-            )
+
+            columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    "PRAGMA table_info(workspace_evidence)"
+                ).fetchall()
+            }
+            has_scope_columns = {
+                "workspace_scope_version",
+                "workspace_scope_entries",
+            }.issubset(columns)
+
+            if reconstructed_scope is not None and not has_scope_columns:
+                raise IntegrityError(
+                    "Durable workspace scope columns are unavailable in this store"
+                )
+
+            if has_scope_columns:
+                scope_entries = (
+                    json.dumps(
+                        list(reconstructed_scope),
+                        separators=(",", ":"),
+                    )
+                    if reconstructed_scope is not None
+                    else None
+                )
+                cursor = conn.execute(
+                    "INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at, workspace_scope_version, workspace_scope_entries) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        evidence.project_id,
+                        evidence.run_id,
+                        evidence.phase_id,
+                        evidence.task_id,
+                        evidence.attempt_id,
+                        evidence.relative_path,
+                        evidence.change_kind,
+                        evidence.expected_before_identity,
+                        evidence.observed_before_identity,
+                        evidence.expected_after_identity,
+                        evidence.observed_after_identity,
+                        evidence.observed_state,
+                        checkpoint_id,
+                        artifact_id,
+                        evidence.evidence_created_at,
+                        evidence.workspace_scope_version,
+                        scope_entries,
+                    ),
+                )
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO workspace_evidence(project_id, run_id, phase_id, task_id, attempt_id, relative_path, change_kind, expected_before_identity, observed_before_identity, expected_after_identity, observed_after_identity, observed_state, checkpoint_id, artifact_id, evidence_created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        evidence.project_id,
+                        evidence.run_id,
+                        evidence.phase_id,
+                        evidence.task_id,
+                        evidence.attempt_id,
+                        evidence.relative_path,
+                        evidence.change_kind,
+                        evidence.expected_before_identity,
+                        evidence.observed_before_identity,
+                        evidence.expected_after_identity,
+                        evidence.observed_after_identity,
+                        evidence.observed_state,
+                        checkpoint_id,
+                        artifact_id,
+                        evidence.evidence_created_at,
+                    ),
+                )
+
             return int(cursor.lastrowid)
 
     def create_recovery_operation(
@@ -903,6 +1097,7 @@ class DurableExecutionState:
 
 __all__ = [
     "SCHEMA_VERSION",
+    "WORKSPACE_SCOPE_VERSION",
     "DurableExecutionState",
     "DurableExecutionStateError",
     "IntegrityError",
@@ -912,5 +1107,8 @@ __all__ = [
     "RunRecord",
     "StateConflictError",
     "WorkspaceEvidence",
+    "canonical_workspace_scope",
+    "reconstruct_workspace_scope",
+    "workspace_identity",
     "utc_now",
 ]
