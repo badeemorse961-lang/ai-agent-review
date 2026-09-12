@@ -270,8 +270,7 @@ class WorkspaceDeliveryRecovery:
 
     @staticmethod
     def _row_digest(row):
-        payload = {k: row[k] for k in ("project_id","run_id","phase_id","task_id","attempt_id","relative_path","change_kind","expected_before_identity","observed_before_identity","expected_after_identity","observed_after_identity","observed_state","checkpoint_id","artifact_id","evidence_created_at")}
-        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return EvidenceLayer._evidence_row_digest(row)
 
     @staticmethod
     def _next_sequence(conn, project_id, run_id):
