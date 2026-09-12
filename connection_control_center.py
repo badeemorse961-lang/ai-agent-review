@@ -7,6 +7,7 @@ from typing import Any
 from application_boundary import ApplicationIntent, ApplicationResult, ControlCenterService
 from connection_manager import PENDING_ASSIGNMENT, disable_connection, enable_connection, get_connection_status, load_registry as load_connection_metadata, mark_connection_failed, remove_connection, validate_connection
 from control_center_core_contract import replace_connection_credential_from_ui
+from control_center_secret_store import create_default_secret_store
 from desktop_control_center import ControlCenterApp
 from leader_router import LeaderRouter
 from provider_transport import OpenAICompatibleTransport
@@ -18,7 +19,11 @@ class ConnectionControlCenterService(ControlCenterService):
 
     def __init__(self, **kwargs: Any) -> None:
         self.last_connection_operation: Mapping[str, Any] | None = None
-        secret_store = kwargs.pop("secret_store", None)
+        secret_store = kwargs.pop(
+            "secret_store",
+            create_default_secret_store(),
+        )
+        self.secret_store = secret_store
         if secret_store is not None:
             kwargs.setdefault("leader_transport", OpenAICompatibleTransport(secret_store=secret_store))
         elif kwargs.get("autowire_core", True) and "leader_transport" not in kwargs:
