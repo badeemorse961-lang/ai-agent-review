@@ -100,3 +100,15 @@ Use multiple legitimate connections only within provider terms and configured po
 
 ## Assignment
 Role assignment must be based on the authoritative configured pools in `config/registry.json`, never a fixed global count or a legacy generated role file.
+
+---
+## Credential Lifecycle / Live Rebind (foundational addition)
+
+Every connection has a secret fingerprint and health state, but the underlying credential must be reloadable.
+
+### Requirement
+- Provider/account pools must support either automatic runtime reload/rebind or an explicit reload/rebind operation.
+- Stale/invalid credentials must be handled by health/rebind, not silent continuation.
+- Newly added credentials must become discoverable without requiring a full process restart.
+- Routing uses only the currently active, validated pool; no second routing layer.
+- Secret contents never enter pool descriptions, UI projections (`DesktopProjection`), logs, or diagnostics. Only fingerprint and health state are observable.

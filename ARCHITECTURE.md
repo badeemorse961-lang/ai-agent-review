@@ -247,3 +247,26 @@ The UI must use structured application intents and typed request/response contra
 24. UI actions must cross the same Core authority boundaries as non-UI operation; the UI cannot create a parallel execution or mutation path.
 25. UI-visible credentials, diagnostics, activity, and errors must cross centralized redaction before becoming observable or persistent.
 26. GUI completion requires real Windows end-to-end acceptance; a mockup or static dashboard is not sufficient evidence.
+
+---
+## Credential Lifecycle / Live Rebind Requirement (Foundational)
+
+### Requirement
+The architecture must not assume provider credentials (e.g., OpenRouter, Groq, future providers) are loaded only at process startup. When new credentials appear in the authoritative credential source, the system must support either:
+- automatic runtime discovery/reload/rebind, OR
+- an explicit, documented reload/rebind operation.
+
+### Lifecycle (authoritative order)
+credential source → discovery/load → validation/availability → provider/account pool → routing/use → runtime refresh/rebind → updated active pool
+
+### Explicit sections
+A. Startup load: initial credential load from authoritative source at startup.
+B. Runtime refresh/rebind: discovery of newly added credentials; switching to newly available account/key; stale/invalid handling; provider/account health; refresh/rebind semantics; restart-avoidance.
+C. Health/failure: provider/account health observations must not expose secrets; failure must trigger rebind, not silent continuation.
+D. Routing/use: currently active pool is the authoritative routing input; no second routing layer.
+
+### Constraints
+- Credentials must never appear in UI read models, logs, diagnostics, or read-only projections (see `DesktopProjection`).
+- Redaction (`SecretRedactor`) applies before any observable state.
+- Separation between credential authority (`config/registry.json`, connection registry) and UI (DesktopAppService) is preserved.
+- No framework or dependency changes accompany this requirement; it is a design contract.
