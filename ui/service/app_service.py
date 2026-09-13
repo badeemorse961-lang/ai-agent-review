@@ -32,7 +32,7 @@ class DashboardAppService:
             run_phase="MISSING READ CONTRACT",
             leader_connection_id="MISSING READ CONTRACT",
             failover_status="MISSING READ CONTRACT",
-            worker_pool_summary=manifest.get("summary") if isinstance(manifest, dict) else {},
+            worker_pool_summary="MISSING READ CONTRACT",
             current_task=None,
             validation_verdict=None,
             latest_test_result="NOT RUN",
