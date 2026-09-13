@@ -295,6 +295,9 @@ ARCHITECTURE.md
 PROJECT_RULES.md
 SECURITY_AND_EXECUTION_RULES.md
 GIT_MUTATION_CONTROL_PLANE.md
+OPENHANDS_DEVELOPMENT_ASSISTANT.md
 ```
 
 Then inspect the executable code and tests relevant to the next gap. Prefer substantive engineering gaps over documentation-only cleanup.
+
+The OpenHands document defines the external development-agent role, verified local Docker/workspace setup, startup procedure, LLM configuration, task lifecycle, evidence handoff, and SAFE_STOP rules. It is operational guidance for this auxiliary tool and does not override the project's authoritative architecture or security boundaries.
