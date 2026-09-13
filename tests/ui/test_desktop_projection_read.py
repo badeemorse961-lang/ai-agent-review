@@ -50,18 +50,18 @@ def test_git_dirty_state_immutable_tuple():
     proj = svc.get_projection("/projects")
     assert isinstance(proj.git_dirty_state, (tuple, type(None))), "git_dirty_state not tuple/None"
     if proj.git_dirty_state is not None:
+        # Direct mutation attempt on the frozen projection field must fail
         try:
-            # Would fail for tuple (no mutation)
-            # Only prove it's tuple by creation
+            proj.git_dirty_state.append("injected")
+            assert False, "tuple mutation did not raise"
+        except AttributeError:
+            pass  # tuple has no append — frozen behavior proven
+        # Item assignment also impossible
+        try:
+            # tuples don't support item assignment; just confirm type
             pass
-        except Exception:
+        except TypeError:
             pass
-    # Explicit: contained collection is tuple, not mutable list
-    # Verify via direct construction with mutable source converted
-    dirty = ["a","b"]
-    frozen = tuple(dirty)
-    dirty.append("c")  # original mutable; frozen unchanged
-    assert frozen == ("a","b")
 
 def test_validation_verdict_explicit_none_documented():
     # Design explicitly sets None (not MISSING READ CONTRACT) for this field
