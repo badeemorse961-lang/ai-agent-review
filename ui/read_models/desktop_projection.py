@@ -14,7 +14,7 @@ class DesktopProjection:
     latest_test_result: Optional[str]
     git_branch: Optional[str]
     git_head_sha: Optional[str]
-    git_dirty_state: Optional[List[str]]
+    git_dirty_state: Optional[tuple]
     mutation_lock_state: Optional[str]
     safety_stop_reason: Optional[str]
     last_run_timestamp: Optional[str]
