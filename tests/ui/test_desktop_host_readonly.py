@@ -20,7 +20,7 @@ def test_refresh_is_manual_no_timer():
     # Refresh is explicit call only; source check for timer/background loop
     src_host = open("/projects/ui/host/desktop_host.py").read()
     assert "threading" not in src_host
-    assert "timer" not in src_host.lower() or True  # no timer code present
+    assert "threading.Timer" not in src_host and "Timer(" not in src_host, "timer mechanism found"
     assert "subprocess" not in src_host
     assert "os.system" not in src_host
 
