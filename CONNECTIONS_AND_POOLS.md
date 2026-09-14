@@ -12,6 +12,49 @@ Role and pool membership are routing configuration, not connection metadata. The
 
 `connections.json` is connection metadata only. Its `role_source` marker must remain `config/registry.json`; it must never point to a legacy role file or become an independent role authority.
 
+## External provider secret sources
+
+Provider API keys are supplied by the operator through external TXT sources. These files are secret sources only; they are not routing configuration and are never committed to Git.
+
+The single source definition is in `connection_manager.PROVIDER_FILES` and `connection_manager.secret_dir()`:
+
+```text
+Base directory:
+%LOCALAPPDATA%\AI-Agent\secrets
+
+Groq:
+%LOCALAPPDATA%\AI-Agent\secrets\groq_keys.txt
+
+OpenRouter:
+%LOCALAPPDATA%\AI-Agent\secrets\openrouter_keys.txt
+```
+
+`AI_AGENT_SECRET_DIR` may override the base directory when explicitly configured. Repository-relative fallback remains opt-in only through `AI_AGENT_ALLOW_LEGACY_SECRET_PATH`; production startup sync does not enable it.
+
+Canonical operator format is one API key per non-empty line. Leading/trailing whitespace is trimmed. Blank/comment lines are ignored. A candidate containing internal whitespace is rejected as malformed without exposing its value. Provider-specific validity is not inferred from string shape; provider health/capability validation remains a separate readiness concern.
+
+Startup synchronization is additive and idempotent:
+
+```text
+external TXT source
+    ↓
+parse + deterministic normalization
+    ↓
+SHA-256 fingerprint
+    ↓
+compare against existing connection metadata
+    ↓
+new fingerprint → new stable connection ID
+known fingerprint → no duplicate
+missing TXT line → no deletion
+```
+
+Raw API keys are held only in memory while being processed or used for provider transport. They are not persisted to `connections.json`, `config/registry.json`, diagnostics, benchmark artifacts, or UI state. Connection metadata persists only the provider, stable ID, SHA-256 fingerprint, lifecycle status, and active flag.
+
+When a new connection is discovered but no authoritative registry assignment exists, it is recorded as `PENDING_ASSIGNMENT` and remains inactive. Startup sync never guesses a model, role, pool, or routing policy. This preserves `config/registry.json` as the sole routing authority.
+
+A missing source file is a non-fatal startup condition and is reported as `source_exists=false`; the sync does not create secrets or fall back into the repository.
+
 ## N-driven pools
 Every pool is logically:
 
@@ -26,7 +69,7 @@ Use actual configured collection size.
 ## Connection IDs
 IDs are data. `OR-01` and `GROQ-01` are valid identifiers, but routing cannot depend on where numbering ends.
 
-The authoritative registry must assign every declared connection to exactly one leader pool or worker role, with no duplicate assignment or leader/worker overlap.
+The authoritative registry must assign every routing-eligible connection to exactly one leader pool or worker role, with no duplicate assignment or leader/worker overlap. Pending external imports are explicitly non-routing and are not treated as an assignment.
 
 ## Leadership
 Primary: Nemotron Ultra.
@@ -52,48 +95,27 @@ Adding connections requires:
 
 No routing rewrite.
 
-## Future operational requirement: Dynamic Connection Onboarding & Auto-Assignment
+## Dynamic onboarding status
 
-This is a **future readiness requirement**, not a current implementation milestone and not a reason to interrupt the canonical orchestration acceptance gate.
+Automatic source discovery and idempotent connection metadata admission are now implemented at the connection-manager boundary. Full automatic routing assignment remains intentionally gated by an explicit authoritative policy because the current `config/registry.json` does not define a deterministic new-connection role classification rule.
 
-The target operational flow is:
+The safe lifecycle is therefore:
 
 ```text
-new connection/account
+new external key
     ↓
-validate provider + model + metadata
+connection metadata + fingerprint
     ↓
-validated capability discovery
+PENDING_ASSIGNMENT
     ↓
-deterministic policy/registry assignment
+explicit authoritative registry assignment
     ↓
-register in exactly one eligible pool/role
+health/readiness validation
     ↓
-health check
-    ↓
-eligible for router selection
-    ↓
-automatic quarantine/removal from effective availability on invalidation/failure
+router eligibility
 ```
 
-The target behavior must remain compatible with these authority rules:
-- `config/registry.json` remains the routing authority;
-- pool capacity is N-driven and never represented by hard-coded Python counts;
-- connection IDs are unique and stable;
-- each connection belongs to exactly one valid assignment;
-- provider, model, and role assignments must be policy-consistent;
-- runtime health/state is observation data and never becomes configuration authority;
-- secrets remain outside Git and normal persisted runtime evidence.
-
-### Current status assessment
-
-**CONFIGURATION-DRIVEN ONLY**.
-
-The current implementation already supports registry-defined leader/worker pools, N-driven pool sizes, uniqueness and assignment validation, provider/role consistency checks, runtime health separation, and router exclusion of unavailable connections. These capabilities support expansion by configuration, but they do **not** constitute automatic onboarding.
-
-Automatic capability discovery, deterministic classification of a newly introduced connection, service-side pool insertion without manual registry editing, onboarding health admission, and automatic quarantine/re-admission lifecycle are not currently established as a verified end-to-end behavior.
-
-Do not mark this requirement as `AUTO-ONBOARDING VERIFIED` merely because the registry accepts additional connection IDs or because the routers consume variable-length configured pools.
+No startup path creates a second registry, routing authority, or secret store.
 
 ## Quotas
 Use multiple legitimate connections only within provider terms and configured policy. The system must not implement rotation as a quota-evasion mechanism.

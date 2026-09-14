@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from central_leader import CentralLeader
+from connection_manager import sync_external_secret_sources
 from execution_authorization import ExecutionAuthorizationBoundary
 from independent_validation import IndependentValidator, ValidationHook
 from leader_router import LeaderRouter
@@ -96,6 +97,7 @@ class ProductionRuntime:
                 "A worker checkpoint hook is required; execution cannot proceed without explicit checkpoint authority"
             )
 
+        self.secret_sync_report = sync_external_secret_sources()
         root = config.workspace_root.resolve()
         self.config = config
         self.leader_router = leader_router

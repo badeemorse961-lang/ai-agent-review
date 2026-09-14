@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -16,6 +17,7 @@ DEFAULT_SECRET_DIR = Path(
     os.environ.get("LOCALAPPDATA", Path.home() / ".local")
 ) / "AI-Agent" / "secrets"
 
+# This is the single configuration authority for external provider secret sources.
 PROVIDER_FILES = {
     "groq": "groq_keys.txt",
     "openrouter": "openrouter_keys.txt",
@@ -24,6 +26,25 @@ PROVIDER_PREFIXES = {
     "groq": "GROQ",
     "openrouter": "OR",
 }
+
+
+@dataclass(frozen=True)
+class SecretSourceSyncResult:
+    """Secret-free evidence for one provider source synchronization."""
+
+    provider: str
+    source_exists: bool
+    lines_read: int
+    unique_candidates: int
+    duplicate_candidates: int
+    already_known: int
+    newly_imported: int
+    invalid: int
+    failed: int
+    source_path: str
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 def fingerprint(secret: str) -> str:
@@ -158,6 +179,7 @@ def import_provider(
     registry: dict,
     prefix: str,
 ) -> None:
+    """Import keys into connection metadata without destructive source reconciliation."""
     connections = registry.setdefault("connections", {})
     labeled, unlabeled = read_secret_source(keys_path, prefix)
 
@@ -180,7 +202,9 @@ def import_provider(
     def upsert(connection_id: str, secret: str) -> None:
         fp = fingerprint(secret)
         if fp in assigned_fingerprints:
-            raise ValueError(f"The same secret is assigned more than once for {provider}: {connection_id}")
+            raise ValueError(
+                f"The same secret is assigned more than once for {provider}: {connection_id}"
+            )
         assigned_fingerprints.add(fp)
         assigned_ids.add(connection_id)
 
@@ -191,7 +215,7 @@ def import_provider(
                 "provider": provider,
                 "key_fingerprint": fp,
                 "role": None,
-                "status": "VALIDATED",
+                "status": "PENDING_ASSIGNMENT",
                 "active": False,
             }
             return
@@ -205,8 +229,8 @@ def import_provider(
             existing["key_fingerprint"] = fp
             existing["status"] = "KEY_ROTATED"
             existing["active"] = False
-        else:
-            existing["status"] = "VALIDATED"
+        elif existing.get("status") == "PENDING_ASSIGNMENT":
+            existing["status"] = "PENDING_ASSIGNMENT"
 
     for connection_id, secret in labeled.items():
         upsert(connection_id, secret)
@@ -221,43 +245,138 @@ def import_provider(
         connection_id = _next_connection_id(used_ids | assigned_ids, prefix)
         upsert(connection_id, secret)
 
-    stale_ids = used_ids - assigned_ids
-    for connection_id in stale_ids:
-        item = connections.get(connection_id)
-        if isinstance(item, dict) and item.get("provider") == provider:
-            item["status"] = "NOT_PRESENT_IN_SECRET_SOURCE"
-            item["active"] = False
+
+def _parse_startup_source(path: Path) -> tuple[list[str], int, int]:
+    """Parse canonical one-secret-per-line source without logging values."""
+    candidates: list[str] = []
+    invalid = 0
+    duplicate_candidates = 0
+    seen: set[str] = set()
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if any(character.isspace() for character in line):
+            invalid += 1
+            continue
+        if line in seen:
+            duplicate_candidates += 1
+            continue
+        seen.add(line)
+        candidates.append(line)
+
+    return candidates, invalid, duplicate_candidates
+
+
+def sync_external_secret_sources() -> dict[str, dict[str, object]]:
+    """Synchronize external provider secret sources additively and idempotently.
+
+    The TXT files are secret sources, not deletion manifests. Existing connection
+    metadata is never removed or deactivated because a source line is absent.
+    New connections remain PENDING_ASSIGNMENT until the authoritative registry has
+    an explicit assignment; no role/model is guessed by this function.
+    """
+    registry = load_registry()
+    results: dict[str, dict[str, object]] = {}
+    changed = False
+
+    for provider, filename in PROVIDER_FILES.items():
+        source = secret_dir() / filename
+        base = {
+            "provider": provider,
+            "source_exists": source.exists(),
+            "lines_read": 0,
+            "unique_candidates": 0,
+            "duplicate_candidates": 0,
+            "already_known": 0,
+            "newly_imported": 0,
+            "invalid": 0,
+            "failed": 0,
+            "source_path": str(source),
+        }
+
+        if not source.exists():
+            results[provider] = base
+            continue
+
+        try:
+            lines = source.read_text(encoding="utf-8").splitlines()
+            base["lines_read"] = len(lines)
+            candidates: list[str] = []
+            seen: set[str] = set()
+            for raw in lines:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if any(character.isspace() for character in line):
+                    base["invalid"] += 1
+                    continue
+                if line in seen:
+                    base["duplicate_candidates"] += 1
+                    continue
+                seen.add(line)
+                candidates.append(line)
+
+            base["unique_candidates"] = len(candidates)
+            connections = registry.setdefault("connections", {})
+            known = {
+                item.get("key_fingerprint")
+                for item in connections.values()
+                if isinstance(item, dict)
+                and item.get("provider") == provider
+                and isinstance(item.get("key_fingerprint"), str)
+            }
+            used_ids = {
+                connection_id
+                for connection_id, item in connections.items()
+                if isinstance(item, dict) and item.get("provider") == provider
+            }
+            for secret in candidates:
+                fp = fingerprint(secret)
+                if fp in known:
+                    base["already_known"] += 1
+                    continue
+                connection_id = _next_connection_id(used_ids, PROVIDER_PREFIXES[provider])
+                connections[connection_id] = {
+                    "connection_id": connection_id,
+                    "provider": provider,
+                    "key_fingerprint": fp,
+                    "role": None,
+                    "status": "PENDING_ASSIGNMENT",
+                    "active": False,
+                }
+                used_ids.add(connection_id)
+                known.add(fp)
+                base["newly_imported"] += 1
+                changed = True
+        except (OSError, UnicodeError):
+            base["failed"] = 1
+
+        results[provider] = base
+
+    if changed:
+        save_registry(registry)
+
+    return results
 
 
 def main() -> int:
-    registry = load_registry()
-
-    resolved_files: dict[str, Path] = {}
-    for provider in PROVIDER_FILES:
-        resolved_files[provider] = resolve_secret_file(provider)
-        import_provider(
-            provider=provider,
-            keys_path=resolved_files[provider],
-            registry=registry,
-            prefix=PROVIDER_PREFIXES[provider],
-        )
-
-    registry["version"] = max(int(registry.get("version", 1)), 3)
-    save_registry(registry)
-
-    counts = {
-        provider: len(_connection_ids_for_provider(registry, provider))
-        for provider in PROVIDER_FILES
-    }
-
-    print("Connection registry updated.")
+    results = sync_external_secret_sources()
+    print("External secret source sync complete.")
     print(f"Secret directory       : {secret_dir()}")
-    print(f"Groq connections       : {counts['groq']}")
-    print(f"OpenRouter connections : {counts['openrouter']}")
-    print(f"Registry               : {REGISTRY_FILE.name}")
-    print("Role source            : config/registry.json")
+    for provider in PROVIDER_FILES:
+        result = results[provider]
+        print(f"{provider} source exists : {result['source_exists']}")
+        print(f"{provider} lines read    : {result['lines_read']}")
+        print(f"{provider} unique        : {result['unique_candidates']}")
+        print(f"{provider} duplicates    : {result['duplicate_candidates']}")
+        print(f"{provider} known         : {result['already_known']}")
+        print(f"{provider} imported      : {result['newly_imported']}")
+        print(f"{provider} invalid       : {result['invalid']}")
+        print(f"{provider} failed        : {result['failed']}")
     print("Raw secrets printed    : NO")
-
+    print("Legacy repo fallback   : NOT USED")
     return 0
 
 
