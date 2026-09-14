@@ -1,0 +1,238 @@
+{
+  "info": {
+    "name": "AI-Agent Control Center API",
+    "_postman_id": "9f0a0c60-0d20-4b48-9b19-9d6d2f0b6d84",
+    "description": "Safe local API contract for the existing application boundary. No credentials are stored in this collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8765"
+    },
+    {
+      "key": "workspace_root",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('service is healthy', function () { pm.expect(body.status).to.eql('ok'); });",
+              "pm.test('API version is v1', function () { pm.expect(body.api_version).to.eql('v1'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Capabilities",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/api/v1/capabilities"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('capabilities are declared', function () { pm.expect(body.intents).to.be.an('array').that.is.not.empty; });",
+              "pm.test('run_task is exposed only as a structured intent', function () { pm.expect(body.intents).to.include('run_task'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Select Project",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"kind\": \"select_project\",\n  \"payload\": {\n    \"workspace_root\": \"{{workspace_root}}\"\n  }\n}"
+        },
+        "url": "{{base_url}}/api/v1/intents"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('response is valid JSON', function () { pm.response.to.be.json; });",
+              "pm.test('application result is present', function () { pm.expect(pm.response.json()).to.have.property('status'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Refresh Dashboard",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"kind\": \"refresh_dashboard\",\n  \"payload\": {}\n}"
+        },
+        "url": "{{base_url}}/api/v1/intents"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('application result is present', function () { pm.expect(pm.response.json()).to.have.property('status'); });",
+              "pm.test('no credentials are returned by the adapter', function () { const text = pm.response.text(); pm.expect(text).to.not.match(/sk-[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9_-]{20,}|Bearer\\s+[A-Za-z0-9._-]{20,}/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Refresh Connections",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"kind\": \"refresh_connections\",\n  \"payload\": {}\n}"
+        },
+        "url": "{{base_url}}/api/v1/intents"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('application result is present', function () { pm.expect(pm.response.json()).to.have.property('status'); });",
+              "pm.test('raw credential patterns are absent', function () { pm.expect(pm.response.text()).to.not.match(/sk-[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9_-]{20,}|Bearer\\s+[A-Za-z0-9._-]{20,}/i); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Git Snapshot",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"kind\": \"git_snapshot\",\n  \"payload\": {}\n}"
+        },
+        "url": "{{base_url}}/api/v1/intents"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('application result is present', function () { pm.expect(pm.response.json()).to.have.property('status'); });",
+              "pm.test('git authority remains inspection-only', function () { const body = pm.response.json(); const authority = body?.data?.authority; if (authority !== undefined) pm.expect(authority).to.eql('inspection-only'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Session Evidence",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"kind\": \"session_evidence\",\n  \"payload\": {}\n}"
+        },
+        "url": "{{base_url}}/api/v1/intents"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('application result is present', function () { pm.expect(pm.response.json()).to.have.property('status'); });",
+              "pm.test('evidence response is JSON', function () { pm.expect(pm.response.json().data).to.be.an('object'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reject Unknown Intent",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"kind\": \"not_a_real_intent\",\n  \"payload\": {}\n}"
+        },
+        "url": "{{base_url}}/api/v1/intents"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('unknown intents are rejected', function () { pm.response.to.have.status(400); });",
+              "pm.test('rejection status is explicit', function () { pm.expect(pm.response.json().status).to.eql('REJECTED'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
