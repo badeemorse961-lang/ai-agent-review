@@ -90,6 +90,8 @@ def test_existing_and_rebound_accounts_and_transport_lookup():
             assert rebound.provider == "openrouter"
             assert rebound.fingerprint == pool["OR-02"]["key_fingerprint"]
             assert rebound.status == pool["OR-02"]["status"]
+            assert len(rebound.fingerprint) == 64
+            assert all(ch in "0123456789abcdef" for ch in rebound.fingerprint.lower())
 
             existing = service.resolve_account("OR-01", provider_hint="openrouter")
             assert existing.connection_id == "OR-01"
