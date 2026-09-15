@@ -1,147 +1,145 @@
 import sys
 import tempfile
 from pathlib import Path
-import json as _json
+
 sys.path.insert(0, "/projects")
-from provider_account_contract import ProviderAccount, ProviderAccountService
+
+import connection_manager
 import credential_pool_manager
+import provider_transport
+from provider_account_contract import ProviderAccount, ProviderAccountService
+
+
+def _base_account(**overrides):
+    value = {
+        "connection_id": "OR-01",
+        "provider": "openrouter",
+        "fingerprint": "sha256:ok",
+        "status": "VALIDATED",
+        "active": True,
+        "capabilities": [],
+        "role": None,
+    }
+    value.update(overrides)
+    return value
+
 
 def test_provider_account_strict_validation():
-    # Reject non-string capability
-    try:
-        ProviderAccount.from_dict({
-            "connection_id": "OR-01", "provider": "openrouter",
-            "fingerprint": "sha256:ok", "status": "VALIDATED", "active": True,
-            "capabilities": ["chat", 123], "role": None,
-        })
-        assert False, "should reject non-string capability"
-    except ValueError as e:
-        assert "non-string" in str(e)
-    # Reject empty capability
-    try:
-        ProviderAccount.from_dict({
-            "connection_id": "OR-01", "provider": "openrouter",
-            "fingerprint": "sha256:ok", "status": "VALIDATED", "active": True,
-            "capabilities": [""], "role": None,
-        })
-        assert False, "should reject empty capability"
-    except ValueError as e:
-        assert "empty" in str(e)
-    # Reject non-sequence capabilities
-    try:
-        ProviderAccount.from_dict({
-            "connection_id": "OR-01", "provider": "openrouter",
-            "fingerprint": "sha256:ok", "status": "VALIDATED", "active": True,
-            "capabilities": "chat",
-        })
-        assert False, "should reject non-sequence capabilities"
-    except ValueError as e:
-        assert "sequence" in str(e)
-    # Reject non-string role
-    try:
-        ProviderAccount.from_dict({
-            "connection_id": "OR-01", "provider": "openrouter",
-            "fingerprint": "sha256:ok", "status": "VALIDATED", "active": True,
-            "capabilities": [], "role": 123,
-        })
-        assert False, "should reject non-string role"
-    except ValueError as e:
-        assert "role" in str(e)
-    # Reject empty role
-    try:
-        ProviderAccount.from_dict({
-            "connection_id": "OR-01", "provider": "openrouter",
-            "fingerprint": "sha256:ok", "status": "VALIDATED", "active": True,
-            "capabilities": [], "role": "",
-        })
-        assert False, "should reject empty role"
-    except ValueError as e:
-        assert "non-empty" in str(e)
-    print("PASS: strict validation")
-
-def test_existing_and_rebound_accounts():
-    # Use existing connection_manager metadata if available, plus mock active pool
-    service = ProviderAccountService()
-    # Existing OR-01 should be resolvable if present in registry
-    registry = credential_pool_manager._load_active_pool() if hasattr(credential_pool_manager, "_load_active_pool") else {}
-    # Try resolving OR-01 from registry fallback
-    try:
-        acc = service.resolve_account("OR-01")
-        assert acc.connection_id == "OR-01"
-        assert acc.provider == "openrouter"
-        assert acc.fingerprint.startswith("sha256:")
-        assert acc.status in ("VALIDATED", "KEY_ROTATED", "UNKNOWN")
-        assert isinstance(acc.active, bool)
-        print("PASS: existing OR-01")
-    except ValueError as e:
-        # OR-01 not in registry is acceptable in test env
-        print("INFO: OR-01 not in registry:", e)
-    # Rebound OR-02 via active pool
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        secret_dir = tmpdir / "secrets"
-        secret_dir.mkdir()
-        (secret_dir / "openrouter_keys.txt").write_text("OR-01:sk-or-key-1\nOR-02:sk-or-key-2\n")
-        from connection_manager import secret_dir as cd_secret_dir, PROVIDER_PREFIXES, load_registry, import_provider
-        import connection_manager
-        original_secret_dir = connection_manager.secret_dir
-        original_registry_file = connection_manager.REGISTRY_FILE
-        connection_manager.REGISTRY_FILE = tmpdir / "connections.json"
-        if not connection_manager.REGISTRY_FILE.exists():
-            connection_manager.REGISTRY_FILE.write_text('{"connections":{}}')
-        def mock_secret_dir():
-            return secret_dir
-        connection_manager.secret_dir = mock_secret_dir
+    for field, bad_value, marker in (
+        ("capabilities", ["chat", 123], "non-string"),
+        ("capabilities", [""], "empty"),
+        ("capabilities", "chat", "sequence"),
+        ("role", 123, "role"),
+        ("role", "", "non-empty"),
+        ("provider", 123, "provider"),
+        ("active", "true", "active"),
+    ):
         try:
-            # Import and reload credentials
-            reload_fn = getattr(credential_pool_manager, "reload_credential_pool", None)
-            if reload_fn is None:
-                print("SKIP: reload_credential_pool not available")
-                return
-            reload_fn(provider="openrouter", prefix="OR")
-            # Now OR-02 should appear in active pool
+            ProviderAccount.from_dict(_base_account(**{field: bad_value}))
+        except ValueError as exc:
+            assert marker in str(exc)
+        else:
+            raise AssertionError(f"should reject invalid {field}={bad_value!r}")
+
+
+def test_existing_and_rebound_accounts_and_transport_lookup():
+    service = ProviderAccountService()
+    original_pool = credential_pool_manager.get_active_pool()
+    original_registry_file = connection_manager.REGISTRY_FILE
+    original_secret_dir = connection_manager.secret_dir
+    original_transport_resolve = provider_transport.resolve_secret_file
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        secret_dir = root / "secrets"
+        secret_dir.mkdir()
+        secret_file = secret_dir / "openrouter_keys.txt"
+        secret_file.write_text(
+            "OR-01=sk-or-key-1\nOR-02=sk-or-key-2\n",
+            encoding="utf-8",
+        )
+
+        connection_manager.REGISTRY_FILE = root / "connections.json"
+        connection_manager.REGISTRY_FILE.write_text(
+            '{"version": 2, "connections": {}}',
+            encoding="utf-8",
+        )
+        connection_manager.secret_dir = lambda: secret_dir
+
+        try:
+            registry = connection_manager.load_registry()
+            connection_manager.import_provider(
+                provider="openrouter",
+                keys_path=secret_file,
+                registry=registry,
+                prefix="OR",
+            )
+            connection_manager.save_registry(registry)
+
+            result = credential_pool_manager.reload_credential_pool(
+                provider="openrouter",
+                prefix="OR",
+            )
+            assert result["status"] == "success"
             pool = credential_pool_manager.get_active_pool()
-            assert "OR-02" in pool, f"OR-02 should be in active pool: {list(pool.keys())}"
-            # ProviderAccountService should represent it
-            acc = service.resolve_account("OR-02")
-            assert acc.connection_id == "OR-02"
-            assert acc.provider == "openrouter"
-            assert acc.fingerprint.startswith("sha256:")
-            assert acc.status in ("VALIDATED", "UNKNOWN")
-            assert isinstance(acc.active, bool)
-            # Existing OR-01 should also be resolvable
-            acc1 = service.resolve_account("OR-01")
-            assert acc1.connection_id == "OR-01"
-            assert acc1.provider == "openrouter"
-            print("PASS: existing OR-01 and rebound OR-02")
+            assert "OR-01" in pool
+            assert "OR-02" in pool
+
+            rebound = service.resolve_account("OR-02")
+            assert rebound.connection_id == "OR-02"
+            assert rebound.provider == "openrouter"
+            assert rebound.fingerprint == pool["OR-02"]["key_fingerprint"]
+            assert rebound.status == pool["OR-02"]["status"]
+
+            existing = service.resolve_account("OR-01", provider_hint="openrouter")
+            assert existing.connection_id == "OR-01"
+            assert existing.provider == "openrouter"
+
+            provider_transport.resolve_secret_file = lambda provider: secret_file
+            resolved = provider_transport.OpenAICompatibleTransport._resolve_key(
+                "openrouter", "OR", "OR-02"
+            )
+            assert resolved == "sk-or-key-2"
         finally:
+            with credential_pool_manager._pool_lock:
+                credential_pool_manager._active_pool.clear()
+                credential_pool_manager._active_pool.update(original_pool)
             connection_manager.REGISTRY_FILE = original_registry_file
             connection_manager.secret_dir = original_secret_dir
+            provider_transport.resolve_secret_file = original_transport_resolve
+
 
 def test_secret_safety():
-    pa = ProviderAccount(
-        connection_id="OR-01", provider="openrouter",
-        fingerprint="sha256:abcd1234", status="VALIDATED", active=True,
-        capabilities=("chat", "completion"), role="coder",
+    account = ProviderAccount(
+        connection_id="OR-01",
+        provider="openrouter",
+        fingerprint="sha256:abcd1234",
+        status="VALIDATED",
+        active=True,
+        capabilities=("chat", "completion"),
+        role="coder",
     )
-    d = pa.to_dict()
-    assert "key" not in d and "secret" not in d and "token" not in d and "password" not in d
-    assert "sk-" not in d["fingerprint"]
-    assert not d["fingerprint"].startswith("Bearer ")
-    print("PASS: secret safety")
+    data = account.to_dict()
+    assert "key" not in data
+    assert "secret" not in data
+    assert "token" not in data
+    assert "password" not in data
+    assert "sk-" not in data["fingerprint"]
+    assert not data["fingerprint"].startswith("Bearer ")
+
 
 def test_unknown_account():
     service = ProviderAccountService()
     try:
         service.resolve_account("XX-99")
-        assert False, "should reject unknown connection"
-    except ValueError as e:
-        assert "unknown" in str(e).lower()
-    print("PASS: unknown account")
+    except ValueError as exc:
+        assert "unknown" in str(exc).lower()
+    else:
+        raise AssertionError("should reject unknown connection")
+
 
 def test_authority_preservation():
-    # Prove no second registry/routing/credential authority was created
-    content = open("/projects/provider_account_contract.py").read()
+    content = Path("/projects/provider_account_contract.py").read_text(encoding="utf-8")
     assert "class IndependentValidator" not in content
     assert "class ExecutionAuthorizationBoundary" not in content
     assert "class ExecutionGate" not in content
@@ -149,16 +147,13 @@ def test_authority_preservation():
     assert "class WorkerWorkProduct" not in content
     assert "class connection_manager" not in content
     assert "class credential_pool_manager" not in content
-    # Service uses existing authorities
     assert "get_active_pool" in content
     assert "load_registry" in content
-    # Existing tests still pass
-    import test_worker_work_product
-    print("PASS: authority preservation")
+
 
 if __name__ == "__main__":
     test_provider_account_strict_validation()
-    test_existing_and_rebound_accounts()
+    test_existing_and_rebound_accounts_and_transport_lookup()
     test_secret_safety()
     test_unknown_account()
     test_authority_preservation()
